@@ -19,8 +19,8 @@ DATASETS = {
 
 ANSWERERS = {
     # Anthropic models
-    "claude-sonnet-long-context": long_context_answerer(
-        model="claude-4-5-sonnet",
+    "claude-haiku-4-5-long-context": long_context_answerer(
+        model="claude-haiku-4-5",
         provider="anthropic",
     ),
     # OpenAI models
