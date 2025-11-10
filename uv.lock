@@ -1389,6 +1389,7 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pydantic-ai" },
+    { name = "rich" },
     { name = "tqdm" },
     { name = "typer" },
 ]
@@ -1410,6 +1411,7 @@ requires-dist = [
     { name = "mem0ai", marker = "extra == 'mem0'" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pydantic-ai", specifier = ">=1.12.0" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "typer", specifier = ">=0.9.0" },
     { name = "zep-cloud", marker = "extra == 'zep'" },

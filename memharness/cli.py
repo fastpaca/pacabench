@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from memharness.configs import ANSWERERS, DATASETS
 
@@ -24,6 +26,7 @@ def main(
     concurrency: int = typer.Option(10, "--concurrency", "-j", help="Max concurrent evals"),
     list_datasets: bool = typer.Option(False, "--list-datasets"),
     list_configs: bool = typer.Option(False, "--list-configs"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed per-case report"),
 ):
     """Run memory QA evaluation."""
     # Handle list commands
@@ -75,10 +78,10 @@ def main(
         raise typer.Exit(1)
 
     # Run evaluation
-    asyncio.run(run_eval(dataset, config, limit, concurrency))
+    asyncio.run(run_eval(dataset, config, limit, concurrency, verbose))
 
 
-async def run_eval(dataset_name: str, config_name: str, limit: int | None, concurrency: int):
+async def run_eval(dataset_name: str, config_name: str, limit: int | None, concurrency: int, verbose: bool):
     """Run evaluation using pydantic-evals."""
     print(f"\n{'='*60}")
     print("memharness evaluation")
@@ -127,7 +130,8 @@ async def run_eval(dataset_name: str, config_name: str, limit: int | None, concu
                     "output": case.output,
                     "expected": case.expected_output,
                     "correct": all(a.value for a in case.assertions.values()),
-                    "duration_s": getattr(case, "duration_s", getattr(case, "duration", 0)),
+                    "task_duration_s": getattr(case, "task_duration", 0),
+                    "total_duration_s": getattr(case, "total_duration", 0),
                     "metrics": case.metrics,
                     "metadata": case.metadata,
                 }
@@ -146,36 +150,81 @@ async def run_eval(dataset_name: str, config_name: str, limit: int | None, concu
             "total_output_tokens": total_output,
             "avg_input_tokens": total_input / len(report.cases) if report.cases else 0,
             "avg_output_tokens": total_output / len(report.cases) if report.cases else 0,
-            "avg_duration_s": getattr(avg, "duration_s", getattr(avg, "duration", 0)) if avg else 0.0,
+            "avg_task_duration_s": getattr(avg, "task_duration", 0) if avg else 0.0,
+            "avg_total_duration_s": getattr(avg, "total_duration", 0) if avg else 0.0,
         }
         (run_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
 
         print(f"Results saved to: {run_dir}\n")
 
-        # Print report
+        # Print report (only if verbose flag is set)
+        if verbose:
+            print()
+            report.print(include_input=False, include_output=True, include_durations=True)
+
+        # Print aggregated metrics (always shown)
         print()
-        report.print(include_input=False, include_output=True, include_durations=True)
+        console = Console()
 
-        # Print aggregated metrics
-        print(f"\n{'='*60}")
-        print("Metrics")
-        print(f"{'='*60}")
-
+        # Calculate metrics
         avg = report.averages()
-        if avg:
-            print(f"Accuracy:         {avg.assertions:.2%}")
-
-        # Aggregate token metrics from cases
         total_input = sum(case.metrics.get("input_tokens", 0) for case in report.cases)
         total_output = sum(case.metrics.get("output_tokens", 0) for case in report.cases)
         num_cases = len(report.cases) if report.cases else 1
 
-        print(f"Total Input:      {total_input:,} tokens")
-        print(f"Total Output:     {total_output:,} tokens")
-        print(f"Avg Input:        {total_input / num_cases:.0f} tokens/case")
-        print(f"Avg Output:       {total_output / num_cases:.0f} tokens/case")
+        # Calculate latency metrics (using total_duration which includes task + evaluators)
+        durations = [getattr(case, "total_duration", 0) for case in report.cases]
+        task_durations = [getattr(case, "task_duration", 0) for case in report.cases]
+        total_duration = sum(durations)
+        avg_duration = total_duration / num_cases if num_cases else 0
+        avg_task_duration = sum(task_durations) / num_cases if num_cases else 0
 
-        print(f"{'='*60}\n")
+        # Calculate percentiles if we have durations
+        if durations:
+            sorted_durations = sorted(durations)
+            p50_idx = int(len(sorted_durations) * 0.50)
+            p95_idx = int(len(sorted_durations) * 0.95)
+            p99_idx = int(len(sorted_durations) * 0.99)
+            p50 = sorted_durations[p50_idx] if p50_idx < len(sorted_durations) else 0
+            p95 = sorted_durations[p95_idx] if p95_idx < len(sorted_durations) else 0
+            p99 = sorted_durations[p99_idx] if p99_idx < len(sorted_durations) else 0
+        else:
+            p50 = p95 = p99 = 0
+
+        # Create metrics table
+        table = Table(title="Evaluation Metrics", show_header=True, header_style="bold magenta")
+        table.add_column("Metric", style="cyan", no_wrap=True)
+        table.add_column("Value", style="green", justify="right")
+
+        # Add accuracy and count
+        if avg:
+            table.add_row("Accuracy", f"{avg.assertions:.2%}")
+        table.add_row("Total Cases", f"{num_cases:,}")
+
+        # Add section separator
+        table.add_row("", "")
+
+        # Add latency metrics (IMPORTANT!)
+        table.add_row("[bold yellow]Latency Metrics[/bold yellow]", "")
+        table.add_row("Total Duration", f"{total_duration:.2f}s")
+        table.add_row("Avg Task Latency", f"{avg_task_duration:.2f}s")
+        table.add_row("Avg Total Latency", f"{avg_duration:.2f}s")
+        table.add_row("P50 Latency", f"{p50:.2f}s")
+        table.add_row("P95 Latency", f"{p95:.2f}s")
+        table.add_row("P99 Latency", f"{p99:.2f}s")
+
+        # Add section separator
+        table.add_row("", "")
+
+        # Add token metrics
+        table.add_row("[bold yellow]Token Metrics[/bold yellow]", "")
+        table.add_row("Total Input Tokens", f"{total_input:,}")
+        table.add_row("Total Output Tokens", f"{total_output:,}")
+        table.add_row("Avg Input Tokens/Case", f"{total_input / num_cases:.0f}")
+        table.add_row("Avg Output Tokens/Case", f"{total_output / num_cases:.0f}")
+
+        console.print(table)
+        print()
 
     except KeyboardInterrupt:
         print("\n\nEvaluation interrupted")

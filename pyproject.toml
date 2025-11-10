@@ -13,6 +13,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "typer>=0.9.0",
     "numpy>=1.26.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]
