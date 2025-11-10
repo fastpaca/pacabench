@@ -35,7 +35,7 @@ def long_context_answerer(
         if _agent is None:
             # HTTP client with high connection limits for concurrency
             http_client = AsyncClient(
-                limits=Limits(max_connections=200, max_keepalive_connections=50),
+                limits=Limits(max_connections=20, max_keepalive_connections=50),
                 timeout=300.0,
             )
 
