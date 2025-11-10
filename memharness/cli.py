@@ -1,11 +1,13 @@
 """CLI for memharness."""
 
+import asyncio
+import json
+from datetime import datetime
 from pathlib import Path
 
 import typer
 
 from memharness.configs import ANSWERERS, DATASETS
-from memharness.eval import evaluate
 
 app = typer.Typer(
     name="memharness",
@@ -16,91 +18,19 @@ app = typer.Typer(
 
 @app.command()
 def main(
-    dataset: str | None = typer.Option(
-        None,
-        "--dataset",
-        "-d",
-        help="Dataset name (e.g., 'membench', 'locomo')",
-    ),
-    config: str | None = typer.Option(
-        None,
-        "--config",
-        "-c",
-        help="Config name (e.g., 'claude-opus-long-context', 'zep-claude')",
-    ),
-    limit: int | None = typer.Option(
-        None,
-        "--limit",
-        "-l",
-        help="Limit number of samples to evaluate",
-    ),
-    output_dir: str | None = typer.Option(
-        None,
-        "--output-dir",
-        "-o",
-        help="Output directory (auto-generated if not specified)",
-    ),
-    list_datasets: bool = typer.Option(
-        False,
-        "--list-datasets",
-        help="List available datasets and exit",
-    ),
-    list_configs: bool = typer.Option(
-        False,
-        "--list-configs",
-        help="List available configs and exit",
-    ),
-    model: str | None = typer.Option(
-        None,
-        "--model",
-        help="Override model name (e.g., 'gpt-4o', 'qwen/qwen3-30b-a3b-2507')",
-    ),
-    base_url: str | None = typer.Option(
-        None,
-        "--base-url",
-        help="Override base URL for custom endpoints",
-    ),
-    api_key: str | None = typer.Option(
-        None,
-        "--api-key",
-        help="Override API key",
-    ),
-    concurrency: int = typer.Option(
-        10,
-        "--concurrency",
-        "-j",
-        help="Maximum concurrent evaluations (default: 10)",
-    ),
+    dataset: str | None = typer.Option(None, "--dataset", "-d", help="Dataset name"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Config name"),
+    limit: int | None = typer.Option(None, "--limit", "-l", help="Limit samples"),
+    concurrency: int = typer.Option(10, "--concurrency", "-j", help="Max concurrent evals"),
+    list_datasets: bool = typer.Option(False, "--list-datasets"),
+    list_configs: bool = typer.Option(False, "--list-configs"),
 ):
-    """Run memory QA evaluation.
-
-    Examples:
-
-        # Run evaluation with default settings
-        memharness --dataset membench --config claude-opus-long-context
-
-        # Override model and base URL for local model
-        memharness --dataset membench --config local-long-context --model "qwen/qwen3-30b-a3b-2507" --base-url "http://localhost:1234/v1"
-
-        # High concurrency for local model
-        memharness --dataset membench --config local-long-context --concurrency 20 --limit 100
-
-        # Limit to 100 samples
-        memharness --dataset membench --config zep-claude --limit 100
-
-        # Custom output directory
-        memharness --dataset locomo --config gpt4-long-context --output-dir ./my-results
-
-        # List available options
-        memharness --list-datasets
-        memharness --list-configs
-    """
+    """Run memory QA evaluation."""
     # Handle list commands
     if list_datasets:
         print("Available datasets:")
         for name in sorted(DATASETS.keys()):
-            dataset_obj = DATASETS[name]
-            print(f"  {name:20s} {dataset_obj.__class__.__name__}")
+            print(f"  {name}")
         return
 
     if list_configs:
@@ -109,13 +39,12 @@ def main(
             print(f"  {name}")
         return
 
-    # Check required args
+    # Validate required args
     if dataset is None:
         print("Error: --dataset is required\n")
         print("Available datasets:")
         for name in sorted(DATASETS.keys()):
-            dataset_obj = DATASETS[name]
-            print(f"  {name:20s} {dataset_obj.__class__.__name__}")
+            print(f"  {name}")
         print()
         raise typer.Exit(1)
 
@@ -127,17 +56,16 @@ def main(
         print()
         raise typer.Exit(1)
 
-    # Validate dataset
+    # Validate dataset exists
     if dataset not in DATASETS:
         print(f"Error: Unknown dataset '{dataset}'\n")
         print("Available datasets:")
         for name in sorted(DATASETS.keys()):
-            dataset_obj = DATASETS[name]
-            print(f"  {name:20s} {dataset_obj.__class__.__name__}")
+            print(f"  {name}")
         print()
         raise typer.Exit(1)
 
-    # Validate config
+    # Validate config exists
     if config not in ANSWERERS:
         print(f"Error: Unknown config '{config}'\n")
         print("Available configs:")
@@ -146,76 +74,116 @@ def main(
         print()
         raise typer.Exit(1)
 
-    # Get instances
-    dataset_obj = DATASETS[dataset]
-    answerer = ANSWERERS[config]
-
-    # Apply CLI overrides to answerer
-    if model is not None:
-        answerer.model = model
-        answerer._agent = None  # Reset lazy-loaded agent
-    if base_url is not None:
-        answerer.base_url = base_url
-        answerer._agent = None  # Reset lazy-loaded agent
-    if api_key is not None:
-        answerer.api_key = api_key
-        answerer._agent = None  # Reset lazy-loaded agent
-
-    # Convert output_dir to Path if provided
-    output_path = Path(output_dir) if output_dir else None
-
     # Run evaluation
+    asyncio.run(run_eval(dataset, config, limit, concurrency))
+
+
+async def run_eval(dataset_name: str, config_name: str, limit: int | None, concurrency: int):
+    """Run evaluation using pydantic-evals."""
     print(f"\n{'='*60}")
     print("memharness evaluation")
     print(f"{'='*60}")
-    print(f"Dataset:  {dataset}")
-    print(f"Config:   {config}")
-    if model:
-        print(f"Model:    {model}")
-    if base_url:
-        print(f"Base URL: {base_url}")
+    print(f"Dataset:     {dataset_name}")
+    print(f"Config:      {config_name}")
     if limit:
-        print(f"Limit:    {limit}")
+        print(f"Limit:       {limit}")
     print(f"Concurrency: {concurrency}")
     print(f"{'='*60}\n")
 
     try:
-        metrics = evaluate(
-            dataset=dataset_obj,
-            answerer=answerer,
-            output_dir=output_path,
-            limit=limit,
-            concurrency=concurrency,
-        )
+        # Load dataset
+        dataset_loader = DATASETS[dataset_name]
+        dataset = dataset_loader(limit=limit)
 
-        # Print summary
+        print(f"Loaded {len(dataset.cases)} cases\n")
+
+        # Get task
+        task = ANSWERERS[config_name]
+
+        # Run evaluation (pydantic-evals handles everything)
+        report = await dataset.evaluate(task, max_concurrency=concurrency)
+
+        # Save results to runs directory
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        run_dir = Path("runs") / f"{dataset_name}-{config_name}-{timestamp}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save config
+        config_data = {
+            "dataset": dataset_name,
+            "config": config_name,
+            "limit": limit,
+            "concurrency": concurrency,
+            "num_cases": len(report.cases),
+            "timestamp": datetime.now().isoformat(),
+        }
+        (run_dir / "config.json").write_text(json.dumps(config_data, indent=2))
+
+        # Save per-case results as JSONL
+        with (run_dir / "results.jsonl").open("w") as f:
+            for case in report.cases:
+                result = {
+                    "case_id": case.name,
+                    "output": case.output,
+                    "expected": case.expected_output,
+                    "correct": all(a.value for a in case.assertions.values()),
+                    "duration_s": getattr(case, "duration_s", getattr(case, "duration", 0)),
+                    "metrics": case.metrics,
+                    "metadata": case.metadata,
+                }
+                f.write(json.dumps(result) + "\n")
+
+        # Save aggregated metrics
+        avg = report.averages()
+        total_input = sum(c.metrics.get("input_tokens", 0) for c in report.cases)
+        total_output = sum(c.metrics.get("output_tokens", 0) for c in report.cases)
+
+        metrics_data = {
+            "accuracy": avg.assertions if avg else 0.0,
+            "total_cases": len(report.cases),
+            "correct": sum(1 for c in report.cases if all(a.value for a in c.assertions.values())),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "avg_input_tokens": total_input / len(report.cases) if report.cases else 0,
+            "avg_output_tokens": total_output / len(report.cases) if report.cases else 0,
+            "avg_duration_s": getattr(avg, "duration_s", getattr(avg, "duration", 0)) if avg else 0.0,
+        }
+        (run_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
+
+        print(f"Results saved to: {run_dir}\n")
+
+        # Print report
+        print()
+        report.print(include_input=False, include_output=True, include_durations=True)
+
+        # Print aggregated metrics
         print(f"\n{'='*60}")
-        print("Evaluation Complete")
+        print("Metrics")
         print(f"{'='*60}")
-        print(f"Accuracy:              {metrics.accuracy:.2%}")
-        print(f"Correct:               {metrics.correct}/{metrics.total_samples}")
-        print(f"Avg Latency:           {metrics.avg_latency_ms:.0f}ms")
-        print(f"P95 Latency:           {metrics.p95_latency_ms:.0f}ms")
-        print(f"Avg Input Tokens:      {metrics.avg_input_tokens:.0f}")
-        print(f"Avg Output Tokens:     {metrics.avg_output_tokens:.0f}")
-        print(f"Total Input Tokens:    {metrics.total_input_tokens:,}")
-        print(f"Total Output Tokens:   {metrics.total_output_tokens:,}")
 
-        if metrics.custom_metrics:
-            print("\nCustom Metrics:")
-            for key, value in sorted(metrics.custom_metrics.items()):
-                if isinstance(value, float):
-                    print(f"  {key:25s} {value:.2f}")
-                else:
-                    print(f"  {key:25s} {value}")
+        avg = report.averages()
+        if avg:
+            print(f"Accuracy:         {avg.assertions:.2%}")
+
+        # Aggregate token metrics from cases
+        total_input = sum(case.metrics.get("input_tokens", 0) for case in report.cases)
+        total_output = sum(case.metrics.get("output_tokens", 0) for case in report.cases)
+        num_cases = len(report.cases) if report.cases else 1
+
+        print(f"Total Input:      {total_input:,} tokens")
+        print(f"Total Output:     {total_output:,} tokens")
+        print(f"Avg Input:        {total_input / num_cases:.0f} tokens/case")
+        print(f"Avg Output:       {total_output / num_cases:.0f} tokens/case")
 
         print(f"{'='*60}\n")
 
     except KeyboardInterrupt:
-        print("\n\nEvaluation interrupted by user")
+        print("\n\nEvaluation interrupted")
         raise typer.Exit(130)
     except Exception as e:
-        print(f"\n\nError during evaluation: {e}")
+        print(f"\n\nError: {e}")
+        import traceback
+        traceback.print_exc()
         raise typer.Exit(1)
 
 

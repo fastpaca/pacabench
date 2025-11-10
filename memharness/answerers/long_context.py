@@ -2,151 +2,102 @@
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
-from typing import Any
-
-from pydantic import BaseModel
-from pydantic_ai import Agent
+from httpx import AsyncClient, Limits
+from pydantic_ai import Agent, ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_evals import increment_eval_metric
 
 
-# Types colocated with answerer
-@dataclass
-class AnswerResult:
-    """Result from an answerer."""
+def long_context_answerer(
+    model: str,
+    provider: str = "openai",
+    base_url: str | None = None,
+    api_key: str | None = None,
+):
+    """Factory that returns async task callable for pydantic-evals.
 
-    response: str  # The actual response (choice letter, free text, etc.)
-    total_latency_ms: float
-    input_tokens: int
-    output_tokens: int
-    metrics: dict[str, Any] = field(default_factory=dict)
+    Args:
+        model: Model name (e.g., "gpt-4o", "claude-opus-4-20250514")
+        provider: Provider name ("openai", "anthropic")
+        base_url: Optional base URL for custom endpoints
+        api_key: Optional API key
 
-
-class ChoiceOutput(BaseModel):
-    """Structured output for multiple choice questions."""
-
-    choice: str
-    reasoning: str | None = None
-
-
-class LongContextAnswerer:
-    """Baseline answerer that uses full conversation context.
-
-    This answerer provides the complete conversation history to the LLM
-    without any memory system or context management.
+    Returns:
+        Async task function (inputs: dict) -> str
     """
+    # Agent lazy initialization via closure
+    _agent = None
 
-    def __init__(
-        self,
-        model: str,
-        provider: str = "openai",
-        base_url: str | None = None,
-        api_key: str | None = None,
-        system_prompt: str | None = None,
-    ):
-        """Initialize long context answerer.
+    def get_agent() -> Agent:
+        nonlocal _agent
+        if _agent is None:
+            # HTTP client with high connection limits for concurrency
+            http_client = AsyncClient(
+                limits=Limits(max_connections=200, max_keepalive_connections=50),
+                timeout=300.0,
+            )
 
-        Args:
-            model: Model name (e.g., "gpt-4o", "claude-opus-4-20250514")
-            provider: Provider name ("openai", "anthropic")
-            base_url: Optional base URL for custom endpoints
-            api_key: Optional API key
-            system_prompt: Optional system prompt override
-        """
-        self.model = model
-        self.provider = provider
-        self.base_url = base_url
-        self.api_key = api_key
-        self.system_prompt = system_prompt or self._default_system_prompt()
-        self._agent = None  # Lazy initialization
-
-    @property
-    def agent(self) -> Agent:
-        """Lazy-load the agent."""
-        if self._agent is None:
-            if self.provider == "anthropic":
-                model = AnthropicModel(self.model, api_key=self.api_key)
-            elif self.provider == "openai":
-                model = OpenAIChatModel(
-                    self.model,
+            if provider == "anthropic":
+                model_obj = AnthropicModel(model, api_key=api_key)
+            elif provider == "openai":
+                model_obj = OpenAIChatModel(
+                    model,
                     provider=OpenAIProvider(
-                        base_url=self.base_url,
-                        api_key=self.api_key,
+                        base_url=base_url,
+                        api_key=api_key,
+                        http_client=http_client,
                     ),
                 )
             else:
-                raise ValueError(f"Unknown provider: {self.provider}")
+                raise ValueError(f"Unknown provider: {provider}")
 
-            self._agent = Agent(model=model)
-        return self._agent
+            _agent = Agent(model=model_obj)
+        return _agent
 
-    async def answer(self, sample: Any) -> AnswerResult:
-        """Generate an answer for the given sample.
+    async def task(inputs: dict) -> str:
+        """Task function called by pydantic-evals.
 
         Args:
-            sample: Dataset sample with conversation, question, and choices
+            inputs: Dict with conversation, question, choices
 
         Returns:
-            AnswerResult with response and metrics
+            Response string (choice letter for multiple choice)
         """
-        start_time = time.time()
+        agent = get_agent()
 
-        # Format prompt
-        prompt = self._format_prompt(sample)
+        # Build structured message history
+        message_history = []
+        for turn in inputs.get("conversation", []):
+            if turn["role"] == "user":
+                message_history.append(
+                    ModelRequest(parts=[UserPromptPart(content=turn["content"])])
+                )
+            elif turn["role"] == "assistant":
+                message_history.append(
+                    ModelResponse(parts=[TextPart(content=turn["content"])])
+                )
 
-        # Run agent asynchronously
-        result = await self.agent.run(prompt)
+        # Format question prompt
+        prompt_parts = [f"Question: {inputs['question']}"]
 
-        # Calculate latency
-        latency_ms = (time.time() - start_time) * 1000
+        if "choices" in inputs:
+            prompt_parts.append("\n\nChoices:")
+            for key in sorted(inputs["choices"].keys()):
+                prompt_parts.append(f"\n{key}. {inputs['choices'][key]}")
+            prompt_parts.append("\n\nRespond with only the choice letter (A, B, C, or D).")
 
-        # Extract response - result.output contains the actual data
-        if hasattr(result.output, "choice"):
-            response = result.output.choice
-        else:
-            response = str(result.output)
+        prompt = "".join(prompt_parts)
 
-        # Get token usage from result.usage()
+        # Run agent
+        result = await agent.run(prompt, message_history=message_history)
+
+        # Track token metrics (pydantic-evals aggregates automatically)
         usage = result.usage()
+        increment_eval_metric("input_tokens", usage.input_tokens)
+        increment_eval_metric("output_tokens", usage.output_tokens)
 
-        return AnswerResult(
-            response=response,
-            total_latency_ms=latency_ms,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-        )
+        return str(result.output)
 
-    def _format_prompt(self, sample: Any) -> str:
-        """Format the sample into a prompt."""
-        parts = []
-
-        # Add conversation history
-        if hasattr(sample, "conversation") and sample.conversation:
-            parts.append("Prior conversation:\n")
-            for turn in sample.conversation:
-                role = turn["role"].capitalize()
-                content = turn["content"]
-                parts.append(f"{role}: {content}\n")
-
-        # Add question
-        parts.append(f"\nQuestion: {sample.question}\n")
-
-        # Add choices if available (for multiple choice)
-        if hasattr(sample, "choices") and sample.choices:
-            parts.append("\nChoices:")
-            for key in sorted(sample.choices.keys()):
-                parts.append(f"\n{key}. {sample.choices[key]}")
-
-            parts.append("\n\nRespond with only the choice letter (A, B, C, or D).")
-
-        return "".join(parts)
-
-    def _default_system_prompt(self) -> str:
-        """Default system prompt for the answerer."""
-        return (
-            "You are answering questions about conversations. "
-            "Provide accurate, concise answers based on the information given."
-        )
+    return task
