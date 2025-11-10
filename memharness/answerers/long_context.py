@@ -9,6 +9,11 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_evals import increment_eval_metric
 
+# HTTP client configuration for high concurrency
+_MAX_CONNECTIONS = 20
+_MAX_KEEPALIVE_CONNECTIONS = 50
+_REQUEST_TIMEOUT_SECONDS = 300.0
+
 
 def long_context_answerer(
     model: str,
@@ -27,33 +32,36 @@ def long_context_answerer(
     Returns:
         Async task function (inputs: dict) -> str
     """
-    # Agent lazy initialization via closure
-    _agent = None
+    _agent = None  # Lazy initialization via closure
 
     def get_agent() -> Agent:
         nonlocal _agent
-        if _agent is None:
-            # HTTP client with high connection limits for concurrency
-            http_client = AsyncClient(
-                limits=Limits(max_connections=20, max_keepalive_connections=50),
-                timeout=300.0,
+        if _agent is not None:
+            return _agent
+
+        http_client = AsyncClient(
+            limits=Limits(
+                max_connections=_MAX_CONNECTIONS,
+                max_keepalive_connections=_MAX_KEEPALIVE_CONNECTIONS,
+            ),
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        )
+
+        if provider == "anthropic":
+            model_obj = AnthropicModel(model, api_key=api_key)
+        elif provider == "openai":
+            model_obj = OpenAIChatModel(
+                model,
+                provider=OpenAIProvider(
+                    base_url=base_url,
+                    api_key=api_key,
+                    http_client=http_client,
+                ),
             )
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
 
-            if provider == "anthropic":
-                model_obj = AnthropicModel(model, api_key=api_key)
-            elif provider == "openai":
-                model_obj = OpenAIChatModel(
-                    model,
-                    provider=OpenAIProvider(
-                        base_url=base_url,
-                        api_key=api_key,
-                        http_client=http_client,
-                    ),
-                )
-            else:
-                raise ValueError(f"Unknown provider: {provider}")
-
-            _agent = Agent(model=model_obj)
+        _agent = Agent(model=model_obj)
         return _agent
 
     async def task(inputs: dict) -> str:
@@ -67,7 +75,6 @@ def long_context_answerer(
         """
         agent = get_agent()
 
-        # Build structured message history
         message_history = []
         for turn in inputs.get("conversation", []):
             if turn["role"] == "user":
@@ -75,25 +82,18 @@ def long_context_answerer(
                     ModelRequest(parts=[UserPromptPart(content=turn["content"])])
                 )
             elif turn["role"] == "assistant":
-                message_history.append(
-                    ModelResponse(parts=[TextPart(content=turn["content"])])
-                )
+                message_history.append(ModelResponse(parts=[TextPart(content=turn["content"])]))
 
-        # Format question prompt
-        prompt_parts = [f"Question: {inputs['question']}"]
+        prompt = f"Question: {inputs['question']}"
 
         if "choices" in inputs:
-            prompt_parts.append("\n\nChoices:")
-            for key in sorted(inputs["choices"].keys()):
-                prompt_parts.append(f"\n{key}. {inputs['choices'][key]}")
-            prompt_parts.append("\n\nRespond with only the choice letter (A, B, C, or D).")
+            choices_text = "\n".join(
+                f"{key}. {value}" for key, value in sorted(inputs["choices"].items())
+            )
+            prompt += f"\n\nChoices:\n{choices_text}\n\nRespond with only the choice letter (A, B, C, or D)."
 
-        prompt = "".join(prompt_parts)
-
-        # Run agent
         result = await agent.run(prompt, message_history=message_history)
 
-        # Track token metrics (pydantic-evals aggregates automatically)
         usage = result.usage()
         increment_eval_metric("input_tokens", usage.input_tokens)
         increment_eval_metric("output_tokens", usage.output_tokens)

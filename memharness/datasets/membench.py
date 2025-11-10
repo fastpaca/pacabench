@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
@@ -52,8 +53,7 @@ def load_membench(
 
     if not source_dir.exists():
         raise FileNotFoundError(
-            f"MemBench data not found at {source_dir}. "
-            f"Please ensure data is available."
+            f"MemBench data not found at {source_dir}. Please ensure data is available."
         )
 
     # Load all samples
@@ -90,6 +90,7 @@ def load_membench(
 
 
 # Internal types and helpers
+
 
 @dataclass
 class _MemBenchSample:

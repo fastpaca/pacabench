@@ -1,13 +1,15 @@
 """Configuration for datasets and answerers."""
 
+from functools import partial
+
 from memharness.answerers.long_context import long_context_answerer
 from memharness.datasets.membench import load_membench
 
 # Datasets (loader functions returning pydantic-evals Dataset)
 
 DATASETS = {
-    "membench": lambda **kwargs: load_membench(**kwargs),
-    "membench-third": lambda **kwargs: load_membench(agent_type="ThirdAgent", **kwargs),
+    "membench": load_membench,
+    "membench-third": partial(load_membench, agent_type="ThirdAgent"),
 }
 
 # Answerers (task callables for pydantic-evals)
