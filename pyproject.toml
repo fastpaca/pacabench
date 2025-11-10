@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "memharness"
 version = "0.1.0"
-description = "Memory QA benchmark harness for evaluating memory systems"
+description = "LLM/Agent Memory benchmark harness for evaluating memory systems"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -21,8 +21,6 @@ dependencies = [
 memharness = "memharness.cli:cli_main"
 
 [project.optional-dependencies]
-zep = ["zep-cloud"]
-mem0 = ["mem0ai"]
 datasets = ["datasets"]  # HuggingFace datasets for on-demand download
 
 [tool.setuptools.packages.find]
