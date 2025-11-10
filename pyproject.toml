@@ -1,10 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "memharness"
 version = "0.1.0"
-description = "Add your description here"
+description = "Memory QA benchmark harness for evaluating memory systems"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic-ai>=1.12.0",
     "tqdm>=4.67.1",
+    "typer>=0.9.0",
+    "numpy>=1.26.0",
 ]
+
+[project.scripts]
+memharness = "memharness.cli:cli_main"
+
+[project.optional-dependencies]
+zep = ["zep-cloud"]
+mem0 = ["mem0ai"]
+datasets = ["datasets"]  # HuggingFace datasets for on-demand download
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["memharness*"]
+exclude = ["data*", "runs*", "tests*"]
