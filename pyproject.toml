@@ -16,6 +16,7 @@ dependencies = [
     "rich>=13.0.0",
     "ruff>=0.14.4",
     "datasets>=4.4.1",
+    "questionary>=2.1.1",
 ]
 
 [project.scripts]

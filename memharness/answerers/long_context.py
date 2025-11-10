@@ -48,7 +48,7 @@ def long_context_answerer(
         )
 
         if provider == "anthropic":
-            model_obj = AnthropicModel(model, api_key=api_key)
+            model_obj = AnthropicModel(model)
         elif provider == "openai":
             model_obj = OpenAIChatModel(
                 model,
