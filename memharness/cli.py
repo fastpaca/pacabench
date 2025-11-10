@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -141,11 +142,63 @@ def _compute_latency_metrics(cases: list) -> dict[str, float]:
     }
 
 
+def _compute_f1_metrics(cases: list) -> dict[str, float]:
+    """Compute F1 score metrics across all cases.
+
+    Args:
+        cases: List of report cases
+
+    Returns:
+        Dict with F1 statistics
+    """
+    f1_scores = []
+
+    for case in cases:
+        response = case.output.strip().lower() if case.output else ""
+        expected = case.expected_output.strip().lower() if case.expected_output else ""
+
+        if not expected or not response:
+            f1_scores.append(0.0)
+            continue
+
+        response_tokens = set(_tokenize_text(response))
+        expected_tokens = set(_tokenize_text(expected))
+
+        if not expected_tokens:
+            f1_scores.append(0.0)
+            continue
+
+        overlap = response_tokens & expected_tokens
+        if not overlap:
+            f1_scores.append(0.0)
+            continue
+
+        precision = len(overlap) / len(response_tokens) if response_tokens else 0.0
+        recall = len(overlap) / len(expected_tokens) if expected_tokens else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        f1_scores.append(f1)
+
+    if not f1_scores:
+        return {"avg": 0.0, "min": 0.0, "max": 0.0}
+
+    return {
+        "avg": sum(f1_scores) / len(f1_scores),
+        "min": min(f1_scores),
+        "max": max(f1_scores),
+    }
+
+
+def _tokenize_text(text: str) -> list[str]:
+    """Simple whitespace tokenization with punctuation handling."""
+    return [token for token in re.findall(r"\b\w+\b", text.lower()) if token]
+
+
 def _create_metrics_table(
     accuracy: float | None,
     num_cases: int,
     latency: dict[str, float],
     tokens: dict[str, int],
+    f1: dict[str, float] | None = None,
 ) -> Table:
     """Create a Rich table with evaluation metrics.
 
@@ -154,6 +207,7 @@ def _create_metrics_table(
         num_cases: Number of evaluation cases
         latency: Dict with latency metrics
         tokens: Dict with token metrics
+        f1: Dict with F1 score metrics (optional)
 
     Returns:
         Formatted Rich Table
@@ -166,6 +220,13 @@ def _create_metrics_table(
         table.add_row("Accuracy", f"{accuracy:.2%}")
     table.add_row("Total Cases", f"{num_cases:,}")
     table.add_row("", "")
+
+    if f1:
+        table.add_row("[bold yellow]F1 Score Metrics[/bold yellow]", "")
+        table.add_row("Avg F1 Score", f"{f1['avg']:.4f}")
+        table.add_row("Min F1 Score", f"{f1['min']:.4f}")
+        table.add_row("Max F1 Score", f"{f1['max']:.4f}")
+        table.add_row("", "")
 
     table.add_row("[bold yellow]Latency Metrics[/bold yellow]", "")
     table.add_row("Total Duration", f"{latency['total']:.2f}s")
@@ -234,11 +295,15 @@ def _save_results(
     avg = report.averages()
     tokens = _compute_token_metrics(report.cases)
     latency = _compute_latency_metrics(report.cases)
+    f1 = _compute_f1_metrics(report.cases)
 
     metrics_data = {
         "accuracy": avg.assertions if avg else 0.0,
         "total_cases": len(report.cases),
         "correct": sum(1 for c in report.cases if all(a.value for a in c.assertions.values())),
+        "f1_avg": f1["avg"],
+        "f1_min": f1["min"],
+        "f1_max": f1["max"],
         "total_input_tokens": tokens["total_input"],
         "total_output_tokens": tokens["total_output"],
         "avg_input_tokens": tokens["total_input"] / len(report.cases) if report.cases else 0,
@@ -316,12 +381,14 @@ async def run_eval(
         avg = report.averages()
         tokens = _compute_token_metrics(report.cases)
         latency = _compute_latency_metrics(report.cases)
+        f1 = _compute_f1_metrics(report.cases)
 
         table = _create_metrics_table(
             accuracy=avg.assertions if avg else None,
             num_cases=len(report.cases),
             latency=latency,
             tokens=tokens,
+            f1=f1,
         )
         Console().print(table)
         print()

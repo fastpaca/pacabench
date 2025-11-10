@@ -3,6 +3,7 @@
 from functools import partial
 
 from memharness.answerers.long_context import long_context_answerer
+from memharness.datasets.longmemeval import load_longmemeval
 from memharness.datasets.membench import load_membench
 
 # Datasets (loader functions returning pydantic-evals Dataset)
@@ -10,6 +11,8 @@ from memharness.datasets.membench import load_membench
 DATASETS = {
     "membench": load_membench,
     "membench-third": partial(load_membench, agent_type="ThirdAgent"),
+    "longmemeval-s": partial(load_longmemeval, split="s_cleaned"),
+    "longmemeval-m": partial(load_longmemeval, split="m_cleaned"),
 }
 
 # Answerers (task callables for pydantic-evals)
