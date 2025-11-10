@@ -1244,6 +1244,7 @@ name = "memharness"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "datasets" },
     { name = "numpy" },
     { name = "pydantic-ai" },
     { name = "rich" },
@@ -1259,6 +1260,7 @@ datasets = [
 
 [package.metadata]
 requires-dist = [
+    { name = "datasets", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'datasets'" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pydantic-ai", specifier = ">=1.12.0" },
