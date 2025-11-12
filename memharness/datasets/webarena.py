@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic_evals import Case, Dataset
@@ -140,23 +138,23 @@ class WebArena(BenchmarkDataset):
     def __init__(
         self,
         domain: str | None = None,
-        config_file: Path | str | None = None,
+        task_ids: list[int] | None = None,
         executor_class: type[Executor] | None = None,
     ):
         """Initialize WebArena dataset.
 
         Args:
             domain: Optional domain filter ("shopping", "reddit", "gitlab", etc.)
-            config_file: Path to WebArena test.raw.json config file
+            task_ids: Optional list of specific task IDs to load (0-811)
             executor_class: Optional executor class override
         """
-        from memharness.executors.browser import BrowserExecutor
+        from memharness.executors.agentlab import AgentLabExecutor
 
-        self.default_executor = BrowserExecutor
+        self.default_executor = AgentLabExecutor
         super().__init__(executor_class=executor_class)
 
         self.domain = domain
-        self.config_file = config_file
+        self.task_ids = task_ids
 
     def load(self, limit: int | None = None) -> Dataset:
         """Load WebArena dataset.
@@ -166,29 +164,24 @@ class WebArena(BenchmarkDataset):
 
         Returns:
             pydantic-evals Dataset with browser task cases
+
+        Note:
+            Uses BrowserGym's task registration. Tasks are registered as
+            'browsergym/webarena.X' where X is 0-811.
         """
-        if self.config_file is None:
-            self.config_file = (
-                Path(__file__).parent.parent.parent / "data" / "webarena" / "test.raw.json"
-            )
+        try:
+            import browsergym.webarena  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "BrowserGym WebArena is required. Install with: pip install browsergym-webarena"
+            ) from e
 
-        config_path = Path(self.config_file)
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"WebArena config not found at {config_path}. "
-                "Please download test.raw.json from the WebArena repository."
-            )
-
-        with config_path.open(encoding="utf-8") as f:
-            raw_tasks = json.load(f)
-
-        if self.domain:
-            raw_tasks = [task for task in raw_tasks if self.domain in task.get("sites", [])]
+        task_ids = self.task_ids or list(range(812))
 
         if limit is not None:
-            raw_tasks = raw_tasks[:limit]
+            task_ids = task_ids[:limit]
 
-        cases = [self._build_case(task) for task in raw_tasks]
+        cases = [self._build_case_from_task_id(task_id) for task_id in task_ids]
 
         evaluators = [
             StringMatchEvaluator(),
@@ -197,6 +190,23 @@ class WebArena(BenchmarkDataset):
         ]
 
         return Dataset(cases=cases, evaluators=evaluators)
+
+    def _build_case_from_task_id(self, task_id: int) -> Case:
+        """Build a case from a BrowserGym task ID."""
+        return Case(
+            name=f"webarena_{task_id}",
+            inputs={
+                "task_id": str(task_id),
+                "benchmark": "webarena",
+            },
+            expected_output={
+                "task_id": task_id,
+            },
+            metadata={
+                "task_id": task_id,
+                "benchmark": "webarena",
+            },
+        )
 
     def _build_case(self, task: dict[str, Any]) -> Case:
         """Build a pydantic-evals Case from a WebArena task."""
