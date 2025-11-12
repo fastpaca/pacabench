@@ -18,10 +18,10 @@ dependencies = [
     "datasets>=4.4.1",
     "questionary>=2.1.1",
     "genai-prices>=0.0.36",
-    "agentlab>=0.1.0",
-    "browsergym-core>=0.7.1",
-    "browsergym-webarena>=0.1.0",
     "pydantic>=2.9",
+    "huggingface-hub>=0.20.0",
+    "smolagents[toolkit]>=1.0.0",
+    "wikipedia-api>=0.7.0",
 ]
 
 [project.scripts]
