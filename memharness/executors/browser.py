@@ -119,15 +119,6 @@ class BrowserExecutor(Executor):
 
         Returns:
             Final page state or result string
-
-        Note: This is a stub implementation. Users should customize the browser
-        automation logic based on their specific needs. Key areas to implement:
-
-        1. Browser observation (accessibility tree, HTML, screenshots)
-        2. Agent reasoning loop (observe → reason → act)
-        3. Action execution (click, type, navigate, etc.)
-        4. Memory integration (if using external memory systems)
-        5. Task completion detection
         """
         agent = self._get_agent()
         await self._init_browser()
@@ -140,36 +131,108 @@ class BrowserExecutor(Executor):
             page = await self._browser.new_page(storage_state=storage_state)
 
             if start_url:
-                await page.goto(start_url)
+                await page.goto(start_url, wait_until="domcontentloaded")
 
-            prompt = f"""You are a web automation agent. Your task is:
+            max_steps = 15
+            step_count = 0
+            action_history = []
+
+            while step_count < max_steps:
+                step_count += 1
+
+                page_state = await self._get_page_state(page)
+
+                history_text = "\n".join(
+                    f"Step {i + 1}: {action}" for i, action in enumerate(action_history)
+                )
+
+                prompt = f"""You are a web automation agent. Your task is:
 
 {intent}
 
-You are currently at: {start_url}
+Current page: {page.url}
+Page title: {page_state["title"]}
 
-TODO: Implement browser automation loop here. This should include:
-1. Observing the page (accessibility tree, HTML, etc.)
-2. Using the agent to reason about next actions
-3. Executing actions on the page
-4. Repeating until task is complete
+Previous actions:
+{history_text if history_text else "None"}
 
-For now, this is a stub that returns the page title."""
+Current page content (simplified):
+{page_state["content"][:2000]}
 
-            result = await agent.run(prompt)
+Decide what to do next. You can:
+- CLICK <element_text> - Click on an element by its visible text
+- TYPE <element_text> <text> - Type text into an input field
+- NAVIGATE <url> - Navigate to a URL
+- SCROLL - Scroll down the page
+- DONE - Task is complete
 
-            usage = result.usage()
-            increment_eval_metric("input_tokens", usage.input_tokens)
-            increment_eval_metric("output_tokens", usage.output_tokens)
-            increment_eval_metric("cache_write_tokens", usage.cache_write_tokens)
-            increment_eval_metric("cache_read_tokens", usage.cache_read_tokens)
+Respond with ONLY one action command, or DONE if the task is complete."""
+
+                result = await agent.run(prompt, message_history=self._build_message_history())
+
+                usage = result.usage()
+                increment_eval_metric("input_tokens", usage.input_tokens)
+                increment_eval_metric("output_tokens", usage.output_tokens)
+                increment_eval_metric("cache_write_tokens", usage.cache_write_tokens)
+                increment_eval_metric("cache_read_tokens", usage.cache_read_tokens)
+
+                action = str(result.output).strip()
+                action_history.append(action)
+
+                increment_eval_metric("browser_actions", 1)
+
+                if action.upper().startswith("DONE"):
+                    break
+
+                try:
+                    await self._execute_action(page, action)
+                except Exception as e:
+                    action_history.append(f"[ERROR] {str(e)}")
+
+                await page.wait_for_timeout(500)
 
             page_title = await page.title()
             final_url = page.url
+            final_content = await page.content()
 
             await page.close()
 
-            return f"Task: {intent}\nFinal URL: {final_url}\nPage Title: {page_title}\nAgent Response: {result.output}"
+            increment_eval_metric("total_steps", step_count)
+
+            return f"{final_url}\n{page_title}\n{final_content[:500]}"
 
         finally:
             await self._cleanup_browser()
+
+    async def _get_page_state(self, page) -> dict:
+        """Extract current page state."""
+        title = await page.title()
+        content = await page.inner_text("body")
+        url = page.url
+
+        return {"title": title, "content": content, "url": url}
+
+    async def _execute_action(self, page, action: str):
+        """Execute a browser action."""
+        action_upper = action.upper()
+
+        if action_upper.startswith("CLICK "):
+            element_text = action[6:].strip()
+            await page.get_by_text(element_text, exact=False).first.click()
+
+        elif action_upper.startswith("TYPE "):
+            parts = action[5:].split(maxsplit=1)
+            if len(parts) == 2:
+                element_text, text_to_type = parts
+                await page.get_by_text(element_text, exact=False).first.fill(text_to_type)
+
+        elif action_upper.startswith("NAVIGATE "):
+            url = action[9:].strip()
+            await page.goto(url, wait_until="domcontentloaded")
+
+        elif action_upper.startswith("SCROLL"):
+            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+
+    def _build_message_history(self) -> list:
+        """Build message history for agent context (override in subclasses for memory)."""
+        return []
