@@ -13,7 +13,7 @@ from genai_prices import Usage, calc_price
 from rich.console import Console
 from rich.table import Table
 
-from memharness.configs import ANSWERERS, DATASETS
+from memharness.configs import ANSWERERS, CONFIG_TO_MODEL, DATASETS, MODELS
 
 # Constants
 _DEFAULT_CONCURRENCY = 10
@@ -135,15 +135,15 @@ def _get_model_ref_from_config(config_name: str) -> tuple[str, str | None]:
     Returns:
         Tuple of (model_ref, provider_id)
     """
-    if "claude-haiku" in config_name:
-        return "claude-haiku-4-5", "anthropic"
-    elif "claude-sonnet" in config_name:
-        return "claude-4-5-sonnet", "anthropic"
-    elif "gpt-4o-mini" in config_name:
-        return "gpt-4o-mini", "openai"
-    elif "gpt-4o" in config_name:
-        return "gpt-4o", "openai"
-    return config_name, None
+    model_name = CONFIG_TO_MODEL.get(config_name)
+    if not model_name:
+        return config_name, None
+
+    model_config = MODELS.get(model_name)
+    if not model_config:
+        return config_name, None
+
+    return model_config["model"], model_config["provider"]
 
 
 def _calculate_cost_from_tokens(
@@ -299,12 +299,35 @@ def _tokenize_text(text: str) -> list[str]:
     return [token for token in re.findall(r"\b\w+\b", text.lower()) if token]
 
 
+def _compute_agent_metrics(cases: list) -> dict[str, float]:
+    """Compute agent-specific metrics (steps, runs, errors).
+
+    Args:
+        cases: List of report cases
+
+    Returns:
+        Dict with agent statistics
+    """
+    total_steps = sum(case.metrics.get("agent_steps", 0) for case in cases)
+    total_runs = sum(case.metrics.get("agent_runs", 0) for case in cases)
+    total_errors = sum(case.metrics.get("agent_errors", 0) for case in cases)
+
+    num_cases = len(cases)
+    return {
+        "total_steps": total_steps,
+        "avg_steps": total_steps / num_cases if num_cases > 0 else 0,
+        "total_runs": total_runs,
+        "total_errors": total_errors,
+    }
+
+
 def _create_metrics_table(
     precision: float | None,
     num_cases: int,
     latency: dict[str, float],
     tokens: dict[str, int],
     f1: dict[str, float] | None = None,
+    agent: dict[str, float] | None = None,
 ) -> Table:
     """Create a Rich table with evaluation metrics.
 
@@ -313,7 +336,8 @@ def _create_metrics_table(
         num_cases: Number of evaluation cases
         latency: Dict with latency metrics
         tokens: Dict with token metrics
-        f1: Dict with F1 score metrics (optional)
+        f1: Dict with F1 score metrics (optional, for QA benchmarks)
+        agent: Dict with agent metrics (optional, for agentic benchmarks)
 
     Returns:
         Formatted Rich Table
@@ -327,7 +351,15 @@ def _create_metrics_table(
     table.add_row("Total Cases", f"{num_cases:,}")
     table.add_row("", "")
 
-    if f1:
+    if agent and agent.get("total_steps", 0) > 0:
+        table.add_row("[bold yellow]Agent Metrics[/bold yellow]", "")
+        table.add_row("Total Agent Steps", f"{agent['total_steps']:,}")
+        table.add_row("Avg Steps per Case", f"{agent['avg_steps']:.1f}")
+        if agent.get("total_errors", 0) > 0:
+            table.add_row("Agent Errors", f"{agent['total_errors']:,}")
+        table.add_row("", "")
+
+    if f1 and f1["avg"] > 0:
         table.add_row("[bold yellow]F1 Score Metrics[/bold yellow]", "")
         table.add_row("Avg F1 Score", f"{f1['avg']:.4f}")
         table.add_row("Min F1 Score", f"{f1['min']:.4f}")
@@ -409,6 +441,7 @@ def _save_results(
     tokens = _compute_token_metrics(report.cases, config_name)
     latency = _compute_latency_metrics(report.cases)
     f1 = _compute_f1_metrics(report.cases)
+    agent = _compute_agent_metrics(report.cases)
 
     metrics_data = {
         "precision": avg.assertions if avg else 0.0,
@@ -431,6 +464,9 @@ def _save_results(
         "p50_latency_s": latency["p50"],
         "p95_latency_s": latency["p95"],
         "p99_latency_s": latency["p99"],
+        "total_agent_steps": agent["total_steps"],
+        "avg_agent_steps": agent["avg_steps"],
+        "total_agent_errors": agent["total_errors"],
     }
     (run_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
 
@@ -763,6 +799,7 @@ async def run_eval(
         tokens = _compute_token_metrics(report.cases, config_name)
         latency = _compute_latency_metrics(report.cases)
         f1 = _compute_f1_metrics(report.cases)
+        agent = _compute_agent_metrics(report.cases)
 
         table = _create_metrics_table(
             precision=avg.assertions if avg else None,
@@ -770,6 +807,7 @@ async def run_eval(
             latency=latency,
             tokens=tokens,
             f1=f1,
+            agent=agent,
         )
         Console().print(table)
         print()
