@@ -7,10 +7,15 @@ import random
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic_evals import Case, Dataset
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
+
+from memharness.datasets.base import BenchmarkDataset
+
+if TYPE_CHECKING:
+    from memharness.executors.base import Executor
 
 
 class MultipleChoiceEvaluator(Evaluator):
@@ -212,3 +217,58 @@ def _split_samples(
     validation_split = shuffled[cutoff:]
 
     return eval_split, validation_split
+
+
+class MemBench(BenchmarkDataset):
+    """MemBench dataset for memory QA evaluation."""
+
+    name = "membench"
+
+    def __init__(
+        self,
+        agent_type: str = "FirstAgent",
+        split: str = "eval",
+        eval_ratio: float = 0.8,
+        seed: int = 42,
+        data_dir: Path | str | None = None,
+        executor_class: type[Executor] | None = None,
+    ):
+        """Initialize MemBench dataset.
+
+        Args:
+            agent_type: "FirstAgent" or "ThirdAgent"
+            split: "eval", "validation", or "all"
+            eval_ratio: Ratio for eval/validation split
+            seed: Random seed for split
+            data_dir: Path to MemBench data directory
+            executor_class: Optional executor class override
+        """
+        # Import here to avoid circular dependency
+        from memharness.executors.qa import QAExecutor
+
+        self.default_executor = QAExecutor
+        super().__init__(executor_class=executor_class)
+
+        self.agent_type = agent_type
+        self.split = split
+        self.eval_ratio = eval_ratio
+        self.seed = seed
+        self.data_dir = data_dir
+
+    def load(self, limit: int | None = None) -> Dataset:
+        """Load MemBench dataset.
+
+        Args:
+            limit: Optional limit on number of cases
+
+        Returns:
+            pydantic-evals Dataset
+        """
+        return load_membench(
+            agent_type=self.agent_type,
+            split=self.split,
+            eval_ratio=self.eval_ratio,
+            seed=self.seed,
+            limit=limit,
+            data_dir=self.data_dir,
+        )

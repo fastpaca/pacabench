@@ -538,7 +538,11 @@ async def run_battle(
     console.print()
 
     try:
-        dataset = DATASETS[dataset_name](limit=limit)
+        dataset_obj = DATASETS[dataset_name]
+        if callable(dataset_obj):
+            dataset = dataset_obj(limit=limit)
+        else:
+            dataset = dataset_obj.load(limit=limit)
         print(f"Loaded {len(dataset.cases)} cases\n")
 
         if dataset.cases:
@@ -727,7 +731,11 @@ async def run_eval(
     console.print()
 
     try:
-        dataset = DATASETS[dataset_name](limit=limit)
+        dataset_obj = DATASETS[dataset_name]
+        if callable(dataset_obj):
+            dataset = dataset_obj(limit=limit)
+        else:
+            dataset = dataset_obj.load(limit=limit)
         print(f"Loaded {len(dataset.cases)} cases\n")
 
         if dataset.cases:

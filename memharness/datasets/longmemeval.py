@@ -5,13 +5,18 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from huggingface_hub import hf_hub_download
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_evals import Case, Dataset, increment_eval_metric
 from pydantic_evals.evaluators import Evaluator, EvaluatorContext
+
+from memharness.datasets.base import BenchmarkDataset
+
+if TYPE_CHECKING:
+    from memharness.executors.base import Executor
 
 _HF_REPO_ID = "xiaowu0162/longmemeval-cleaned"
 _SPLIT_FILES = {
@@ -187,3 +192,49 @@ def _flatten_sessions(sessions: list[list[dict[str, str]]]) -> list[dict[str, st
             turns.append(session)
 
     return [turn for turn in turns if isinstance(turn, dict) and turn.get("content")]
+
+
+class LongMemEval(BenchmarkDataset):
+    """LongMemEval dataset for long-term memory evaluation."""
+
+    name = "longmemeval"
+
+    def __init__(
+        self,
+        split: str = "s_cleaned",
+        cache_dir: Path | str | None = None,
+        judge_model: str = "gpt-4o-mini",
+        executor_class: type[Executor] | None = None,
+    ):
+        """Initialize LongMemEval dataset.
+
+        Args:
+            split: "s_cleaned" (single-session) or "m_cleaned" (multi-session)
+            cache_dir: Optional cache directory for HuggingFace downloads
+            judge_model: Model to use for LLM-as-judge evaluation
+            executor_class: Optional executor class override
+        """
+        from memharness.executors.qa import QAExecutor
+
+        self.default_executor = QAExecutor
+        super().__init__(executor_class=executor_class)
+
+        self.split = split
+        self.cache_dir = cache_dir
+        self.judge_model = judge_model
+
+    def load(self, limit: int | None = None) -> Dataset:
+        """Load LongMemEval dataset.
+
+        Args:
+            limit: Optional limit on number of cases
+
+        Returns:
+            pydantic-evals Dataset
+        """
+        return load_longmemeval(
+            split=self.split,
+            limit=limit,
+            cache_dir=self.cache_dir,
+            judge_model=self.judge_model,
+        )
