@@ -97,6 +97,8 @@ def long_context_answerer(
         usage = result.usage()
         increment_eval_metric("input_tokens", usage.input_tokens)
         increment_eval_metric("output_tokens", usage.output_tokens)
+        increment_eval_metric("cache_write_tokens", usage.cache_write_tokens)
+        increment_eval_metric("cache_read_tokens", usage.cache_read_tokens)
 
         return str(result.output)
 
