@@ -1245,6 +1245,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },
+    { name = "genai-prices" },
     { name = "numpy" },
     { name = "pydantic-ai" },
     { name = "questionary" },
@@ -1263,6 +1264,7 @@ datasets = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'datasets'" },
+    { name = "genai-prices", specifier = ">=0.0.36" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pydantic-ai", specifier = ">=1.12.0" },
     { name = "questionary", specifier = ">=2.1.1" },

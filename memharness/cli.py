@@ -9,6 +9,7 @@ from pathlib import Path
 
 import questionary
 import typer
+from genai_prices import Usage, calc_price
 from rich.console import Console
 from rich.table import Table
 
@@ -125,20 +126,90 @@ def _calculate_percentile(sorted_values: list[float], percentile: float) -> floa
     return sorted_values[lower_idx] * (1 - weight) + sorted_values[upper_idx] * weight
 
 
-def _compute_token_metrics(cases: list) -> dict[str, int]:
+def _get_model_ref_from_config(config_name: str) -> tuple[str, str | None]:
+    """Extract model ref and provider from config name.
+
+    Args:
+        config_name: Config name (e.g., "gpt-4o-mini-long-context")
+
+    Returns:
+        Tuple of (model_ref, provider_id)
+    """
+    if "claude-haiku" in config_name:
+        return "claude-haiku-4-5", "anthropic"
+    elif "claude-sonnet" in config_name:
+        return "claude-4-5-sonnet", "anthropic"
+    elif "gpt-4o-mini" in config_name:
+        return "gpt-4o-mini", "openai"
+    elif "gpt-4o" in config_name:
+        return "gpt-4o", "openai"
+    return config_name, None
+
+
+def _calculate_cost_from_tokens(
+    input_tokens: int,
+    output_tokens: int,
+    cache_write_tokens: int,
+    cache_read_tokens: int,
+    config_name: str,
+) -> float:
+    """Calculate cost in USD using genai-prices.
+
+    Args:
+        input_tokens: Number of regular input tokens
+        output_tokens: Number of output tokens
+        cache_write_tokens: Number of cache write tokens
+        cache_read_tokens: Number of cache read tokens
+        config_name: Config name for model lookup
+
+    Returns:
+        Cost in USD or 0.0 if pricing unavailable
+    """
+    model_ref, provider_id = _get_model_ref_from_config(config_name)
+
+    try:
+        usage = Usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cache_read_tokens=cache_read_tokens,
+        )
+        price_data = calc_price(usage, model_ref=model_ref, provider_id=provider_id)
+        return float(price_data.total_price) if price_data else 0.0
+    except Exception:
+        return 0.0
+
+
+def _compute_token_metrics(cases: list, config_name: str) -> dict[str, int | float]:
     """Compute aggregated token metrics from cases.
 
     Args:
         cases: List of report cases
+        config_name: Config name for cost calculation
 
     Returns:
-        Dict with total_input, total_output token counts
+        Dict with total_input, total_output token counts, cache stats, and cost
     """
     total_input = sum(case.metrics.get("input_tokens", 0) for case in cases)
     total_output = sum(case.metrics.get("output_tokens", 0) for case in cases)
+    total_cache_write = sum(case.metrics.get("cache_write_tokens", 0) for case in cases)
+    total_cache_read = sum(case.metrics.get("cache_read_tokens", 0) for case in cases)
+
+    total_cost = _calculate_cost_from_tokens(
+        total_input, total_output, total_cache_write, total_cache_read, config_name
+    )
+
+    total_cacheable = total_cache_write + total_cache_read
+    cache_hit_rate = (total_cache_read / total_cacheable) if total_cacheable > 0 else 0.0
+
     return {
         "total_input": total_input,
         "total_output": total_output,
+        "total_cache_write": total_cache_write,
+        "total_cache_read": total_cache_read,
+        "cache_hit_rate": cache_hit_rate,
+        "total_cost": total_cost,
+        "avg_cost": total_cost / len(cases) if cases else 0.0,
     }
 
 
@@ -279,6 +350,13 @@ def _create_metrics_table(
     avg_output = tokens["total_output"] / num_cases if num_cases > 0 else 0
     table.add_row("Avg Input Tokens/Case", f"{avg_input:.0f}")
     table.add_row("Avg Output Tokens/Case", f"{avg_output:.0f}")
+    table.add_row("", "")
+
+    table.add_row("[bold yellow]Cost Metrics[/bold yellow]", "")
+    table.add_row("Total Cost", f"${tokens['total_cost']:.4f}")
+    table.add_row("Avg Cost/Case", f"${tokens['avg_cost']:.4f}")
+    if tokens.get("cache_hit_rate", 0) > 0:
+        table.add_row("Cache Hit Rate", f"{tokens['cache_hit_rate']:.1%}")
 
     return table
 
@@ -328,7 +406,7 @@ def _save_results(
             f.write(json.dumps(result) + "\n")
 
     avg = report.averages()
-    tokens = _compute_token_metrics(report.cases)
+    tokens = _compute_token_metrics(report.cases, config_name)
     latency = _compute_latency_metrics(report.cases)
     f1 = _compute_f1_metrics(report.cases)
 
@@ -341,8 +419,13 @@ def _save_results(
         "f1_max": f1["max"],
         "total_input_tokens": tokens["total_input"],
         "total_output_tokens": tokens["total_output"],
+        "total_cache_write_tokens": tokens["total_cache_write"],
+        "total_cache_read_tokens": tokens["total_cache_read"],
+        "cache_hit_rate": tokens["cache_hit_rate"],
         "avg_input_tokens": tokens["total_input"] / len(report.cases) if report.cases else 0,
         "avg_output_tokens": tokens["total_output"] / len(report.cases) if report.cases else 0,
+        "total_cost": tokens["total_cost"],
+        "avg_cost": tokens["avg_cost"],
         "avg_task_duration_s": avg.task_duration if avg else 0.0,
         "avg_total_duration_s": avg.total_duration if avg else 0.0,
         "p50_latency_s": latency["p50"],
@@ -370,8 +453,21 @@ def _create_leaderboard_table(results: list[dict]) -> Table:
     table.add_column("P95", style="blue", justify="right")
     table.add_column("Avg Input", style="magenta", justify="right")
     table.add_column("Avg Output", style="magenta", justify="right")
+    table.add_column("Total Cost", style="red", justify="right", no_wrap=True)
+    table.add_column("Avg Cost", style="red", justify="right", no_wrap=True)
 
     for i, result in enumerate(results, 1):
+        total_cost_str = (
+            f"${result['total_cost']:.2f}"
+            if result["total_cost"] >= 0.01
+            else f"${result['total_cost']:.4f}"
+        )
+        avg_cost_str = (
+            f"${result['avg_cost']:.2f}"
+            if result["avg_cost"] >= 0.01
+            else f"${result['avg_cost']:.4f}"
+        )
+
         table.add_row(
             str(i),
             result["config_name"],
@@ -381,6 +477,8 @@ def _create_leaderboard_table(results: list[dict]) -> Table:
             f"{result['p95_latency']:.2f}s",
             f"{result['avg_input_tokens']:.0f}",
             f"{result['avg_output_tokens']:.0f}",
+            total_cost_str,
+            avg_cost_str,
         )
 
     return table
@@ -486,7 +584,7 @@ async def run_battle(
             _save_results(run_dir, dataset_name, config_name, limit, concurrency, report)
 
             avg = report.averages()
-            tokens = _compute_token_metrics(report.cases)
+            tokens = _compute_token_metrics(report.cases, config_name)
             latency = _compute_latency_metrics(report.cases)
             f1 = _compute_f1_metrics(report.cases)
 
@@ -503,6 +601,9 @@ async def run_battle(
                     "avg_output_tokens": tokens["total_output"] / len(report.cases)
                     if report.cases
                     else 0,
+                    "cache_hit_rate": tokens["cache_hit_rate"],
+                    "total_cost": tokens["total_cost"],
+                    "avg_cost": tokens["avg_cost"],
                     "report": report,
                 }
             )
@@ -533,6 +634,9 @@ async def run_battle(
                     "p95_latency": r["p95_latency"],
                     "avg_input_tokens": r["avg_input_tokens"],
                     "avg_output_tokens": r["avg_output_tokens"],
+                    "cache_hit_rate": r["cache_hit_rate"],
+                    "total_cost": r["total_cost"],
+                    "avg_cost": r["avg_cost"],
                 }
                 for i, r in enumerate(results)
             ],
@@ -648,7 +752,7 @@ async def run_eval(
 
         print()
         avg = report.averages()
-        tokens = _compute_token_metrics(report.cases)
+        tokens = _compute_token_metrics(report.cases, config_name)
         latency = _compute_latency_metrics(report.cases)
         f1 = _compute_f1_metrics(report.cases)
 
