@@ -2,6 +2,8 @@
 
 from memharness.answerers.gaia_agent import gaia_answerer
 from memharness.answerers.long_context import long_context_answerer
+from memharness.answerers.mem0 import mem0_answerer
+from memharness.answerers.mem0_gaia import mem0_gaia_answerer
 from memharness.datasets.gaia import GAIA
 from memharness.datasets.longmemeval import LongMemEval
 from memharness.datasets.membench import MemBench
@@ -83,6 +85,39 @@ ANSWERERS = {
         provider="openai",
         max_steps=15,
     ),
+    # Mem0-powered answerers (Q&A with memory layer)
+    "claude-sonnet-4-5-mem0": mem0_answerer(
+        model="claude-sonnet-4-5",
+        provider="anthropic",
+    ),
+    "claude-haiku-4-5-mem0": mem0_answerer(
+        model="claude-haiku-4-5",
+        provider="anthropic",
+    ),
+    "gpt-4o-mem0": mem0_answerer(
+        model="gpt-4o",
+        provider="openai",
+    ),
+    "gpt-4o-mini-mem0": mem0_answerer(
+        model="gpt-4o-mini",
+        provider="openai",
+    ),
+    # Mem0-powered GAIA answerers (agentic with memory)
+    "claude-sonnet-4-5-mem0-gaia": mem0_gaia_answerer(
+        model="claude-sonnet-4-5",
+        provider="anthropic",
+        max_steps=15,
+    ),
+    "gpt-4o-mem0-gaia": mem0_gaia_answerer(
+        model="gpt-4o",
+        provider="openai",
+        max_steps=15,
+    ),
+    "gpt-4o-mini-mem0-gaia": mem0_gaia_answerer(
+        model="gpt-4o-mini",
+        provider="openai",
+        max_steps=15,
+    ),
 }
 
 # Config name to model mapping for cost calculation
@@ -97,6 +132,15 @@ CONFIG_TO_MODEL = {
     "claude-sonnet-4-5-gaia": "claude-sonnet-4-5",
     "gpt-4o-gaia": "gpt-4o",
     "gpt-4o-mini-gaia": "gpt-4o-mini",
+    # Mem0 Q&A configs
+    "claude-sonnet-4-5-mem0": "claude-sonnet-4-5",
+    "claude-haiku-4-5-mem0": "claude-haiku-4-5",
+    "gpt-4o-mem0": "gpt-4o",
+    "gpt-4o-mini-mem0": "gpt-4o-mini",
+    # Mem0 GAIA configs
+    "claude-sonnet-4-5-mem0-gaia": "claude-sonnet-4-5",
+    "gpt-4o-mem0-gaia": "gpt-4o",
+    "gpt-4o-mini-mem0-gaia": "gpt-4o-mini",
     # Simplified config names
     "claude-sonnet-4-5": "claude-sonnet-4-5",
     "claude-haiku-4-5": "claude-haiku-4-5",

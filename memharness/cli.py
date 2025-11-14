@@ -167,17 +167,14 @@ def _calculate_cost_from_tokens(
     """
     model_ref, provider_id = _get_model_ref_from_config(config_name)
 
-    try:
-        usage = Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_write_tokens=cache_write_tokens,
-            cache_read_tokens=cache_read_tokens,
-        )
-        price_data = calc_price(usage, model_ref=model_ref, provider_id=provider_id)
-        return float(price_data.total_price) if price_data else 0.0
-    except Exception:
-        return 0.0
+    usage = Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_read_tokens=cache_read_tokens,
+    )
+    price_data = calc_price(usage, model_ref=model_ref, provider_id=provider_id)
+    return float(price_data.total_price) if price_data else 0.0
 
 
 def _compute_token_metrics(cases: list, config_name: str) -> dict[str, int | float]:
@@ -195,9 +192,15 @@ def _compute_token_metrics(cases: list, config_name: str) -> dict[str, int | flo
     total_cache_write = sum(case.metrics.get("cache_write_tokens", 0) for case in cases)
     total_cache_read = sum(case.metrics.get("cache_read_tokens", 0) for case in cases)
 
-    total_cost = _calculate_cost_from_tokens(
+    mem0_input = sum(case.metrics.get("mem0_llm_input_tokens", 0) for case in cases)
+    mem0_output = sum(case.metrics.get("mem0_llm_output_tokens", 0) for case in cases)
+    mem0_embedding = sum(case.metrics.get("mem0_embedding_tokens", 0) for case in cases)
+    mem0_cost = sum(case.metrics.get("mem0_internal_cost_usd", 0.0) for case in cases)
+
+    total_cost_primary = _calculate_cost_from_tokens(
         total_input, total_output, total_cache_write, total_cache_read, config_name
     )
+    combined_cost = total_cost_primary + mem0_cost
 
     total_cacheable = total_cache_write + total_cache_read
     cache_hit_rate = (total_cache_read / total_cacheable) if total_cacheable > 0 else 0.0
@@ -208,8 +211,13 @@ def _compute_token_metrics(cases: list, config_name: str) -> dict[str, int | flo
         "total_cache_write": total_cache_write,
         "total_cache_read": total_cache_read,
         "cache_hit_rate": cache_hit_rate,
-        "total_cost": total_cost,
-        "avg_cost": total_cost / len(cases) if cases else 0.0,
+        "mem0_input_tokens": mem0_input,
+        "mem0_output_tokens": mem0_output,
+        "mem0_embedding_tokens": mem0_embedding,
+        "mem0_cost": mem0_cost,
+        "primary_cost": total_cost_primary,
+        "total_cost": combined_cost,
+        "avg_cost": combined_cost / len(cases) if cases else 0.0,
     }
 
 
@@ -382,9 +390,17 @@ def _create_metrics_table(
     avg_output = tokens["total_output"] / num_cases if num_cases > 0 else 0
     table.add_row("Avg Input Tokens/Case", f"{avg_input:.0f}")
     table.add_row("Avg Output Tokens/Case", f"{avg_output:.0f}")
+    if tokens.get("mem0_input_tokens", 0) or tokens.get("mem0_embedding_tokens", 0):
+        table.add_row("", "")
+        table.add_row("[bold yellow]Mem0 Memory Tokens[/bold yellow]", "")
+        table.add_row("Mem0 LLM Input Tokens", f"{tokens.get('mem0_input_tokens', 0):,}")
+        table.add_row("Mem0 LLM Output Tokens", f"{tokens.get('mem0_output_tokens', 0):,}")
+        table.add_row("Mem0 Embedding Tokens", f"{tokens.get('mem0_embedding_tokens', 0):,}")
     table.add_row("", "")
 
     table.add_row("[bold yellow]Cost Metrics[/bold yellow]", "")
+    table.add_row("Primary Model Cost", f"${tokens.get('primary_cost', 0.0):.4f}")
+    table.add_row("Mem0 Internal Cost", f"${tokens.get('mem0_cost', 0.0):.4f}")
     table.add_row("Total Cost", f"${tokens['total_cost']:.4f}")
     table.add_row("Avg Cost/Case", f"${tokens['avg_cost']:.4f}")
     if tokens.get("cache_hit_rate", 0) > 0:
@@ -455,6 +471,11 @@ def _save_results(
         "total_cache_write_tokens": tokens["total_cache_write"],
         "total_cache_read_tokens": tokens["total_cache_read"],
         "cache_hit_rate": tokens["cache_hit_rate"],
+        "mem0_llm_input_tokens": tokens["mem0_input_tokens"],
+        "mem0_llm_output_tokens": tokens["mem0_output_tokens"],
+        "mem0_embedding_tokens": tokens["mem0_embedding_tokens"],
+        "mem0_internal_cost": tokens["mem0_cost"],
+        "primary_cost": tokens["primary_cost"],
         "avg_input_tokens": tokens["total_input"] / len(report.cases) if report.cases else 0,
         "avg_output_tokens": tokens["total_output"] / len(report.cases) if report.cases else 0,
         "total_cost": tokens["total_cost"],
