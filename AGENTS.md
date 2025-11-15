@@ -1,4 +1,4 @@
-# AI Agent Instructions for memharness
+# AI Agent Instructions for agentbench
 
 > **Target Audience**: AI coding agents (Cursor, Copilot, Aider, etc.)
 
@@ -9,14 +9,14 @@
 Before marking any task complete, you MUST run these commands:
 
 ```bash
-uv run ruff check memharness/ --fix
-uv run ruff format memharness/
-uv run ruff check memharness/
+uv run ruff check agentbench/ runners/ --fix
+uv run ruff format agentbench/ runners/
+uv run ruff check agentbench/ runners/
 ```
 
 **If ruff fails, the task is not complete.** Fix all issues before proceeding.
 
-**CI/CD**: GitHub Actions will automatically check ruff on PRs.
+**CI/CD**: GitHub Actions will automatically run ruff on PRs.
 
 ## Quick Reference
 
@@ -24,36 +24,36 @@ uv run ruff check memharness/
 
 ```bash
 # Code quality
-uv run ruff check memharness/ --fix  # Fix issues
-uv run ruff format memharness/       # Format code
-uv run ruff check memharness/        # Check only
+uv run ruff check agentbench/ runners/ --fix  # Fix issues
+uv run ruff format agentbench/ runners/       # Format code
+uv run ruff check agentbench/ runners/        # Check only
 
-# Run evaluation
-uv run memharness -d membench -c claude-sonnet-long-context -l 10 -v
+# Run evaluation (MemBench QA baseline)
+uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 10
 
-# Quick test
-uv run memharness -d membench -c gpt-4o-mini-long-context -l 2
+# Quick smoke test
+uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
 
-# List available datasets
-uv run memharness --list-datasets
+# Run GAIA agentic evaluation
+uv run agentbench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
 
-# List available models
-uv run memharness --list-configs
-
-# Install dependencies
-uv sync
+# Install dependencies (all extras)
+uv sync --all-extras
 ```
 
 ### File Structure
 
 ```
-memharness/
-├── cli.py                    # CLI & metrics display (DO NOT remove latency metrics!)
-├── configs.py                # Add new models/datasets here
-├── answerers/
-│   └── long_context.py       # LLM task implementation
-└── datasets/
-    └── membench.py           # Dataset loaders
+agentbench/
+├── cli.py             # CLI, dataset routing, metrics display
+├── proxy.py           # FastAPI LLM proxy (token/latency/cost tracking)
+├── runner.py          # Subprocess runner & JSON protocol
+├── datasets.py        # Dataset loaders (MemBench, LongMemEval, GAIA)
+├── evaluators.py      # QA/agentic evaluation helpers
+├── metrics.py         # CaseResult + aggregate/save helpers
+└── runners/           # Standalone CLIs executed per case
+    ├── qa/
+    └── agentic/
 ```
 
 ## Code Style Rules (Enforced by Ruff)
@@ -61,7 +61,7 @@ memharness/
 ### 1. Type Hints Required
 ```python
 # ✅ Good
-def compute_metrics(cases: list) -> dict[str, float]:
+def compute_metrics(cases: list[CaseResult]) -> dict[str, float]:
     return {"p50": 0.5}
 
 # ❌ Bad - missing type hints
@@ -73,10 +73,10 @@ def compute_metrics(cases):
 ```python
 # ❌ Bad - comment just restates code
 # Load dataset
-dataset = DATASETS[dataset_name](limit=limit)
+cases = load_membench(limit=limit)
 
 # ✅ Good - no comment needed, code is self-explanatory
-dataset = DATASETS[dataset_name](limit=limit)
+cases = load_membench(limit=limit)
 ```
 
 ### 3. Extract Magic Numbers
@@ -92,10 +92,10 @@ timeout = _REQUEST_TIMEOUT_SECONDS
 ### 4. Direct Attribute Access
 ```python
 # ❌ Bad - unnecessary getattr for known fields
-duration = getattr(case, "task_duration", 0)
+duration = getattr(result, "runner_duration_ms", 0)
 
 # ✅ Good - direct access, will fail fast if field missing
-duration = case.task_duration
+duration = result.runner_duration_ms
 ```
 
 ### 5. No Pointless Abstraction
@@ -110,93 +110,63 @@ p50 = _calculate_percentile(values, 0.50)
 
 ## Common Modifications
 
-### Adding a Model Configuration
+### Adding a Dataset Loader
 
-Edit `configs.py`:
-
-```python
-ANSWERERS = {
-    # Add your config
-    "my-model-name": long_context_answerer(
-        model="model-identifier",
-        provider="openai",  # or "anthropic"
-        base_url="http://...",  # optional for local models
-        api_key="...",  # optional
-    ),
-}
-```
-
-Then run ruff.
-
-### Adding a Dataset
-
-Edit `configs.py`:
+Edit `agentbench/datasets.py`:
 
 ```python
-from functools import partial
-
-DATASETS = {
-    "my-dataset": load_membench,  # if using default args
-    "my-dataset-variant": partial(load_membench, agent_type="ThirdAgent"),
-}
+def load_new_dataset(... ) -> list[Case]:
+    cases = [...]
+    return cases
 ```
 
-Then run ruff.
+Then register it inside `_load_dataset()` in `agentbench/cli.py` and expose any new CLI options if needed. Keep splits explicit (e.g., `"eval"`, `"validation"`) and return task metadata required by downstream evaluators.
+
+### Adding or Updating Runners
+
+Runners live under `runners/{qa|agentic}/` and are executed as standalone CLIs.
+
+1. Create a new Python script (e.g., `runners/qa/my_runner.py`).
+2. Follow the stdin/stdout JSON protocol used by existing runners.
+3. Read configuration from environment (`MODEL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`).
+4. Route **all** LLM calls through the proxy (`OpenAI(base_url=...)`) so latency/cost metrics stay accurate.
+5. Return `{"result": "...", "error": null}` style payloads.
 
 ### Modifying Metrics Display
 
-Edit `cli.py` → `_create_metrics_table()` function.
-
-**WARNING**: Do NOT remove latency metrics. Performance measurement is critical.
+Update `_print_metrics_table()` in `agentbench/cli.py` when adding/removing displayed metrics. Never drop latency rows (avg/p50/p95) or token/cost visibility. Aggregation lives in `agentbench/metrics.py`; extend `CaseResult`/`AggregatedMetrics` first, then plumb fields into the table.
 
 ## Testing Your Changes
 
 ### Minimal Test
 ```bash
-uv run memharness -d membench -c gpt-4o-mini-long-context -l 2
+uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
 ```
 
-### Full Test
+### GAIA Agentic Test
 ```bash
-uv run memharness -d membench -c claude-sonnet-long-context -l 10 -v
+uv run agentbench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
 ```
 
 ### Verify Output
 ```bash
-# Check that metrics.json exists and has correct structure
-cat runs/membench-*/metrics.json | jq .
+# Check metrics structure
+cat runs/*/metrics.json | jq .
 
-# Verify latency metrics are non-zero
-cat runs/membench-*/metrics.json | jq '.p50_latency_s, .p95_latency_s'
+# Verify latency metrics are non-zero (in milliseconds)
+cat runs/*/metrics.json | jq '.avg_llm_latency_ms, .p50_llm_latency_ms, .p95_llm_latency_ms'
 ```
 
 ## Architecture Patterns
 
-### Lazy Agent Initialization
-
-Agents are expensive to create. Use closure pattern:
-
-```python
-def long_context_answerer(...):
-    _agent = None
-
-    def get_agent() -> Agent:
-        nonlocal _agent
-        if _agent is not None:
-            return _agent
-        _agent = Agent(...)  # Initialize once
-        return _agent
-
-    async def task(inputs: dict) -> str:
-        agent = get_agent()  # Reuse across calls
-        ...
-```
+### Process-Based Runners + Proxy
+- `agentbench.cli` spawns `ProxyServer` (FastAPI) to intercept OpenAI traffic.
+- `spawn_runner()` executes a runner script per case using JSON stdin/stdout.
+- Proxy metrics accumulate per case and are flushed after each result (`proxy.metrics.clear_metrics("_current")`).
 
 ### Metrics Collection
-
-- **Tokens**: Use `increment_eval_metric("input_tokens", count)`
-- **Latency**: Automatically tracked by pydantic-evals
-- **Accuracy**: Computed from `case.assertions`
+- Capture runner duration (`runner_duration_ms`) plus proxy metrics (`llm_latency_ms`, token counts, cost).
+- `CaseResult` stores evaluator outcomes (`f1_score`, `judge_passed`) so `aggregate_results()` can derive accuracy, precision, percentiles, and judge token totals.
 
 ### Results Schema
 
@@ -204,13 +174,15 @@ def long_context_answerer(...):
 ```json
 {
   "case_id": "string",
-  "output": "string",
-  "expected": "string",
-  "correct": true,
-  "task_duration_s": 1.23,
-  "total_duration_s": 1.45,
-  "metrics": {"input_tokens": 1000, "output_tokens": 50},
-  "metadata": {}
+  "passed": true,
+  "output": "model output",
+  "error": null,
+  "runner_duration_ms": 1234.0,
+  "llm_metrics": {"llm_call_count": 2, "llm_latency_ms": [530.0, 410.0]},
+  "f1_score": 0.84,
+  "f1_passed": true,
+  "judge_passed": true,
+  "judge_metrics": {"input_tokens": 750, "output_tokens": 120}
 }
 ```
 
@@ -218,50 +190,49 @@ def long_context_answerer(...):
 ```json
 {
   "accuracy": 0.85,
+  "precision": 0.82,
   "total_cases": 100,
-  "p50_latency_s": 1.2,
-  "p95_latency_s": 2.1,
-  "p99_latency_s": 3.4,
-  "avg_input_tokens": 5000,
-  ...
+  "p50_duration_s": 1.2,
+  "p95_duration_s": 2.1,
+  "avg_llm_latency_ms": 550.0,
+  "p50_llm_latency_ms": 510.0,
+  "p95_llm_latency_ms": 760.0,
+  "total_input_tokens": 500000,
+  "total_output_tokens": 52000,
+  "total_cost_usd": 12.34,
+  "total_judge_input_tokens": 8500
 }
 ```
 
 ## Debugging
 
-### Issue: Latency shows 0.00s
-
-Check that you're accessing the correct attributes:
-- ✅ `case.task_duration`
-- ✅ `case.total_duration`
-- ❌ `case.duration_s` (doesn't exist in pydantic-evals)
+### Issue: Latency shows 0.0 ms
+- Ensure runners call the proxy URL (`OPENAI_BASE_URL`) for every OpenAI request.
+- Check that `proxy.metrics.get_metrics("_current")` is used when building the `CaseResult`.
 
 ### Issue: Ruff failing
-
 ```bash
-uv run ruff check memharness/        # See what's wrong
-uv run ruff check memharness/ --fix  # Auto-fix
-uv run ruff format memharness/       # Format
+uv run ruff check agentbench/ runners/        # Inspect failures
+uv run ruff check agentbench/ runners/ --fix  # Auto-fix
+uv run ruff format agentbench/ runners/       # Format
 ```
 
-### Issue: Import errors
-
+### Issue: Missing dependencies
 ```bash
-# Reinstall dependencies
-uv sync
+uv sync --all-extras
 ```
 
 ## Performance Notes
 
-- Default concurrency: 10 (use `-j` to adjust)
-- HTTP connections: 20 max (see `_MAX_CONNECTIONS`)
-- Request timeout: 300s (see `_REQUEST_TIMEOUT_SECONDS`)
-- Agent caching: One agent per evaluation run (via closure)
+- Default proxy port: 8000 (keep free or update `ProxyServer`/runner env).
+- HTTP concurrency + timeouts inherit from the OpenAI Python client; adjust `ProxyServer` initialization if stricter limits or retries are required.
+- Runner subprocess duration drives duration metrics—long tool chains will inflate `runner_duration_ms`, so keep expensive work minimal.
+- One proxy per evaluation run; avoid spawning additional agents inside runners unless required.
 
 ## Non-Negotiables
 
 1. 🚨 **ALWAYS** run ruff before completing tasks
-2. 🚨 **NEVER** remove latency metrics from output
+2. 🚨 **NEVER** remove latency metrics from CLI or JSON outputs
 3. 🚨 **NEVER** add redundant comments
 4. 🚨 **NEVER** skip type hints
 5. 🚨 **NEVER** commit code that doesn't pass `ruff check`
@@ -269,13 +240,13 @@ uv sync
 ## Workflow
 
 1. Make your code changes
-2. Run `uv run ruff check memharness/ --fix`
-3. Run `uv run ruff format memharness/`
-4. Verify `uv run ruff check memharness/` passes
-5. Test with `uv run memharness -d membench -c <config> -l 2`
-6. Verify latency metrics appear in output
+2. Run `uv run ruff check agentbench/ runners/ --fix`
+3. Run `uv run ruff format agentbench/ runners/`
+4. Verify `uv run ruff check agentbench/ runners/` passes
+5. Test with `uv run agentbench --dataset membench --runner qa/long_context --limit 2`
+6. Verify latency metrics appear in `runs/*/metrics.json`
 7. Task complete ✅
 
 ---
 
-**Remember**: This codebase values simplicity, performance, and correctness. When in doubt, prefer explicit, straightforward code over clever abstractions.
+**Remember**: AgentBench prioritizes simplicity, explicit control of runners, and accurate performance data. When in doubt, keep abstractions thin and ensure every LLM call flows through the proxy for auditable metrics.
