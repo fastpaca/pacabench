@@ -1,9 +1,12 @@
 """Evaluation pipeline orchestration - Case → Runner → Evaluator → Result."""
 
 import os
+from dataclasses import dataclass
+from typing import Any
 
 from openai import OpenAI
 from rich.console import Console
+from tqdm import tqdm
 
 from agentbench.proxy import ProxyServer
 from agentbench.stages import (
@@ -21,68 +24,106 @@ from agentbench.stages import (
 console = Console()
 
 
-def evaluate_case(
-    case: Case,
-    runner_path: str,
-    model: str,
-    openai_api_key: str,
-    run_id: str,
-    dataset: str,
-    proxy: ProxyServer,
-    judge_client: OpenAI,
-    judge_model: str,
-    embedding_model: str | None = None,
-) -> CaseResult:
+@dataclass
+class EvalContext:
+    """Evaluation context carrying shared state across pipeline stages."""
+
+    runner_path: str
+    model: str
+    openai_api_key: str
+    run_id: str
+    dataset: str
+    proxy: ProxyServer
+    judge_client: OpenAI
+    judge_model: str = "gpt-4o-mini"
+    embedding_model: str | None = None
+
+
+def build_env(case: Case, ctx: EvalContext) -> dict[str, str]:
+    """Stage 1: Build runner environment."""
+    env = {
+        "MODEL": ctx.model,
+        "OPENAI_API_KEY": ctx.openai_api_key,
+        "OPENAI_BASE_URL": "http://localhost:8000/v1",
+        "PATH": os.environ.get("PATH", ""),
+        "AGENTBENCH_RUN_ID": ctx.run_id,
+        "AGENTBENCH_DATASET": ctx.dataset,
+    }
+    if ctx.embedding_model:
+        env["EMBEDDING_MODEL"] = ctx.embedding_model
+    return env
+
+
+def run_runner(case: Case, env: dict[str, str], ctx: EvalContext) -> RunnerOutput:
+    """Stage 2: Execute runner."""
+    return spawn_runner(
+        case=case,
+        runner_script=f"runners/{ctx.runner_path}.py",
+        env=env,
+    )
+
+
+def collect_metrics(ctx: EvalContext) -> dict[str, Any]:
+    """Stage 3: Collect LLM metrics from proxy."""
+    metrics = ctx.proxy.metrics.get_metrics("_current")
+    ctx.proxy.metrics.clear_metrics("_current")
+    return metrics
+
+
+def evaluate(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> EvaluationOutput:
+    """Stage 4: Evaluate runner output."""
+    if runner_output.error:
+        return EvaluationOutput(passed=False)
+
+    if not runner_output.result:
+        return EvaluationOutput(passed=False)
+
+    if case.task_type == "qa":
+        if "choices" in case.inputs:
+            return evaluate_multiple_choice(case, runner_output)
+        else:
+            f1_output = evaluate_f1_score(case, runner_output)
+            judge_output = evaluate_llm_judge(
+                case,
+                runner_output,
+                model=ctx.judge_model,
+                openai_client=ctx.judge_client,
+            )
+            return EvaluationOutput(
+                passed=f1_output.f1_passed and judge_output.judge_passed,
+                f1_score=f1_output.f1_score,
+                f1_passed=f1_output.f1_passed,
+                judge_passed=judge_output.judge_passed,
+                judge_metrics=judge_output.judge_metrics,
+            )
+
+    elif case.task_type == "agentic":
+        return evaluate_gaia(
+            case,
+            runner_output,
+            model=ctx.judge_model,
+            openai_client=ctx.judge_client,
+        )
+
+    return EvaluationOutput(passed=False)
+
+def evaluate_case(case: Case, ctx: EvalContext) -> CaseResult:
     """
     Run complete evaluation pipeline for a single case.
 
-    Pipeline: Case → Runner → Evaluator → Result
+    Pipeline: Case → Env → Runner → Metrics → Evaluator → Result
 
     Args:
         case: Test case to evaluate
-        runner_path: Path to runner script
-        model: Model name
-        openai_api_key: OpenAI API key
-        run_id: Run identifier
-        dataset: Dataset name
-        proxy: Proxy server for metrics collection
-        judge_client: OpenAI client for judge
-        judge_model: Judge model name
-        embedding_model: Embedding model name (optional)
+        ctx: Evaluation context
 
     Returns:
         CaseResult with evaluation results
     """
-    env = {
-        "MODEL": model,
-        "OPENAI_API_KEY": openai_api_key,
-        "OPENAI_BASE_URL": "http://localhost:8000/v1",
-        "PATH": os.environ.get("PATH", ""),
-        "AGENTBENCH_RUN_ID": run_id,
-        "AGENTBENCH_DATASET": dataset,
-    }
-    if embedding_model:
-        env["EMBEDDING_MODEL"] = embedding_model
-
-    runner_output = spawn_runner(
-        case=case,
-        runner_script=f"runners/{runner_path}.py",
-        env=env,
-    )
-
-    llm_metrics = proxy.metrics.get_metrics("_current")
-    proxy.metrics.clear_metrics("_current")
-
-    if runner_output.error:
-        eval_output = EvaluationOutput(passed=False)
-    else:
-        eval_output = _evaluate(
-            case=case,
-            runner_output=runner_output,
-            judge_client=judge_client,
-            judge_model=judge_model,
-        )
-
+    env = build_env(case, ctx)
+    runner_output = run_runner(case, env, ctx)
+    llm_metrics = collect_metrics(ctx)
+    eval_output = evaluate(case, runner_output, ctx)
     return CaseResult(
         case_id=case.id,
         passed=eval_output.passed,
@@ -135,26 +176,23 @@ def run_evaluation(
     console.print("[green]✓ Proxy server started on http://localhost:8000[/green]")
     console.print()
 
-    judge_client = OpenAI()
+    ctx = EvalContext(
+        runner_path=runner_path,
+        model=model,
+        openai_api_key=openai_api_key,
+        run_id=run_id,
+        dataset=dataset,
+        proxy=proxy,
+        judge_client=OpenAI(),
+        judge_model=judge_model,
+        embedding_model=embedding_model,
+    )
 
     console.print("[yellow]Running evaluation...[/yellow]")
     results: list[CaseResult] = []
 
-    for idx, case in enumerate(cases, 1):
-        console.print(f"[dim]Case {idx}/{len(cases)}: {case.id}[/dim]")
-
-        result = evaluate_case(
-            case=case,
-            runner_path=runner_path,
-            model=model,
-            openai_api_key=openai_api_key,
-            run_id=run_id,
-            dataset=dataset,
-            proxy=proxy,
-            judge_client=judge_client,
-            judge_model=judge_model,
-            embedding_model=embedding_model,
-        )
+    for case in tqdm(cases, desc="Evaluating cases", unit="case"):
+        result = evaluate_case(case, ctx)
         results.append(result)
 
         if result.error:
@@ -167,54 +205,3 @@ def run_evaluation(
     proxy.stop()
 
     return results
-
-
-def _evaluate(
-    case: Case,
-    runner_output: RunnerOutput,
-    judge_client: OpenAI,
-    judge_model: str,
-) -> EvaluationOutput:
-    """
-    Dispatch to appropriate evaluator based on task type.
-
-    Args:
-        case: Test case
-        runner_output: Runner output
-        judge_client: OpenAI client for judge
-        judge_model: Judge model name
-
-    Returns:
-        EvaluationOutput with evaluation results
-    """
-    if not runner_output.result:
-        return EvaluationOutput(passed=False)
-
-    if case.task_type == "qa":
-        if "choices" in case.inputs:
-            return evaluate_multiple_choice(case, runner_output)
-        else:
-            f1_output = evaluate_f1_score(case, runner_output)
-            judge_output = evaluate_llm_judge(
-                case,
-                runner_output,
-                model=judge_model,
-                openai_client=judge_client,
-            )
-            return EvaluationOutput(
-                passed=f1_output.f1_passed and judge_output.judge_passed,
-                f1_score=f1_output.f1_score,
-                f1_passed=f1_output.f1_passed,
-                judge_passed=judge_output.judge_passed,
-                judge_metrics=judge_output.judge_metrics,
-            )
-
-    elif case.task_type == "agentic":
-        return evaluate_gaia(
-            case,
-            runner_output,
-            model=judge_model,
-            openai_client=judge_client,
-        )
-
-    return EvaluationOutput(passed=False)
