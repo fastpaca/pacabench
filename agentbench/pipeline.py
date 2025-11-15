@@ -21,6 +21,82 @@ from agentbench.stages import (
 console = Console()
 
 
+def evaluate_case(
+    case: Case,
+    runner_path: str,
+    model: str,
+    openai_api_key: str,
+    run_id: str,
+    dataset: str,
+    proxy: ProxyServer,
+    judge_client: OpenAI,
+    judge_model: str,
+    embedding_model: str | None = None,
+) -> CaseResult:
+    """
+    Run complete evaluation pipeline for a single case.
+
+    Pipeline: Case → Runner → Evaluator → Result
+
+    Args:
+        case: Test case to evaluate
+        runner_path: Path to runner script
+        model: Model name
+        openai_api_key: OpenAI API key
+        run_id: Run identifier
+        dataset: Dataset name
+        proxy: Proxy server for metrics collection
+        judge_client: OpenAI client for judge
+        judge_model: Judge model name
+        embedding_model: Embedding model name (optional)
+
+    Returns:
+        CaseResult with evaluation results
+    """
+    env = {
+        "MODEL": model,
+        "OPENAI_API_KEY": openai_api_key,
+        "OPENAI_BASE_URL": "http://localhost:8000/v1",
+        "PATH": os.environ.get("PATH", ""),
+        "AGENTBENCH_RUN_ID": run_id,
+        "AGENTBENCH_DATASET": dataset,
+    }
+    if embedding_model:
+        env["EMBEDDING_MODEL"] = embedding_model
+
+    runner_output = spawn_runner(
+        case=case,
+        runner_script=f"runners/{runner_path}.py",
+        env=env,
+    )
+
+    llm_metrics = proxy.metrics.get_metrics("_current")
+    proxy.metrics.clear_metrics("_current")
+
+    if runner_output.error:
+        eval_output = EvaluationOutput(passed=False)
+    else:
+        eval_output = _evaluate(
+            case=case,
+            runner_output=runner_output,
+            judge_client=judge_client,
+            judge_model=judge_model,
+        )
+
+    return CaseResult(
+        case_id=case.id,
+        passed=eval_output.passed,
+        output=runner_output.result,
+        error=runner_output.error,
+        runner_duration_ms=runner_output.duration_ms,
+        llm_metrics=llm_metrics,
+        f1_score=eval_output.f1_score,
+        f1_passed=eval_output.f1_passed,
+        judge_passed=eval_output.judge_passed,
+        judge_metrics=eval_output.judge_metrics,
+    )
+
+
 def run_evaluation(
     cases: list[Case],
     runner_path: str,
@@ -67,63 +143,22 @@ def run_evaluation(
     for idx, case in enumerate(cases, 1):
         console.print(f"[dim]Case {idx}/{len(cases)}: {case.id}[/dim]")
 
-        env = {
-            "MODEL": model,
-            "OPENAI_API_KEY": openai_api_key,
-            "OPENAI_BASE_URL": "http://localhost:8000/v1",
-            "PATH": os.environ.get("PATH", ""),
-            "AGENTBENCH_RUN_ID": run_id,
-            "AGENTBENCH_DATASET": dataset,
-        }
-        if embedding_model:
-            env["EMBEDDING_MODEL"] = embedding_model
-
-        runner_output = spawn_runner(
+        result = evaluate_case(
             case=case,
-            runner_script=f"runners/{runner_path}.py",
-            env=env,
-        )
-
-        llm_metrics = proxy.metrics.get_metrics("_current")
-
-        if runner_output.error:
-            console.print(f"[red]✗ Error: {runner_output.error}[/red]")
-            results.append(
-                CaseResult(
-                    case_id=case.id,
-                    passed=False,
-                    output=runner_output.result,
-                    error=runner_output.error,
-                    runner_duration_ms=runner_output.duration_ms,
-                    llm_metrics=llm_metrics,
-                )
-            )
-            proxy.metrics.clear_metrics("_current")
-            continue
-
-        eval_output = _evaluate_case(
-            case=case,
-            runner_output=runner_output,
+            runner_path=runner_path,
+            model=model,
+            openai_api_key=openai_api_key,
+            run_id=run_id,
+            dataset=dataset,
+            proxy=proxy,
             judge_client=judge_client,
             judge_model=judge_model,
+            embedding_model=embedding_model,
         )
+        results.append(result)
 
-        results.append(
-            CaseResult(
-                case_id=case.id,
-                passed=eval_output.passed,
-                output=runner_output.result,
-                error=runner_output.error,
-                runner_duration_ms=runner_output.duration_ms,
-                llm_metrics=llm_metrics,
-                f1_score=eval_output.f1_score,
-                f1_passed=eval_output.f1_passed,
-                judge_passed=eval_output.judge_passed,
-                judge_metrics=eval_output.judge_metrics,
-            )
-        )
-
-        proxy.metrics.clear_metrics("_current")
+        if result.error:
+            console.print(f"[red]✗ Error: {result.error}[/red]")
 
     console.print()
     console.print("[green]✓ Evaluation complete[/green]")
@@ -134,14 +169,14 @@ def run_evaluation(
     return results
 
 
-def _evaluate_case(
+def _evaluate(
     case: Case,
     runner_output: RunnerOutput,
     judge_client: OpenAI,
     judge_model: str,
 ) -> EvaluationOutput:
     """
-    Evaluate a single case using appropriate evaluator.
+    Dispatch to appropriate evaluator based on task type.
 
     Args:
         case: Test case
