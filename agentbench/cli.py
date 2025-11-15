@@ -1,10 +1,12 @@
 """AgentBench CLI - Process-based benchmark harness."""
 
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import typer
+from loguru import logger
 from openai import OpenAI
 from rich.console import Console
 from rich.table import Table
@@ -71,8 +73,17 @@ def main(
         "--judge-model",
         help="Model to use for LLM-as-judge evaluations.",
     ),
+    verbose: bool = typer.Option(  # noqa: B008
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose logging (INFO level).",
+    ),
 ) -> None:
     """Run AgentBench evaluation."""
+    logger.remove()
+    logger.add(sys.stderr, level="INFO" if verbose else "WARNING")
+
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         console.print("[red]Error: OPENAI_API_KEY environment variable not set[/red]")
