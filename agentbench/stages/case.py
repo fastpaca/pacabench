@@ -1,4 +1,4 @@
-"""Common types for dataset loaders."""
+"""Stage 1: Input - Test case definition."""
 
 from dataclasses import dataclass
 from enum import Enum

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from huggingface_hub import hf_hub_download
 
-from agentbench.datasets.types import Case
+from agentbench.stages.case import Case
 
 
 def load_longmemeval(

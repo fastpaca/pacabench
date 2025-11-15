@@ -3,7 +3,7 @@
 from agentbench.datasets.gaia import load_gaia
 from agentbench.datasets.longmemeval import load_longmemeval
 from agentbench.datasets.membench import load_membench
-from agentbench.datasets.types import Case, Dataset
+from agentbench.stages.case import Case, Dataset
 
 
 def load_dataset(
