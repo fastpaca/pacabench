@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from agentbench import datasets, evaluators
+from agentbench.datasets import Dataset
 from agentbench.metrics import CaseResult, aggregate_results, save_results
 from agentbench.proxy import ProxyServer
 from agentbench.runner import spawn_runner
@@ -45,12 +46,6 @@ def main(
         "--limit",
         "-l",
         help="Limit number of cases",
-    ),
-    split: str | None = typer.Option(  # noqa: B008
-        None,
-        "--split",
-        "-s",
-        help="Dataset split",
     ),
     output_dir: Path | None = typer.Option(  # noqa: B008
         None,
@@ -106,7 +101,12 @@ def main(
     console.print()
 
     console.print(f"[yellow]Loading {dataset} dataset...[/yellow]")
-    cases = _load_dataset(dataset, split, limit)
+    try:
+        dataset_enum = Dataset(dataset)
+    except ValueError as e:
+        raise ValueError(f"Unknown dataset: {dataset}") from e
+
+    cases = datasets.load_dataset(dataset_enum, limit=limit)
     console.print(f"[green]✓ Loaded {len(cases)} cases[/green]")
     console.print()
 
@@ -194,7 +194,6 @@ def main(
         "runner": runner,
         "model": model,
         "limit": limit,
-        "split": split,
         "timestamp": datetime.now().isoformat(),
         "run_id": run_id,
         "upstream_base_url": upstream_base_url,
@@ -209,28 +208,6 @@ def main(
     _print_metrics_table(metrics)
 
     proxy.stop()
-
-
-def _load_dataset(name: str, split: str | None, limit: int | None) -> list:
-    """Load dataset by name."""
-    if name == "membench":
-        return datasets.load_membench(
-            split=split or "eval",
-            limit=limit,
-        )
-    elif name == "longmemeval":
-        return datasets.load_longmemeval(
-            split=split or "s_cleaned",
-            limit=limit,
-        )
-    elif name == "gaia":
-        return datasets.load_gaia(
-            level=split or "all",
-            split="validation",
-            limit=limit,
-        )
-    else:
-        raise ValueError(f"Unknown dataset: {name}")
 
 
 def _evaluate_case(
