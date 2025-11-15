@@ -1,8 +1,8 @@
 """Evaluators for different task types."""
 
-import re
 from typing import Any
 
+import tiktoken
 from openai import OpenAI
 
 
@@ -51,11 +51,9 @@ def evaluate_f1_score(
     if not output or not expected:
         return False, 0.0
 
-    response = output.strip().lower()
-    expected_lower = expected.strip().lower()
-
-    response_tokens = set(_tokenize(response))
-    expected_tokens = set(_tokenize(expected_lower))
+    encoding = tiktoken.get_encoding("cl100k_base")
+    response_tokens = set(encoding.encode(output.strip().lower()))
+    expected_tokens = set(encoding.encode(expected.strip().lower()))
 
     if not expected_tokens:
         return False, 0.0
@@ -195,8 +193,3 @@ Respond with ONLY "YES" or "NO"."""
     }
 
     return judgment.startswith("YES"), usage
-
-
-def _tokenize(text: str) -> list[str]:
-    """Simple whitespace tokenization with punctuation handling."""
-    return [token for token in re.findall(r"\b\w+\b", text.lower()) if token]
