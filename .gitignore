@@ -208,3 +208,5 @@ __marimo__/
 
 runs/
 .qdrant/
+
+.DS_Store
