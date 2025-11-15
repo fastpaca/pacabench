@@ -28,6 +28,7 @@ dependencies = [
     "mem0ai>=1.0.0",
     "memorisdk>=2.3.2",
     "ruff>=0.14.4",
+    "gitpython>=3.1.40",
 ]
 
 [project.scripts]
