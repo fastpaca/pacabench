@@ -20,16 +20,57 @@ console = Console()
 
 @app.command()
 def main(
-    dataset: str = typer.Option(
-        ..., "--dataset", "-d", help="Dataset name (membench, longmemeval, gaia)"
+    dataset: str = typer.Option(  # noqa: B008
+        ...,
+        "--dataset",
+        "-d",
+        help="Dataset name (membench, longmemeval, gaia)",
     ),
-    runner: str = typer.Option(
-        ..., "--runner", "-r", help="Runner path (e.g., qa/long_context, agentic/mem0)"
+    runner: str = typer.Option(  # noqa: B008
+        ...,
+        "--runner",
+        "-r",
+        help="Runner path (e.g., qa/long_context, agentic/mem0)",
     ),
-    model: str = typer.Option("gpt-4o-mini", "--model", "-m", help="Model name"),
-    limit: int | None = typer.Option(None, "--limit", "-l", help="Limit number of cases"),
-    split: str | None = typer.Option(None, "--split", "-s", help="Dataset split"),
-    output_dir: Path | None = typer.Option(None, "--output", "-o", help="Output directory"),
+    model: str = typer.Option(  # noqa: B008
+        "gpt-4o-mini",
+        "--model",
+        "-m",
+        help="Model name",
+    ),
+    limit: int | None = typer.Option(  # noqa: B008
+        None,
+        "--limit",
+        "-l",
+        help="Limit number of cases",
+    ),
+    split: str | None = typer.Option(  # noqa: B008
+        None,
+        "--split",
+        "-s",
+        help="Dataset split",
+    ),
+    output_dir: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output",
+        "-o",
+        help="Output directory",
+    ),
+    upstream_base_url: str | None = typer.Option(  # noqa: B008
+        None,
+        "--upstream-base-url",
+        help="OpenAI-compatible base URL for the proxy to forward requests to.",
+    ),
+    embedding_model: str | None = typer.Option(  # noqa: B008
+        None,
+        "--embedding-model",
+        help="Embedding model name to expose to runners.",
+    ),
+    judge_model: str = typer.Option(  # noqa: B008
+        "gpt-4o-mini",
+        "--judge-model",
+        help="Model to use for LLM-as-judge evaluations.",
+    ),
 ) -> None:
     """Run AgentBench evaluation."""
     openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -44,7 +85,11 @@ def main(
     console.print()
 
     console.print("[yellow]Starting LLM proxy server...[/yellow]")
-    proxy = ProxyServer(port=8000, openai_api_key=openai_api_key)
+    proxy = ProxyServer(
+        port=8000,
+        openai_api_key=openai_api_key,
+        upstream_base_url=upstream_base_url,
+    )
     proxy.start()
     console.print("[green]✓ Proxy server started on http://localhost:8000[/green]")
     console.print()
@@ -55,6 +100,8 @@ def main(
     console.print()
 
     judge_client = OpenAI()
+
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     console.print("[yellow]Running evaluation...[/yellow]")
     results: list[CaseResult] = []
@@ -67,7 +114,11 @@ def main(
             "OPENAI_API_KEY": openai_api_key,
             "OPENAI_BASE_URL": "http://localhost:8000/v1",
             "PATH": os.environ.get("PATH", ""),
+            "AGENTBENCH_RUN_ID": run_id,
+            "AGENTBENCH_DATASET": dataset,
         }
+        if embedding_model:
+            env["EMBEDDING_MODEL"] = embedding_model
 
         runner_result = spawn_runner(
             runner_script=f"runners/{runner}.py",
@@ -97,6 +148,7 @@ def main(
             case=case,
             output=runner_result.result,
             judge_client=judge_client,
+            judge_model=judge_model,
         )
 
         results.append(
@@ -133,6 +185,10 @@ def main(
         "limit": limit,
         "split": split,
         "timestamp": datetime.now().isoformat(),
+        "run_id": run_id,
+        "upstream_base_url": upstream_base_url,
+        "embedding_model": embedding_model,
+        "judge_model": judge_model,
     }
 
     save_results(output_dir, results, metrics, config)
@@ -167,7 +223,10 @@ def _load_dataset(name: str, split: str | None, limit: int | None) -> list:
 
 
 def _evaluate_case(
-    case, output: str | None, judge_client: OpenAI
+    case,
+    output: str | None,
+    judge_client: OpenAI,
+    judge_model: str,
 ) -> tuple[bool, float | None, bool | None, bool | None, dict | None]:
     """Evaluate a single case."""
     if not output:
@@ -185,6 +244,7 @@ def _evaluate_case(
                 output,
                 case.expected_output,
                 case.inputs,
+                model=judge_model,
                 openai_client=judge_client,
             )
             return passed_f1 and passed_judge, f1_score, passed_f1, passed_judge, judge_metrics
@@ -194,6 +254,7 @@ def _evaluate_case(
             output,
             case.expected_output,
             case.inputs,
+            model=judge_model,
             openai_client=judge_client,
         )
         return passed, None, None, passed, judge_metrics
