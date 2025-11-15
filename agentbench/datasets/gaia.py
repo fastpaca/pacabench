@@ -4,7 +4,7 @@ from typing import Any
 
 from datasets import load_dataset
 
-from agentbench.datasets.types import Case
+from agentbench.stages.case import Case
 
 
 def load_gaia(

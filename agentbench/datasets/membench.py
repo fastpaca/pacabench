@@ -6,7 +6,7 @@ from pathlib import Path
 from git import Repo
 from loguru import logger
 
-from agentbench.datasets.types import Case
+from agentbench.stages.case import Case
 
 _MEMBENCH_GITHUB_REPO_URL = "https://github.com/import-myself/Membench.git"
 _MEMBENCH_GITHUB_BRANCH = "main"

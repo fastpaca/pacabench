@@ -1,4 +1,4 @@
-"""Metrics collection and aggregation."""
+"""Stage 4: Results - Metrics collection and aggregation."""
 
 import json
 from dataclasses import dataclass
