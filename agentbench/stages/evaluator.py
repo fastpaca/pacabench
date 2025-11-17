@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 import tiktoken
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from agentbench.stages.case import Case
 from agentbench.stages.runner import RunnerOutput
@@ -87,11 +87,11 @@ def evaluate_f1_score(
     return EvaluationOutput(passed=f1_passed, f1_score=f1, f1_passed=f1_passed)
 
 
-def evaluate_llm_judge(
+async def evaluate_llm_judge(
     case: Case,
     runner_output: RunnerOutput,
     model: str = "gpt-4o-mini",
-    openai_client: OpenAI | None = None,
+    openai_client: AsyncOpenAI | None = None,
 ) -> EvaluationOutput:
     """
     Evaluate using LLM-as-judge for semantic equivalence.
@@ -135,9 +135,9 @@ Does the model's answer convey the same information as the expected answer? Cons
 Respond with ONLY "YES" or "NO"."""
 
     if openai_client is None:
-        openai_client = OpenAI()
+        openai_client = AsyncOpenAI()
 
-    completion = openai_client.chat.completions.create(
+    completion = await openai_client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
@@ -159,11 +159,11 @@ Respond with ONLY "YES" or "NO"."""
     )
 
 
-def evaluate_gaia(
+async def evaluate_gaia(
     case: Case,
     runner_output: RunnerOutput,
     model: str = "gpt-4o-mini",
-    openai_client: OpenAI | None = None,
+    openai_client: AsyncOpenAI | None = None,
 ) -> EvaluationOutput:
     """
     Evaluate GAIA answer using LLM-as-judge.
@@ -209,9 +209,9 @@ Does the assistant's answer match the expected answer? Consider:
 Respond with ONLY "YES" or "NO"."""
 
     if openai_client is None:
-        openai_client = OpenAI()
+        openai_client = AsyncOpenAI()
 
-    completion = openai_client.chat.completions.create(
+    completion = await openai_client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,

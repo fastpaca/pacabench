@@ -1,5 +1,6 @@
 """AgentBench CLI - Process-based benchmark harness."""
 
+import asyncio
 import os
 import sys
 from datetime import datetime
@@ -99,16 +100,18 @@ def main(
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    results = run_evaluation(
-        cases=cases,
-        runner_path=runner,
-        model=model,
-        openai_api_key=openai_api_key,
-        run_id=run_id,
-        dataset=dataset,
-        embedding_model=embedding_model,
-        judge_model=judge_model,
-        upstream_base_url=upstream_base_url,
+    results = asyncio.run(
+        run_evaluation(
+            cases=cases,
+            runner_path=runner,
+            model=model,
+            openai_api_key=openai_api_key,
+            run_id=run_id,
+            dataset=dataset,
+            embedding_model=embedding_model,
+            judge_model=judge_model,
+            upstream_base_url=upstream_base_url,
+        )
     )
 
     metrics = aggregate_results(results)

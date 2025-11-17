@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 from rich.console import Console
 from tqdm import tqdm
 
@@ -34,7 +34,7 @@ class EvalContext:
     run_id: str
     dataset: str
     proxy: ProxyServer
-    judge_client: OpenAI
+    judge_client: AsyncOpenAI
     judge_model: str = "gpt-4o-mini"
     embedding_model: str | None = None
 
@@ -54,9 +54,9 @@ def build_env(case: Case, ctx: EvalContext) -> dict[str, str]:
     return env
 
 
-def run_runner(case: Case, env: dict[str, str], ctx: EvalContext) -> RunnerOutput:
+async def run_runner(case: Case, env: dict[str, str], ctx: EvalContext) -> RunnerOutput:
     """Stage 2: Execute runner."""
-    return spawn_runner(
+    return await spawn_runner(
         case=case,
         runner_script=f"runners/{ctx.runner_path}.py",
         env=env,
@@ -70,7 +70,7 @@ def collect_metrics(ctx: EvalContext) -> dict[str, Any]:
     return metrics
 
 
-def evaluate(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> EvaluationOutput:
+async def evaluate(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> EvaluationOutput:
     """Stage 4: Evaluate runner output."""
     if runner_output.error:
         return EvaluationOutput(passed=False)
@@ -83,7 +83,7 @@ def evaluate(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> Evalu
             return evaluate_multiple_choice(case, runner_output)
         else:
             f1_output = evaluate_f1_score(case, runner_output)
-            judge_output = evaluate_llm_judge(
+            judge_output = await evaluate_llm_judge(
                 case,
                 runner_output,
                 model=ctx.judge_model,
@@ -98,7 +98,7 @@ def evaluate(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> Evalu
             )
 
     elif case.task_type == "agentic":
-        return evaluate_gaia(
+        return await evaluate_gaia(
             case,
             runner_output,
             model=ctx.judge_model,
@@ -108,7 +108,7 @@ def evaluate(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> Evalu
     return EvaluationOutput(passed=False)
 
 
-def evaluate_case(case: Case, ctx: EvalContext) -> CaseResult:
+async def evaluate_case(case: Case, ctx: EvalContext) -> CaseResult:
     """
     Run complete evaluation pipeline for a single case.
 
@@ -122,9 +122,9 @@ def evaluate_case(case: Case, ctx: EvalContext) -> CaseResult:
         CaseResult with evaluation results
     """
     env = build_env(case, ctx)
-    runner_output = run_runner(case, env, ctx)
+    runner_output = await run_runner(case, env, ctx)
     llm_metrics = collect_metrics(ctx)
-    eval_output = evaluate(case, runner_output, ctx)
+    eval_output = await evaluate(case, runner_output, ctx)
     return CaseResult(
         case_id=case.id,
         passed=eval_output.passed,
@@ -139,7 +139,7 @@ def evaluate_case(case: Case, ctx: EvalContext) -> CaseResult:
     )
 
 
-def run_evaluation(
+async def run_evaluation(
     cases: list[Case],
     runner_path: str,
     model: str,
@@ -184,7 +184,7 @@ def run_evaluation(
         run_id=run_id,
         dataset=dataset,
         proxy=proxy,
-        judge_client=OpenAI(),
+        judge_client=AsyncOpenAI(),
         judge_model=judge_model,
         embedding_model=embedding_model,
     )
@@ -193,7 +193,7 @@ def run_evaluation(
     results: list[CaseResult] = []
 
     for case in tqdm(cases, desc="Evaluating cases", unit="case"):
-        result = evaluate_case(case, ctx)
+        result = await evaluate_case(case, ctx)
         results.append(result)
 
         if result.error:
