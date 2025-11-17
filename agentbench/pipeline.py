@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import portpicker
 from openai import AsyncOpenAI
 from rich.console import Console
 from tqdm import tqdm
@@ -34,6 +35,7 @@ class EvalContext:
     run_id: str
     dataset: str
     proxy: ProxyServer
+    proxy_port: int
     judge_client: AsyncOpenAI
     judge_model: str = "gpt-4o-mini"
     embedding_model: str | None = None
@@ -44,7 +46,7 @@ def build_env(case: Case, ctx: EvalContext) -> dict[str, str]:
     env = {
         "MODEL": ctx.model,
         "OPENAI_API_KEY": ctx.openai_api_key,
-        "OPENAI_BASE_URL": "http://localhost:8000/v1",
+        "OPENAI_BASE_URL": f"http://localhost:{ctx.proxy_port}/v1",
         "PATH": os.environ.get("PATH", ""),
         "AGENTBENCH_RUN_ID": ctx.run_id,
         "AGENTBENCH_DATASET": ctx.dataset,
@@ -167,14 +169,15 @@ async def run_evaluation(
     Returns:
         List of case results
     """
-    console.print("[yellow]Starting LLM proxy server...[/yellow]")
+    proxy_port = portpicker.pick_unused_port()
+    console.print(f"[yellow]Starting LLM proxy server on port {proxy_port}...[/yellow]")
     proxy = ProxyServer(
-        port=8000,
+        port=proxy_port,
         openai_api_key=openai_api_key,
         upstream_base_url=upstream_base_url,
     )
     proxy.start()
-    console.print("[green]✓ Proxy server started on http://localhost:8000[/green]")
+    console.print(f"[green]✓ Proxy server started on http://localhost:{proxy_port}[/green]")
     console.print()
 
     ctx = EvalContext(
@@ -184,6 +187,7 @@ async def run_evaluation(
         run_id=run_id,
         dataset=dataset,
         proxy=proxy,
+        proxy_port=proxy_port,
         judge_client=AsyncOpenAI(),
         judge_model=judge_model,
         embedding_model=embedding_model,
