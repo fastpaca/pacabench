@@ -9,10 +9,9 @@ from pydantic_ai import Agent, ModelRequest, ModelResponse, TextPart, UserPrompt
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from agentbench.context import EvalContext
+from agentbench.metrics import collect_metrics
 from agentbench.runners.base import Runner, RunnerMetrics, RunnerOutput
-from agentbench.stages.result import collect_metrics
-from agentbench.types import Case
+from agentbench.types import Case, EvalContext
 
 
 class LongContextRunner(Runner):

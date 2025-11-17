@@ -1,11 +1,12 @@
 """Base runner abstractions."""
 
+from __future__ import annotations
+
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from agentbench.context import EvalContext
-from agentbench.types import Case
+from agentbench.types import Case, EvalContext
 
 
 class RunnerMetrics(BaseModel):
