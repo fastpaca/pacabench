@@ -1,12 +1,17 @@
-"""MemBench dataset loader."""
+"""MemBench dataset."""
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
+import tiktoken
 from git import Repo
 from loguru import logger
+from openai import AsyncOpenAI
 
+from agentbench.datasets.base import Dataset
 from agentbench.stages.case import Case
+from agentbench.stages.result import CaseResult
 
 _MEMBENCH_GITHUB_REPO_URL = "https://github.com/import-myself/Membench.git"
 _MEMBENCH_GITHUB_BRANCH = "main"
@@ -82,61 +87,6 @@ def _record_to_case(record: dict, dataset_name: str) -> Case:
     )
 
 
-def load_membench(
-    agent_type: str = "FirstAgent",
-    limit: int | None = None,
-    cache_dir: Path | str | None = None,
-) -> list[Case]:
-    """
-    Load MemBench dataset.
-
-    Args:
-        agent_type: "FirstAgent" or "ThirdAgent"
-        limit: Optional limit on number of samples
-        cache_dir: Optional cache directory for git repository (defaults to ~/.cache/agentbench)
-
-    Returns:
-        List of Cases
-    """
-    if agent_type not in ("FirstAgent", "ThirdAgent"):
-        raise ValueError(
-            f"Invalid agent_type '{agent_type}'. Available: ['FirstAgent', 'ThirdAgent']"
-        )
-
-    cache_dir = Path.home() / ".cache" / "agentbench" if cache_dir is None else Path(cache_dir)
-    repo_dir = cache_dir / "Membench"
-    _ensure_membench_repo(repo_dir)
-
-    source_dir = repo_dir / "MemData" / agent_type
-    if not source_dir.exists():
-        raise FileNotFoundError(f"MemBench data not found at {source_dir}")
-
-    records_with_names: list[tuple[dict, str]] = []
-    for json_path in sorted(source_dir.glob("*.json")):
-        try:
-            with json_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            records = data.get("events") or data.get("multi_agent") or []
-            for record in records:
-                records_with_names.append((record, json_path.stem))
-                if limit is not None and len(records_with_names) >= limit:
-                    break
-
-            if limit is not None and len(records_with_names) >= limit:
-                break
-        except Exception as e:
-            logger.warning(f"Failed to load MemBench file {json_path}: {e}")
-            continue
-
-    records_with_names.sort(key=lambda r: r[0]["tid"])
-
-    if limit is not None:
-        records_with_names = records_with_names[:limit]
-
-    return [_record_to_case(record, dataset_name) for record, dataset_name in records_with_names]
-
-
 def _ensure_membench_repo(repo_dir: Path) -> None:
     """Clone or update MemBench repository from GitHub."""
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -154,3 +104,165 @@ def _ensure_membench_repo(repo_dir: Path) -> None:
             Repo.clone_from(_MEMBENCH_GITHUB_REPO_URL, repo_dir, branch=_MEMBENCH_GITHUB_BRANCH)
         except Exception as e:
             raise RuntimeError(f"Failed to clone MemBench repository: {e}") from e
+
+
+class MemBenchDataset(Dataset):
+    """MemBench QA dataset."""
+
+    agent_type: str = "FirstAgent"
+
+    async def load(self, limit: int | None = None) -> Iterable[Case]:
+        """Load MemBench cases."""
+        if self.agent_type not in ("FirstAgent", "ThirdAgent"):
+            raise ValueError(
+                f"Invalid agent_type '{self.agent_type}'. Available: ['FirstAgent', 'ThirdAgent']"
+            )
+
+        cache_dir = Path.home() / ".cache" / "agentbench"
+        repo_dir = cache_dir / "Membench"
+        _ensure_membench_repo(repo_dir)
+
+        source_dir = repo_dir / "MemData" / self.agent_type
+        if not source_dir.exists():
+            raise FileNotFoundError(f"MemBench data not found at {source_dir}")
+
+        records_with_names: list[tuple[dict, str]] = []
+        for json_path in sorted(source_dir.glob("*.json")):
+            try:
+                with json_path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                records = data.get("events") or data.get("multi_agent") or []
+                for record in records:
+                    records_with_names.append((record, json_path.stem))
+                    if limit is not None and len(records_with_names) >= limit:
+                        break
+
+                if limit is not None and len(records_with_names) >= limit:
+                    break
+            except Exception as e:
+                logger.warning(f"Failed to load MemBench file {json_path}: {e}")
+                continue
+
+        records_with_names.sort(key=lambda r: r[0]["tid"])
+
+        if limit is not None:
+            records_with_names = records_with_names[:limit]
+
+        return [
+            _record_to_case(record, dataset_name) for record, dataset_name in records_with_names
+        ]
+
+    async def eval(
+        self,
+        case: Case,
+        result: CaseResult,
+        judge_model: str = "gpt-4o-mini",
+        judge_client: AsyncOpenAI | None = None,
+    ) -> CaseResult:
+        """Evaluate MemBench case using F1 and/or LLM judge."""
+        if result.error or not result.output:
+            return result.model_copy(update={"passed": False})
+
+        if "choices" in case.inputs:
+            passed = self._evaluate_multiple_choice(case, result.output)
+            return result.model_copy(update={"passed": passed, "f1_passed": passed})
+        else:
+            f1_score, f1_passed = self._evaluate_f1_score(case, result.output)
+            judge_passed, judge_metrics = await self._evaluate_llm_judge(
+                case, result.output, judge_model, judge_client
+            )
+            return result.model_copy(
+                update={
+                    "passed": f1_passed and judge_passed,
+                    "f1_score": f1_score,
+                    "f1_passed": f1_passed,
+                    "judge_passed": judge_passed,
+                    "judge_metrics": judge_metrics,
+                }
+            )
+
+    def _evaluate_multiple_choice(self, case: Case, output: str) -> bool:
+        """Evaluate multiple choice answer by comparing first letter."""
+        expected = case.expected_output
+        if not output or not expected:
+            return False
+
+        response = output.strip().upper()
+        choice = response[0] if response else ""
+        expected_choice = expected.strip().upper()
+        return choice == expected_choice
+
+    def _evaluate_f1_score(self, case: Case, output: str) -> tuple[float, bool]:
+        """Evaluate using F1 score based on token overlap."""
+        expected = case.expected_output
+        if not output or not expected:
+            return 0.0, False
+
+        encoding = tiktoken.get_encoding("cl100k_base")
+        response_tokens = set(encoding.encode(output.strip().lower()))
+        expected_tokens = set(encoding.encode(expected.strip().lower()))
+
+        if not expected_tokens:
+            return 0.0, False
+
+        overlap = response_tokens & expected_tokens
+        if not overlap:
+            return 0.0, False
+
+        precision = len(overlap) / len(response_tokens) if response_tokens else 0.0
+        recall = len(overlap) / len(expected_tokens) if expected_tokens else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        return f1, f1 > 0.5
+
+    async def _evaluate_llm_judge(
+        self,
+        case: Case,
+        output: str,
+        model: str,
+        judge_client: AsyncOpenAI | None,
+    ) -> tuple[bool, dict[str, int]]:
+        """Evaluate using LLM-as-judge for semantic equivalence."""
+        expected = case.expected_output
+        if not output or not expected:
+            return False, {"input_tokens": 0, "output_tokens": 0}
+
+        response = output.strip()
+        expected_text = expected.strip()
+        question = case.inputs.get("question", "N/A")
+
+        prompt = f"""You are evaluating if a model's answer is semantically equivalent to the expected answer.
+
+Question: {question}
+
+Expected Answer: {expected_text}
+
+Model's Answer: {response}
+
+Does the model's answer convey the same information as the expected answer? Consider:
+- Paraphrasing is acceptable
+- Extra explanation is acceptable if core answer is present
+- Minor details can differ if main point matches
+
+Respond with ONLY "YES" or "NO"."""
+
+        if judge_client is None:
+            judge_client = AsyncOpenAI()
+
+        completion = await judge_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+        )
+
+        judgment = completion.choices[0].message.content or ""
+        judgment = judgment.strip().upper()
+
+        usage = {
+            "input_tokens": completion.usage.prompt_tokens if completion.usage else 0,
+            "output_tokens": completion.usage.completion_tokens if completion.usage else 0,
+        }
+
+        judge_passed = judgment.startswith("YES")
+        return judge_passed, usage
