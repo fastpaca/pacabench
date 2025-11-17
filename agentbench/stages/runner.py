@@ -1,7 +1,7 @@
 """Stage 2: Execution - Subprocess runner for executing test cases."""
 
+import asyncio
 import json
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -25,7 +25,7 @@ class RunnerError(Exception):
     pass
 
 
-def spawn_runner(
+async def spawn_runner(
     case: Case,
     runner_script: str,
     env: dict[str, str],
@@ -61,23 +61,27 @@ def spawn_runner(
     }
 
     start_time = time.time()
+    process: asyncio.subprocess.Process | None = None
 
     try:
-        process = subprocess.Popen(
-            [sys.executable, str(runner_path)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(runner_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
-            text=True,
         )
 
-        stdout, stderr = process.communicate(
-            input=json.dumps(case_data),
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            process.communicate(input=json.dumps(case_data).encode()),
             timeout=timeout,
         )
 
         duration_ms = (time.time() - start_time) * 1000
+
+        stdout = stdout_bytes.decode() if stdout_bytes else ""
+        stderr = stderr_bytes.decode() if stderr_bytes else ""
 
         if process.returncode != 0:
             return RunnerOutput(
@@ -113,8 +117,10 @@ def spawn_runner(
                 duration_ms=duration_ms,
             )
 
-    except subprocess.TimeoutExpired:
-        process.kill()
+    except TimeoutError:
+        if process and process.returncode is None:
+            process.kill()
+            await process.wait()
         duration_ms = (time.time() - start_time) * 1000
         return RunnerOutput(
             result=None,
