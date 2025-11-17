@@ -2,11 +2,13 @@
 
 import asyncio
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from agentbench.context import EvalContext
 from agentbench.stages.case import Case
 
 
@@ -25,10 +27,15 @@ class RunnerError(Exception):
     pass
 
 
+async def run(case: Case, ctx: EvalContext) -> RunnerOutput:
+    """Execute runner for a test case."""
+    return await spawn_runner(case=case, runner_script=f"runners/{ctx.runner_path}.py", ctx=ctx)
+
+
 async def spawn_runner(
     case: Case,
     runner_script: str,
-    env: dict[str, str],
+    ctx: EvalContext,
     timeout: float = 300.0,
 ) -> RunnerOutput:
     """
@@ -37,7 +44,7 @@ async def spawn_runner(
     Args:
         case: Test case to execute
         runner_script: Path to runner script (e.g., "runners/qa/long_context_runner.py")
-        env: Environment variables to pass to runner
+        ctx: Evaluation context
         timeout: Maximum execution time in seconds
 
     Returns:
@@ -54,6 +61,7 @@ async def spawn_runner(
     if not runner_path.exists():
         raise RunnerError(f"Runner script not found: {runner_path}")
 
+    env = build_env(case, ctx)
     case_data = {
         "id": case.id,
         "task_type": case.task_type,
@@ -134,3 +142,18 @@ async def spawn_runner(
             error=f"Runner execution failed: {e}",
             duration_ms=duration_ms,
         )
+
+
+def build_env(case: Case, ctx: EvalContext) -> dict[str, str]:
+    """Build runner environment variables."""
+    env = {
+        "MODEL": ctx.model,
+        "OPENAI_API_KEY": ctx.openai_api_key,
+        "OPENAI_BASE_URL": f"http://localhost:{ctx.proxy_port}/v1",
+        "PATH": os.environ.get("PATH", ""),
+        "AGENTBENCH_RUN_ID": ctx.run_id,
+        "AGENTBENCH_DATASET": ctx.dataset,
+    }
+    if ctx.embedding_model:
+        env["EMBEDDING_MODEL"] = ctx.embedding_model
+    return env

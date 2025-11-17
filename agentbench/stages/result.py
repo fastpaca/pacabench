@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 
+from agentbench.context import EvalContext
+
 
 @dataclass
 class CaseResult:
@@ -270,3 +272,10 @@ def _empty_metrics() -> AggregatedMetrics:
         total_cost_usd=0.0,
         avg_cost_per_case_usd=0.0,
     )
+
+
+def collect_metrics(ctx: EvalContext) -> dict[str, Any]:
+    """Collect LLM metrics from proxy."""
+    metrics = ctx.proxy.metrics.get_metrics("_current")
+    ctx.proxy.metrics.clear_metrics("_current")
+    return metrics

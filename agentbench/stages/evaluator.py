@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import tiktoken
 from openai import AsyncOpenAI
 
+from agentbench.context import EvalContext
 from agentbench.stages.case import Case
 from agentbench.stages.runner import RunnerOutput
 
@@ -18,6 +19,43 @@ class EvaluationOutput:
     f1_passed: bool | None = None
     judge_passed: bool | None = None
     judge_metrics: dict[str, int] | None = None
+
+
+async def run(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> EvaluationOutput:
+    """Evaluate runner output."""
+    if runner_output.error:
+        return EvaluationOutput(passed=False)
+
+    if not runner_output.result:
+        return EvaluationOutput(passed=False)
+
+    if case.task_type == "qa":
+        if "choices" in case.inputs:
+            return evaluate_multiple_choice(case, runner_output)
+        else:
+            f1_output = evaluate_f1_score(case, runner_output)
+            judge_output = await evaluate_llm_judge(
+                case,
+                runner_output,
+                model=ctx.judge_model,
+                openai_client=ctx.judge_client,
+            )
+            return EvaluationOutput(
+                passed=f1_output.f1_passed and judge_output.judge_passed,
+                f1_score=f1_output.f1_score,
+                f1_passed=f1_output.f1_passed,
+                judge_passed=judge_output.judge_passed,
+                judge_metrics=judge_output.judge_metrics,
+            )
+    elif case.task_type == "agentic":
+        return await evaluate_gaia(
+            case,
+            runner_output,
+            model=ctx.judge_model,
+            openai_client=ctx.judge_client,
+        )
+
+    return EvaluationOutput(passed=False)
 
 
 def evaluate_multiple_choice(
