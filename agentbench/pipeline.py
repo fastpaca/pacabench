@@ -13,13 +13,20 @@ from tqdm import tqdm
 from agentbench.datasets.base import Dataset
 from agentbench.proxy import ProxyServer
 from agentbench.results import Results
-from agentbench.runners.base import Runner
-from agentbench.types import Case, CaseResult, EvalContext, JudgeMetrics
+from agentbench.types import Case, CaseResult, JudgeMetrics, Runner, RunnerContext, RunnerMetrics
 
 console = Console()
 
 
-async def run_case(case: Case, ctx: EvalContext) -> CaseResult:
+async def run_case(
+    case: Case,
+    runner: Runner,
+    runner_ctx: RunnerContext,
+    dataset: Dataset,
+    proxy: ProxyServer,
+    judge_model: str,
+    judge_client: AsyncOpenAI,
+) -> CaseResult:
     """
     Run complete evaluation pipeline for a single case.
 
@@ -27,18 +34,30 @@ async def run_case(case: Case, ctx: EvalContext) -> CaseResult:
 
     Args:
         case: Test case to evaluate
-        ctx: Evaluation context
+        runner: Runner instance
+        runner_ctx: Runner execution context
+        dataset: Dataset instance
+        proxy: Proxy server instance
+        judge_model: Judge model name
+        judge_client: OpenAI client for judge
 
     Returns:
         CaseResult with evaluation results
     """
-    runner_output = await ctx.runner.run_case(case, ctx)
-    evaluation, judge_metrics_dict = await ctx.dataset.eval(
+    runner_output = await runner.run_case(case, runner_ctx)
+
+    llm_metrics = proxy.metrics.get_metrics("_current")
+    metrics = RunnerMetrics(
+        model_duration_ms=runner_output.duration_ms,
+        llm_metrics=llm_metrics,
+    )
+
+    evaluation, judge_metrics_dict = await dataset.eval(
         case,
         runner_output.output,
         runner_output.error,
-        judge_model=ctx.judge_model,
-        judge_client=ctx.judge_client,
+        judge_model=judge_model,
+        judge_client=judge_client,
     )
     judge_metrics = None
     if judge_metrics_dict:
@@ -50,7 +69,7 @@ async def run_case(case: Case, ctx: EvalContext) -> CaseResult:
         case_id=case.id,
         output=runner_output.output,
         error=runner_output.error,
-        metrics=runner_output.metrics,
+        metrics=metrics,
         evaluation=evaluation,
         judge_metrics=judge_metrics,
     )
@@ -96,25 +115,27 @@ async def run(
     console.print()
 
     results = Results(output_dir=output_dir, config=config, run_id=run_id)
-    ctx = EvalContext(
-        dataset=dataset,
-        runner=runner,
-        results=results,
-        judge_model=judge_model,
-        judge_client=AsyncOpenAI(),
+    runner_ctx = RunnerContext(
         model=model,
-        openai_api_key=openai_api_key,
-        run_id=run_id,
-        proxy=proxy,
         proxy_port=proxy_port,
+        openai_api_key=openai_api_key,
         embedding_model=embedding_model,
     )
+    judge_client = AsyncOpenAI()
 
     console.print("[yellow]Running evaluation...[/yellow]")
 
     for case in tqdm(cases, desc="Evaluating cases", unit="case"):
-        case_result = await run_case(case, ctx)
-        ctx.results.add_case(case_result)
+        case_result = await run_case(
+            case=case,
+            runner=runner,
+            runner_ctx=runner_ctx,
+            dataset=dataset,
+            proxy=proxy,
+            judge_model=judge_model,
+            judge_client=judge_client,
+        )
+        results.add_case(case_result)
 
         if case_result.error:
             console.print(f"[red]✗ Error: {case_result.error}[/red]")
@@ -124,5 +145,6 @@ async def run(
     console.print()
 
     proxy.stop()
+    results.finalize()
 
     return results

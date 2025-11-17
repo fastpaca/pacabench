@@ -44,6 +44,80 @@ Never deliver code without running ruff first. GitHub Actions also runs ruff on 
 5. **Type hints everywhere** – every function must specify parameter and return types.
    - ✅ `def aggregate_results(results: list[CaseResult]) -> AggregatedMetrics:`
 
+### Circular Dependency Prevention
+
+**CRITICAL**: Never use `if TYPE_CHECKING:` guards – this is a code smell indicating poor architecture. Always fix circular dependencies architecturally.
+
+#### Rule 1: All Protocols and Data Models Go in types.py
+
+`types.py` is the foundation - it has NO agentbench imports and defines all core types and protocols.
+
+**✅ Correct Pattern:**
+```python
+# types.py - Pure types, no agentbench imports
+from __future__ import annotations
+from typing import Protocol
+
+class RunnerContext(BaseModel):
+    """Lightweight context for runner execution - only runtime config."""
+    model: str
+    proxy_port: int
+    openai_api_key: str
+    embedding_model: str | None
+
+class Runner(Protocol):
+    """Protocol for runners that execute test cases."""
+    async def run_case(self, case: Case, ctx: RunnerContext) -> RunnerOutput:
+        ...
+```
+
+**Why This Works:**
+1. Runner Protocol references `RunnerContext` - both defined in `types.py`
+2. No circular dependencies because `types.py` is self-contained
+3. Pipeline can import both `Runner` and `RunnerContext` from `types.py`
+4. Clean dependency hierarchy: `types.py` → everything else
+
+#### Rule 2: Don't Use "Context" as a Dumping Ground
+
+**❌ BAD - God Object Anti-Pattern:**
+```python
+class EvalContext(BaseModel):
+    dataset: Dataset      # ← Already a parameter
+    runner: Runner        # ← Already a parameter
+    results: Results      # ← Already created locally
+    model: str            # ← Already a parameter
+    proxy: ProxyServer    # ← Already created locally
+    # ... 10 more fields
+```
+
+This is just parameter passing with extra steps. Pass parameters directly!
+
+**✅ GOOD - Direct Parameter Passing:**
+```python
+async def run_case(
+    case: Case,
+    runner: Runner,
+    runner_ctx: RunnerContext,  # ← Only what runners need
+    dataset: Dataset,
+    proxy: ProxyServer,
+    judge_model: str,
+    judge_client: AsyncOpenAI,
+) -> CaseResult:
+    ...
+```
+
+**Adding New Runners:**
+
+New runners are registered in `cli.py`'s `RUNNERS` dict:
+```python
+RUNNERS = {
+    "qa/long_context": LongContextRunner(),
+    "qa/mem0": Mem0Runner(),
+    "agentic/long_context": LongContextAgenticRunner(),
+    "agentic/mem0": Mem0AgenticRunner(),
+}
+```
+
 ## Project Structure
 
 ```
