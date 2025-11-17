@@ -216,15 +216,22 @@ class ProxyServer:
         ) -> JSONResponse:
             """Proxy embeddings to OpenAI."""
             body = await request.json()
+            case_id = x_case_id or "_current"
+            self._log_request("/v1/embeddings", body, case_id)
 
             try:
-                response = self.openai_client.embeddings.create(**body)
-                return JSONResponse(content=response.model_dump())
+                response = self.openai_client.embeddings.with_raw_response.create(**body)
             except Exception as e:
                 return JSONResponse(
                     status_code=500,
                     content={"error": str(e)},
                 )
+            try:
+                response_data = response.http_response.json()
+            except ValueError:
+                response_data = {"error": response.http_response.text}
+
+            return JSONResponse(status_code=response.status_code, content=response_data)
 
         @self.app.get("/health")
         async def health() -> dict[str, str]:

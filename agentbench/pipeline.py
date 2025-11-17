@@ -107,6 +107,7 @@ def evaluate(case: Case, runner_output: RunnerOutput, ctx: EvalContext) -> Evalu
 
     return EvaluationOutput(passed=False)
 
+
 def evaluate_case(case: Case, ctx: EvalContext) -> CaseResult:
     """
     Run complete evaluation pipeline for a single case.
