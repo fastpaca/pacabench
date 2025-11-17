@@ -13,16 +13,13 @@ from smolagents import (
 )
 from smolagents.models import OpenAIServerModel
 
-from agentbench.context import EvalContext
-from agentbench.metrics import collect_metrics
-from agentbench.runners.base import Runner
-from agentbench.types import Case, RunnerMetrics, RunnerOutput
+from agentbench.types import Case, Runner, RunnerContext, RunnerOutput
 
 
 class Mem0AgenticRunner(Runner):
     """Mem0 agentic runner with tools and memory."""
 
-    async def run_case(self, case: Case, ctx: EvalContext) -> RunnerOutput:
+    async def run_case(self, case: Case, ctx: RunnerContext) -> RunnerOutput:
         """
         Run an agentic case with Mem0 memory and tools.
 
@@ -96,15 +93,11 @@ class Mem0AgenticRunner(Runner):
             )
 
             duration_ms = (time.time() - start_time) * 1000
-            llm_metrics = collect_metrics(ctx)
-            metrics = RunnerMetrics(model_duration_ms=duration_ms, llm_metrics=llm_metrics)
-            return RunnerOutput(output=answer, error=None, metrics=metrics)
+            return RunnerOutput(output=answer, error=None, duration_ms=duration_ms)
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
-            llm_metrics = collect_metrics(ctx)
-            metrics = RunnerMetrics(model_duration_ms=duration_ms, llm_metrics=llm_metrics)
             return RunnerOutput(
                 output=None,
                 error=f"Runner execution failed: {e}",
-                metrics=metrics,
+                duration_ms=duration_ms,
             )

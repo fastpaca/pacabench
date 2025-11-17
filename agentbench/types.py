@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -23,7 +23,7 @@ class RunnerOutput(BaseModel):
 
     output: str | None = Field(None, description="Model output")
     error: str | None = Field(None, description="Error message if execution failed")
-    metrics: RunnerMetrics = Field(..., description="Performance metrics")
+    duration_ms: float = Field(..., description="Runner execution duration in milliseconds")
 
     model_config = {"extra": "forbid"}
 
@@ -60,6 +60,17 @@ class JudgeMetrics(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class RunnerContext(BaseModel):
+    """Lightweight context for runner execution - only runtime config."""
+
+    model: str = Field(..., description="Model name")
+    proxy_port: int = Field(..., description="Proxy server port")
+    openai_api_key: str = Field(..., description="OpenAI API key")
+    embedding_model: str | None = Field(None, description="Embedding model name if applicable")
+
+    model_config = {"extra": "forbid"}
+
+
 class CaseResult(BaseModel):
     """Complete result for a test case (pipeline-level combination)."""
 
@@ -73,3 +84,20 @@ class CaseResult(BaseModel):
     )
 
     model_config = {"extra": "forbid"}
+
+
+class Runner(Protocol):
+    """Protocol for runners that execute test cases."""
+
+    async def run_case(self, case: Case, ctx: RunnerContext) -> RunnerOutput:
+        """
+        Execute a test case and return the result.
+
+        Args:
+            case: Test case to execute
+            ctx: Runner execution context
+
+        Returns:
+            RunnerOutput with output, error, and metrics
+        """
+        ...

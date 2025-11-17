@@ -13,11 +13,21 @@ from rich.table import Table
 
 from agentbench import datasets
 from agentbench.metrics import AggregatedMetrics
-from agentbench.pipeline import _resolve_runner
 from agentbench.pipeline import run as pipeline_run
+from agentbench.runners.agentic_long_context import LongContextAgenticRunner
+from agentbench.runners.agentic_mem0 import Mem0AgenticRunner
+from agentbench.runners.qa_long_context import LongContextRunner
+from agentbench.runners.qa_mem0 import Mem0Runner
 
 app = typer.Typer()
 console = Console()
+
+RUNNERS = {
+    "qa/long_context": LongContextRunner(),
+    "qa/mem0": Mem0Runner(),
+    "agentic/long_context": LongContextAgenticRunner(),
+    "agentic/mem0": Mem0AgenticRunner(),
+}
 
 
 @app.command()
@@ -99,7 +109,9 @@ def main(
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
-    runner_obj = _resolve_runner(runner)
+    runner_obj = RUNNERS.get(runner)
+    if not runner_obj:
+        raise ValueError(f"Unknown runner: {runner}. Available: {list(RUNNERS.keys())}")
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
 
