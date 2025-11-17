@@ -5,8 +5,18 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel, Field
 
-from agentbench.stages.case import Case
-from agentbench.stages.result import CaseResult
+from agentbench.types import Case
+
+
+class EvaluationResult(BaseModel):
+    """Results from dataset evaluation."""
+
+    passed: bool = Field(..., description="Whether the case passed")
+    f1_score: float | None = Field(None, description="F1 score if applicable")
+    f1_passed: bool | None = Field(None, description="Whether F1 evaluation passed")
+    judge_passed: bool | None = Field(None, description="Whether judge evaluation passed")
+
+    model_config = {"extra": "forbid"}
 
 
 class Dataset(BaseModel, ABC):
@@ -33,20 +43,23 @@ class Dataset(BaseModel, ABC):
     async def eval(
         self,
         case: Case,
-        result: CaseResult,
+        output: str | None,
+        error: str | None,
         judge_model: str = "gpt-4o-mini",
         judge_client=None,
-    ) -> CaseResult:
+    ) -> tuple[EvaluationResult, dict[str, int] | None]:
         """
-        Evaluate a case result and complete it with evaluation fields.
+        Evaluate a model output against a test case.
 
         Args:
             case: Test case
-            result: Partial CaseResult (with output, error, duration, llm_metrics)
+            output: Model output (None if error occurred)
+            error: Error message if any
             judge_model: Judge model name
             judge_client: OpenAI client for judge (optional)
 
         Returns:
-            Complete CaseResult with evaluation fields (passed, f1_score, etc.)
+            Tuple of (EvaluationResult, judge_metrics dict or None)
+            Judge metrics are operational data, not part of evaluation result
         """
         ...

@@ -9,9 +9,8 @@ from git import Repo
 from loguru import logger
 from openai import AsyncOpenAI
 
-from agentbench.datasets.base import Dataset
-from agentbench.stages.case import Case
-from agentbench.stages.result import CaseResult
+from agentbench.datasets.base import Dataset, EvaluationResult
+from agentbench.types import Case
 
 _MEMBENCH_GITHUB_REPO_URL = "https://github.com/import-myself/Membench.git"
 _MEMBENCH_GITHUB_BRANCH = "main"
@@ -156,30 +155,31 @@ class MemBenchDataset(Dataset):
     async def eval(
         self,
         case: Case,
-        result: CaseResult,
+        output: str | None,
+        error: str | None,
         judge_model: str = "gpt-4o-mini",
         judge_client: AsyncOpenAI | None = None,
-    ) -> CaseResult:
+    ) -> tuple[EvaluationResult, dict[str, int] | None]:
         """Evaluate MemBench case using F1 and/or LLM judge."""
-        if result.error or not result.output:
-            return result.model_copy(update={"passed": False})
+        if error or not output:
+            return EvaluationResult(passed=False), None
 
         if "choices" in case.inputs:
-            passed = self._evaluate_multiple_choice(case, result.output)
-            return result.model_copy(update={"passed": passed, "f1_passed": passed})
+            passed = self._evaluate_multiple_choice(case, output)
+            return EvaluationResult(passed=passed, f1_passed=passed), None
         else:
-            f1_score, f1_passed = self._evaluate_f1_score(case, result.output)
+            f1_score, f1_passed = self._evaluate_f1_score(case, output)
             judge_passed, judge_metrics = await self._evaluate_llm_judge(
-                case, result.output, judge_model, judge_client
+                case, output, judge_model, judge_client
             )
-            return result.model_copy(
-                update={
-                    "passed": f1_passed and judge_passed,
-                    "f1_score": f1_score,
-                    "f1_passed": f1_passed,
-                    "judge_passed": judge_passed,
-                    "judge_metrics": judge_metrics,
-                }
+            return (
+                EvaluationResult(
+                    passed=f1_passed and judge_passed,
+                    f1_score=f1_score,
+                    f1_passed=f1_passed,
+                    judge_passed=judge_passed,
+                ),
+                judge_metrics,
             )
 
     def _evaluate_multiple_choice(self, case: Case, output: str) -> bool:

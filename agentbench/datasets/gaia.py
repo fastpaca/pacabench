@@ -6,9 +6,8 @@ from typing import Any
 from datasets import load_dataset
 from openai import AsyncOpenAI
 
-from agentbench.datasets.base import Dataset
-from agentbench.stages.case import Case
-from agentbench.stages.result import CaseResult
+from agentbench.datasets.base import Dataset, EvaluationResult
+from agentbench.types import Case
 
 
 class GaiaDataset(Dataset):
@@ -66,23 +65,21 @@ class GaiaDataset(Dataset):
     async def eval(
         self,
         case: Case,
-        result: CaseResult,
+        output: str | None,
+        error: str | None,
         judge_model: str = "gpt-4o-mini",
         judge_client: AsyncOpenAI | None = None,
-    ) -> CaseResult:
+    ) -> tuple[EvaluationResult, dict[str, int] | None]:
         """Evaluate GAIA case using LLM-as-judge."""
-        if result.error or not result.output:
-            return result.model_copy(update={"passed": False, "judge_passed": False})
+        if error or not output:
+            return EvaluationResult(passed=False, judge_passed=False), None
 
         judge_passed, judge_metrics = await self._evaluate_gaia(
-            case, result.output, judge_model, judge_client
+            case, output, judge_model, judge_client
         )
-        return result.model_copy(
-            update={
-                "passed": judge_passed,
-                "judge_passed": judge_passed,
-                "judge_metrics": judge_metrics,
-            }
+        return (
+            EvaluationResult(passed=judge_passed, judge_passed=judge_passed),
+            judge_metrics,
         )
 
     async def _evaluate_gaia(
