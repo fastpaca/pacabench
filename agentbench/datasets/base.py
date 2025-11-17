@@ -5,18 +5,7 @@ from collections.abc import Iterable
 
 from pydantic import BaseModel, Field
 
-from agentbench.types import Case
-
-
-class EvaluationResult(BaseModel):
-    """Results from dataset evaluation."""
-
-    passed: bool = Field(..., description="Whether the case passed")
-    f1_score: float | None = Field(None, description="F1 score if applicable")
-    f1_passed: bool | None = Field(None, description="Whether F1 evaluation passed")
-    judge_passed: bool | None = Field(None, description="Whether judge evaluation passed")
-
-    model_config = {"extra": "forbid"}
+from agentbench.types import Case, EvaluationResult
 
 
 class Dataset(BaseModel, ABC):
