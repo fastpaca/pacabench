@@ -12,8 +12,9 @@ from rich.console import Console
 from rich.table import Table
 
 from agentbench import datasets
+from agentbench.metrics import Metrics
+from agentbench.pipeline import _resolve_runner
 from agentbench.pipeline import run as pipeline_run
-from agentbench.stages import Dataset, aggregate_results, save_results
 
 app = typer.Typer()
 console = Console()
@@ -31,7 +32,7 @@ def main(
         ...,
         "--runner",
         "-r",
-        help="Runner path (e.g., qa/long_context, agentic/mem0)",
+        help="Runner spec: built-in shorthand (e.g., 'qa/long_context') or filesystem path (e.g., './my_runner.py' or '/abs/path/runner.py')",
     ),
     model: str = typer.Option(  # noqa: B008
         "gpt-4o-mini",
@@ -89,32 +90,18 @@ def main(
     console.print()
 
     console.print(f"[yellow]Loading {dataset} dataset...[/yellow]")
-    try:
-        dataset_enum = Dataset(dataset)
-    except ValueError as e:
-        raise ValueError(f"Unknown dataset: {dataset}") from e
+    if dataset == "membench":
+        dataset_obj = datasets.MemBenchDataset()
+    elif dataset == "longmemeval":
+        dataset_obj = datasets.LongMemEvalDataset(split="s_cleaned")
+    elif dataset == "gaia":
+        dataset_obj = datasets.GaiaDataset(split="validation", level="all")
+    else:
+        raise ValueError(f"Unknown dataset: {dataset}")
 
-    cases = datasets.load_dataset(dataset_enum, limit=limit)
-    console.print(f"[green]✓ Loaded {len(cases)} cases[/green]")
-    console.print()
+    runner_obj = _resolve_runner(runner)
 
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-
-    results = asyncio.run(
-        pipeline_run(
-            cases=cases,
-            runner_path=runner,
-            model=model,
-            openai_api_key=openai_api_key,
-            run_id=run_id,
-            dataset=dataset,
-            embedding_model=embedding_model,
-            judge_model=judge_model,
-            upstream_base_url=upstream_base_url,
-        )
-    )
-
-    metrics = aggregate_results(results)
 
     if output_dir is None:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -132,14 +119,30 @@ def main(
         "judge_model": judge_model,
     }
 
-    save_results(output_dir, results, metrics, config)
+    results = asyncio.run(
+        pipeline_run(
+            dataset=dataset_obj,
+            runner=runner_obj,
+            model=model,
+            openai_api_key=openai_api_key,
+            run_id=run_id,
+            output_dir=output_dir,
+            config=config,
+            embedding_model=embedding_model,
+            judge_model=judge_model,
+            upstream_base_url=upstream_base_url,
+            limit=limit,
+        )
+    )
+
     console.print(f"[green]✓ Results saved to {output_dir}[/green]")
     console.print()
 
-    _print_metrics_table(metrics)
+    if results.metrics:
+        _print_metrics_table(results.metrics)
 
 
-def _print_metrics_table(metrics) -> None:
+def _print_metrics_table(metrics: Metrics) -> None:
     """Print metrics in a rich table."""
     table = Table(title="Evaluation Metrics")
 

@@ -13,10 +13,9 @@ from smolagents import (
 )
 from smolagents.models import OpenAIServerModel
 
-from agentbench.context import EvalContext
+from agentbench.metrics import collect_metrics
 from agentbench.runners.base import Runner, RunnerMetrics, RunnerOutput
-from agentbench.stages.result import collect_metrics
-from agentbench.types import Case
+from agentbench.types import Case, EvalContext
 
 
 class Mem0AgenticRunner(Runner):
