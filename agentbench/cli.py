@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from agentbench import datasets
-from agentbench.pipeline import run_evaluation
+from agentbench.pipeline import run as pipeline_run
 from agentbench.stages import Dataset, aggregate_results, save_results
 
 app = typer.Typer()
@@ -101,7 +101,7 @@ def main(
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     results = asyncio.run(
-        run_evaluation(
+        pipeline_run(
             cases=cases,
             runner_path=runner,
             model=model,
