@@ -45,13 +45,28 @@ uv sync --all-extras
 
 ```
 agentbench/
-├── cli.py             # CLI, dataset routing, metrics display
+├── cli.py             # CLI wrapper around library
+├── pipeline.py        # Main evaluation pipeline orchestration
 ├── proxy.py           # FastAPI LLM proxy (token/latency/cost tracking)
-├── runner.py          # Subprocess runner & JSON protocol
-├── datasets.py        # Dataset loaders (MemBench, LongMemEval, GAIA)
-├── evaluators.py      # QA/agentic evaluation helpers
-├── metrics.py         # CaseResult + aggregate/save helpers
-└── runners/           # Standalone CLIs executed per case
+├── context.py         # EvalContext (shared state)
+├── config.py          # RunConfig model
+├── datasets/          # Dataset abstractions and loaders
+│   ├── base.py        # Abstract Dataset class
+│   ├── qa_dataset.py  # QA dataset implementation
+│   ├── gaia_dataset.py # GAIA dataset implementation
+│   ├── membench.py    # MemBench loader
+│   ├── longmemeval.py # LongMemEval loader
+│   └── gaia.py        # GAIA loader
+├── runners/           # Runner abstractions
+│   ├── base.py        # Runner protocol
+│   ├── command.py     # CommandRunner (subprocess runner)
+│   └── resolver.py    # Runner spec resolution
+├── stages/            # Pipeline stages
+│   ├── case.py        # Case model
+│   ├── runner.py      # RunnerOutput model & legacy runner function
+│   ├── evaluator.py   # Evaluation functions
+│   └── result.py      # CaseResult, AggregatedMetrics, aggregation
+└── runners/           # Standalone runner scripts executed per case
     ├── qa/
     └── agentic/
 ```
@@ -110,27 +125,75 @@ p50 = _calculate_percentile(values, 0.50)
 
 ## Common Modifications
 
-### Adding a Dataset Loader
+### Adding a Dataset
 
-Edit `agentbench/datasets.py`:
+Datasets own both loading and evaluation strategy:
 
-```python
-def load_new_dataset(... ) -> list[Case]:
-    cases = [...]
-    return cases
-```
+1. **Create a loader function** (e.g., in `agentbench/datasets/my_dataset.py`):
+   ```python
+   def load_my_dataset(limit: int | None = None) -> list[Case]:
+       # Load and return Case objects
+       return cases
+   ```
 
-Then register it inside `_load_dataset()` in `agentbench/cli.py` and expose any new CLI options if needed. Keep splits explicit (e.g., `"eval"`, `"validation"`) and return task metadata required by downstream evaluators.
+2. **Create a Dataset subclass** (e.g., `agentbench/datasets/my_dataset.py`):
+   ```python
+   from agentbench.datasets.base import Dataset
+   from agentbench.datasets.qa_dataset import QaDataset  # or create custom
+   
+   # For QA-style datasets, reuse QaDataset:
+   my_dataset = QaDataset(name="my_dataset", loader_func=load_my_dataset)
+   ```
+
+3. **Register in `agentbench/datasets/__init__.py`**:
+   ```python
+   def get_dataset(dataset: DatasetEnum | str, ...) -> Dataset:
+       # Add your dataset to the registry
+   ```
+
+The Dataset's `evaluate_case()` method defines how correctness is judged. QA datasets use F1 + LLM judge; GAIA uses LLM-as-judge only.
 
 ### Adding or Updating Runners
 
-Runners live under `runners/{qa|agentic}/` and are executed as standalone CLIs.
+Runners can be implemented in two ways:
 
-1. Create a new Python script (e.g., `runners/qa/my_runner.py`).
-2. Follow the stdin/stdout JSON protocol used by existing runners.
-3. Read configuration from environment (`MODEL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`).
-4. Route **all** LLM calls through the proxy (`OpenAI(base_url=...)`) so latency/cost metrics stay accurate.
-5. Return `{"result": "...", "error": null}` style payloads.
+#### 1. External Command Runners (Any Language)
+
+Runners are standalone scripts that follow a simple JSON protocol:
+
+1. **Built-in runners**: Place scripts under `runners/{qa|agentic}/` with naming pattern `{name}_runner.py` (e.g., `runners/qa/long_context_runner.py`). Reference them via shorthand: `qa/long_context`.
+
+2. **External runners**: Place scripts anywhere on the filesystem. Reference them via:
+   - Relative path: `./path/to/my_runner.py`
+   - Absolute path: `/abs/path/to/my_runner.py`
+
+3. **Runner Protocol**:
+   - Read `Case` JSON from stdin: `{"id": "...", "task_type": "...", "inputs": {...}}`
+   - Read configuration from environment:
+     - `MODEL`: Model name
+     - `OPENAI_API_KEY`: API key
+     - `OPENAI_BASE_URL`: Proxy base URL (always route LLM calls here for metrics)
+     - `AGENTBENCH_RUN_ID`: Run identifier
+     - `AGENTBENCH_DATASET`: Dataset name
+   - Write JSON to stdout: `{"result": "...", "error": null}` or `{"result": null, "error": "..."}`
+
+#### 2. Python Library Runners
+
+For Python users, implement the `Runner` protocol:
+
+```python
+from agentbench.runners.base import Runner
+from agentbench.stages.case import Case
+from agentbench.stages.runner import RunnerOutput
+from agentbench.context import EvalContext
+
+class MyRunner:
+    async def run_case(self, case: Case, ctx: EvalContext) -> RunnerOutput:
+        # Your implementation
+        return RunnerOutput(result="...", error=None, duration_ms=123.0)
+```
+
+Use `CommandRunner` for external command execution, or implement custom logic directly.
 
 ### Modifying Metrics Display
 
@@ -159,10 +222,21 @@ cat runs/*/metrics.json | jq '.avg_llm_latency_ms, .p50_llm_latency_ms, .p95_llm
 
 ## Architecture Patterns
 
+### Library-First Design
+- **Core models** (`Case`, `RunnerOutput`, `EvaluationOutput`, `CaseResult`, `AggregatedMetrics`) are Pydantic BaseModel subclasses for validation and serialization.
+- **Datasets** own loading (`load_cases()`) and evaluation (`evaluate_case()`).
+- **Runners** implement the `Runner` protocol; `CommandRunner` handles external processes.
+- **Pipeline** (`pipeline.run()`) orchestrates: load dataset → run cases → evaluate → aggregate.
+
 ### Process-Based Runners + Proxy
-- `agentbench.cli` spawns `ProxyServer` (FastAPI) to intercept OpenAI traffic.
-- `spawn_runner()` executes a runner script per case using JSON stdin/stdout.
+- `agentbench.pipeline` spawns `ProxyServer` (FastAPI) to intercept OpenAI traffic.
+- `CommandRunner` executes runner scripts per case using JSON stdin/stdout protocol.
 - Proxy metrics accumulate per case and are flushed after each result (`proxy.metrics.clear_metrics("_current")`).
+
+### Runner Spec Resolution
+- Built-in shorthand (e.g., `qa/long_context`) → `runners/{spec}_runner.py` in project root.
+- Filesystem paths (`./script.py`, `/abs/path.py`) → resolved directly, no renaming.
+- Centralized resolver (`runners/resolver.py`) handles all path logic.
 
 ### Metrics Collection
 - Capture runner duration (`runner_duration_ms`) plus proxy metrics (`llm_latency_ms`, token counts, cost).

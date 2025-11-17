@@ -1,10 +1,10 @@
-"""Results container with incremental saving and rolling metrics."""
+"""Results container with incremental saving and rolling aggregated metrics."""
 
 import json
 from pathlib import Path
 from typing import Any
 
-from agentbench.metrics import Metrics
+from agentbench.metrics import AggregatedMetrics, aggregate_results
 from agentbench.types import CaseResult
 
 
@@ -24,7 +24,7 @@ class Results:
         self.config = config
         self.run_id = run_id
         self.cases: list[CaseResult] = []
-        self.metrics: Metrics | None = None
+        self.metrics: AggregatedMetrics | None = None
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,11 +43,14 @@ class Results:
             case_result: Case result to add
         """
         self.cases.append(case_result)
-        self.metrics = Metrics.from_results(self.cases)
 
         with open(self.output_dir / "results.jsonl", "a") as f:
             f.write(json.dumps(_case_result_to_dict(case_result)) + "\n")
+        # Aggregated metrics are computed on finalize() to avoid recomputing on every case.
 
+    def finalize(self) -> None:
+        """Compute final aggregated metrics and write metrics to disk."""
+        self.metrics = aggregate_results(self.cases)
         with open(self.output_dir / "metrics.json", "w") as f:
             json.dump(self.metrics.model_dump(exclude_none=False), f, indent=2)
 

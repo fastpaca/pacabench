@@ -7,8 +7,8 @@ import tiktoken
 from huggingface_hub import hf_hub_download
 from openai import AsyncOpenAI
 
-from agentbench.datasets.base import Dataset, EvaluationResult
-from agentbench.types import Case
+from agentbench.datasets.base import Dataset
+from agentbench.types import Case, EvaluationResult
 
 
 def _flatten_sessions(sessions: list[list[dict[str, str]]]) -> list[dict[str, str]]:

@@ -6,8 +6,8 @@ from typing import Any
 from datasets import load_dataset
 from openai import AsyncOpenAI
 
-from agentbench.datasets.base import Dataset, EvaluationResult
-from agentbench.types import Case
+from agentbench.datasets.base import Dataset
+from agentbench.types import Case, EvaluationResult
 
 
 class GaiaDataset(Dataset):

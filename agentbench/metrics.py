@@ -1,15 +1,13 @@
-"""Metrics collection and aggregation."""
-
-from typing import Any
+"""Aggregated run-level metrics and helpers."""
 
 import numpy as np
 from pydantic import BaseModel, Field
 
-from agentbench.types import CaseResult, EvalContext
+from agentbench.types import CaseResult
 
 
-class Metrics(BaseModel):
-    """Aggregated metrics across all cases."""
+class AggregatedMetrics(BaseModel):
+    """Aggregated metrics across all cases in a run."""
 
     total_cases: int = Field(..., description="Total number of cases")
     passed_cases: int = Field(..., description="Number of passed cases")
@@ -41,16 +39,8 @@ class Metrics(BaseModel):
     model_config = {"extra": "forbid"}
 
     @classmethod
-    def from_results(cls, cases: list[CaseResult]) -> "Metrics":
-        """
-        Create metrics from a list of case results.
-
-        Args:
-            cases: List of case results
-
-        Returns:
-            Metrics object
-        """
+    def from_results(cls, cases: list[CaseResult]) -> "AggregatedMetrics":
+        """Create aggregated metrics from a list of case results."""
         if not cases:
             return _empty_metrics()
 
@@ -122,7 +112,7 @@ class Metrics(BaseModel):
         total_judge_input_tokens = sum(judge_input_tokens) if judge_input_tokens else None
         total_judge_output_tokens = sum(judge_output_tokens) if judge_output_tokens else None
 
-        return Metrics(
+        return AggregatedMetrics(
             total_cases=total_cases,
             passed_cases=passed_cases,
             failed_cases=failed_cases,
@@ -152,16 +142,14 @@ class Metrics(BaseModel):
         )
 
 
-def collect_metrics(ctx: EvalContext) -> dict[str, Any]:
-    """Collect LLM metrics from proxy."""
-    metrics = ctx.proxy.metrics.get_metrics("_current")
-    ctx.proxy.metrics.clear_metrics("_current")
-    return metrics
+def aggregate_results(cases: list[CaseResult]) -> AggregatedMetrics:
+    """Aggregate metrics for a list of case results."""
+    return AggregatedMetrics.from_results(cases)
 
 
-def _empty_metrics() -> Metrics:
-    """Return empty metrics."""
-    return Metrics(
+def _empty_metrics() -> AggregatedMetrics:
+    """Return empty aggregated metrics."""
+    return AggregatedMetrics(
         total_cases=0,
         passed_cases=0,
         failed_cases=0,

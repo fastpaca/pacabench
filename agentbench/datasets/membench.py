@@ -9,8 +9,8 @@ from git import Repo
 from loguru import logger
 from openai import AsyncOpenAI
 
-from agentbench.datasets.base import Dataset, EvaluationResult
-from agentbench.types import Case
+from agentbench.datasets.base import Dataset
+from agentbench.types import Case, EvaluationResult
 
 _MEMBENCH_GITHUB_REPO_URL = "https://github.com/import-myself/Membench.git"
 _MEMBENCH_GITHUB_BRANCH = "main"

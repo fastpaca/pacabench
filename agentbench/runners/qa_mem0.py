@@ -7,9 +7,10 @@ from pydantic_ai import Agent, ModelRequest, UserPromptPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from agentbench.context import EvalContext
 from agentbench.metrics import collect_metrics
-from agentbench.runners.base import Runner, RunnerMetrics, RunnerOutput
-from agentbench.types import Case, EvalContext
+from agentbench.runners.base import Runner
+from agentbench.types import Case, RunnerMetrics, RunnerOutput
 
 
 class Mem0Runner(Runner):

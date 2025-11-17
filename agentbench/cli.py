@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from agentbench import datasets
-from agentbench.metrics import Metrics
+from agentbench.metrics import AggregatedMetrics
 from agentbench.pipeline import _resolve_runner
 from agentbench.pipeline import run as pipeline_run
 
@@ -142,7 +142,7 @@ def main(
         _print_metrics_table(results.metrics)
 
 
-def _print_metrics_table(metrics: Metrics) -> None:
+def _print_metrics_table(metrics: AggregatedMetrics) -> None:
     """Print metrics in a rich table."""
     table = Table(title="Evaluation Metrics")
 
