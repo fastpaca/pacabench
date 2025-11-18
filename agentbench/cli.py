@@ -30,8 +30,161 @@ RUNNERS = {
 }
 
 
+@app.command(name="list")
+def list_runs(
+    runs_dir: Path = typer.Option(  # noqa: B008
+        Path("runs"),
+        "--runs-dir",
+        help="Directory containing runs",
+    )
+) -> None:
+    """List all runs and their status."""
+    if not runs_dir.exists():
+        console.print(f"[red]Runs directory {runs_dir} does not exist.[/red]")
+        return
+
+    table = Table(title="Run Status")
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Dataset", style="blue")
+    table.add_column("Runner", style="magenta")
+    table.add_column("Completed", style="green")
+    table.add_column("Status", style="yellow")
+    
+    # Use builtin list by not shadowing it, or just sorted(..., reverse=True) accepts iterable
+    runs = sorted(runs_dir.iterdir(), reverse=True)
+
+    for run_dir in runs:
+        if not run_dir.is_dir():
+            continue
+
+        config_path = run_dir / "config.json"
+        results_path = run_dir / "results.jsonl"
+        metrics_path = run_dir / "metrics.json"
+
+        dataset = "?"
+        runner = "?"
+        completed_cases = 0
+        status = "Unknown"
+
+        if config_path.exists():
+            try:
+                import json
+                with open(config_path) as f:
+                    config = json.load(f)
+                    dataset = config.get("dataset", "?")
+                    runner = config.get("runner", "?")
+            except Exception:
+                pass
+
+        if results_path.exists():
+            try:
+                with open(results_path) as f:
+                    completed_cases = sum(1 for line in f if line.strip())
+            except Exception:
+                pass
+
+        if metrics_path.exists():
+            status = "Finished"
+        elif results_path.exists():
+            status = "In Progress / Interrupted"
+        else:
+            status = "Empty / Failed Start"
+
+        table.add_row(run_dir.name, dataset, runner, str(completed_cases), status)
+
+    console.print(table)
+
+
 @app.command()
-def main(
+def resume(
+    run_id: str = typer.Argument(..., help="Run ID (folder name) to resume"),
+    runs_dir: Path = typer.Option(  # noqa: B008
+        Path("runs"),
+        "--runs-dir",
+        help="Directory containing runs",
+    ),
+    verbose: bool = typer.Option(  # noqa: B008
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose logging.",
+    ),
+) -> None:
+    """Resume an interrupted run."""
+    run_dir = runs_dir / run_id
+    if not run_dir.exists():
+        console.print(f"[red]Run directory {run_dir} does not exist.[/red]")
+        raise typer.Exit(1)
+
+    config_path = run_dir / "config.json"
+    if not config_path.exists():
+        console.print(f"[red]Config file not found in {run_dir}. Cannot resume.[/red]")
+        raise typer.Exit(1)
+
+    import json
+    with open(config_path) as f:
+        config = json.load(f)
+
+    # Re-construct CLI arguments from config
+    # We need to call main() or extracting logic to a separate function.
+    # Calling main() directly is tricky with Typer.
+    # Better to extract the logic from main() into a separate function or
+    # invoke the pipeline directly with the config params.
+
+    logger.remove()
+    logger.add(sys.stderr, level="INFO" if verbose else "WARNING")
+
+    dataset_name = config["dataset"]
+    runner_name = config["runner"]
+
+    # Re-instantiate dataset and runner
+    console.print(f"[yellow]Resuming run {run_id}...[/yellow]")
+    console.print(f"Dataset: {dataset_name}")
+    console.print(f"Runner: {runner_name}")
+
+    if dataset_name == "membench":
+        dataset_obj = datasets.MemBenchDataset()
+    elif dataset_name == "longmemeval":
+        dataset_obj = datasets.LongMemEvalDataset(split="s_cleaned")
+    elif dataset_name == "gaia":
+        dataset_obj = datasets.GaiaDataset(split="validation", level="all")
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
+    runner_obj = RUNNERS.get(runner_name)
+    if not runner_obj:
+        # Try loading custom path? For now only support built-ins or duplicate logic
+        raise ValueError(f"Unknown runner: {runner_name}")
+
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        console.print("[red]Error: OPENAI_API_KEY environment variable not set[/red]")
+        raise typer.Exit(1)
+
+    results = asyncio.run(
+        pipeline_run(
+            dataset=dataset_obj,
+            runner=runner_obj,
+            model=config["model"],
+            openai_api_key=openai_api_key,
+            run_id=run_id,
+            output_dir=run_dir,
+            config=config,
+            embedding_model=config.get("embedding_model"),
+            judge_model=config.get("judge_model", "gpt-4o-mini"),
+            upstream_base_url=config.get("upstream_base_url"),
+            limit=config.get("limit"),
+            concurrency=config.get("concurrency", 1),
+        )
+    )
+
+    console.print(f"[green]✓ Resumed run completed. Results in {run_dir}[/green]")
+    if results.metrics:
+        _print_metrics_table(results.metrics)
+
+
+@app.command()
+def run(
     dataset: str = typer.Option(  # noqa: B008
         ...,
         "--dataset",
