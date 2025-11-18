@@ -296,6 +296,11 @@ async def run(
     console.print()
 
     results = Results(output_dir=output_dir, config=config, run_id=run_id)
+    completed_ids = results.get_completed_case_ids()
+
+    if completed_ids:
+        console.print(f"[cyan]Found {len(completed_ids)} completed cases in {output_dir}[/cyan]")
+
     judge_client = AsyncOpenAI()
 
     console.print("[yellow]Running evaluation...[/yellow]")
@@ -304,14 +309,26 @@ async def run(
     console.print()
 
     case_queue: asyncio.Queue[Case | None] = asyncio.Queue()
-    for case in cases:
+
+    cases_to_run = [c for c in cases if c.id not in completed_ids]
+    skipped_count = len(cases) - len(cases_to_run)
+
+    if skipped_count > 0:
+        console.print(f"[cyan]Skipping {skipped_count} already completed cases[/cyan]")
+
+    for case in cases_to_run:
         await case_queue.put(case)
 
     for _ in range(concurrency):
         await case_queue.put(None)
 
     progress_counter = _AsyncCounter()
-    observer = ProgressObserver(total_cases=len(cases), progress_counter=progress_counter)
+    # If we are resuming, we want the progress to reflect total vs completed including past?
+    # Observer takes 'total_cases'. Let's set it to the number of cases we are actually running
+    # OR keep it as total dataset size and initialize counter?
+    # Simplest is to show progress for *this run*.
+    observer = ProgressObserver(total_cases=len(cases_to_run), progress_counter=progress_counter)
+
 
     start_time = time.time()
 
