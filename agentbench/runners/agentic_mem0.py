@@ -25,6 +25,7 @@ async def _get_memory(worker_id: int, ctx: RunnerContext) -> AsyncMemory:
 
     Lazy initialization: creates AsyncMemory on first use per worker.
     Each worker gets its own Chroma database path to avoid contention.
+    Uses generic proxy URL since pipeline.py handles metrics aggregation via "_current".
 
     Args:
         worker_id: Stable worker identifier
@@ -35,15 +36,39 @@ async def _get_memory(worker_id: int, ctx: RunnerContext) -> AsyncMemory:
     """
     if worker_id not in _MEMORIES:
         db_path = str(Path(f"/tmp/mem0-chroma-agentbench-gaia-worker-{worker_id}").resolve())
-        config = {
-            "vector_store": {
-                "provider": "chroma",
-                "config": {
-                    "collection_name": "agentbench_gaia",
-                    "path": db_path,
-                },
+        proxy_url = f"http://localhost:{ctx.proxy_port}/v1"
+
+        vector_store = {
+            "provider": "chroma",
+            "config": {
+                "collection_name": "agentbench_gaia",
+                "path": db_path,
             },
-            "embedder": {"provider": "openai"},
+        }
+
+        embedder_config = {
+            "provider": "openai",
+            "config": {
+                "openai_base_url": proxy_url,
+                "api_key": ctx.openai_api_key,
+                "http_client_proxies": None,  # Disable proxies to prevent socket exhaustion
+            },
+        }
+
+        llm_config = {
+            "provider": "openai",
+            "config": {
+                "model": ctx.model,
+                "openai_base_url": proxy_url,
+                "api_key": ctx.openai_api_key,
+                "http_client_proxies": None,  # Disable proxies to prevent socket exhaustion
+            },
+        }
+
+        config = {
+            "vector_store": vector_store,
+            "embedder": embedder_config,
+            "llm": llm_config,
         }
         _MEMORIES[worker_id] = await AsyncMemory.from_config(config)
 
@@ -77,7 +102,7 @@ class Mem0AgenticRunner(Runner):
             memory = await _get_memory(ctx.worker_id, ctx)
             model_obj = OpenAIServerModel(
                 model_id=ctx.model,
-                api_base=f"http://localhost:{ctx.proxy_port}/v1/case/{ctx.case_id}",
+                api_base=f"http://localhost:{ctx.proxy_port}/v1",
                 api_key=ctx.openai_api_key,
             )
             tools = [

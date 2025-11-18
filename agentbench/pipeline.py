@@ -83,10 +83,9 @@ class ProgressObserver:
         )
 
         if llm_latencies:
-            p50_latency = sorted(llm_latencies)[len(llm_latencies) // 2] if llm_latencies else 0.0
-            p95_latency = (
-                sorted(llm_latencies)[int(len(llm_latencies) * 0.95)] if llm_latencies else 0.0
-            )
+            sorted_latencies = sorted(llm_latencies)
+            p50_latency = sorted_latencies[len(sorted_latencies) // 2]
+            p95_latency = sorted_latencies[int(len(sorted_latencies) * 0.95)]
             console.print(
                 f"  └─ LLM latency: {avg_llm_latency_ms:.0f}ms avg, "
                 f"{p50_latency:.0f}ms p50, {p95_latency:.0f}ms p95 "
@@ -139,10 +138,10 @@ async def run_case(
     Returns:
         CaseResult with evaluation results
     """
-    proxy.metrics.clear_metrics(case.id)
+    proxy.metrics.clear_metrics("_current")
     runner_output = await runner.run_case(case, runner_ctx)
 
-    llm_metrics = proxy.metrics.get_metrics(case.id)
+    llm_metrics = proxy.metrics.get_metrics("_current")
     metrics = RunnerMetrics(
         model_duration_ms=runner_output.duration_ms,
         llm_metrics=llm_metrics,

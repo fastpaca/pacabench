@@ -9,9 +9,9 @@
 Before marking any task complete, you MUST run these commands:
 
 ```bash
-uv run ruff check agentbench/ runners/ --fix
-uv run ruff format agentbench/ runners/
-uv run ruff check agentbench/ runners/
+uv run ruff check agentbench/ --fix
+uv run ruff format agentbench/
+uv run ruff check agentbench/
 ```
 
 **If ruff fails, the task is not complete.** Fix all issues before proceeding.
@@ -24,9 +24,9 @@ uv run ruff check agentbench/ runners/
 
 ```bash
 # Code quality
-uv run ruff check agentbench/ runners/ --fix  # Fix issues
-uv run ruff format agentbench/ runners/       # Format code
-uv run ruff check agentbench/ runners/        # Check only
+uv run ruff check agentbench/ --fix  # Fix issues
+uv run ruff format agentbench/       # Format code
+uv run ruff check agentbench/        # Check only
 
 # Run evaluation (MemBench QA baseline)
 uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 10
@@ -48,27 +48,19 @@ agentbench/
 ├── cli.py             # CLI wrapper around library
 ├── pipeline.py        # Main evaluation pipeline orchestration
 ├── proxy.py           # FastAPI LLM proxy (token/latency/cost tracking)
-├── context.py         # EvalContext (shared state)
-├── config.py          # RunConfig model
+├── metrics.py         # AggregatedMetrics and aggregation logic
+├── results.py         # Results container and JSON serialization
+├── types.py           # Shared type definitions (Case, Runner, etc.)
 ├── datasets/          # Dataset abstractions and loaders
 │   ├── base.py        # Abstract Dataset class
-│   ├── qa_dataset.py  # QA dataset implementation
-│   ├── gaia_dataset.py # GAIA dataset implementation
 │   ├── membench.py    # MemBench loader
 │   ├── longmemeval.py # LongMemEval loader
 │   └── gaia.py        # GAIA loader
-├── runners/           # Runner abstractions
-│   ├── base.py        # Runner protocol
-│   ├── command.py     # CommandRunner (subprocess runner)
-│   └── resolver.py    # Runner spec resolution
-├── stages/            # Pipeline stages
-│   ├── case.py        # Case model
-│   ├── runner.py      # RunnerOutput model & legacy runner function
-│   ├── evaluator.py   # Evaluation functions
-│   └── result.py      # CaseResult, AggregatedMetrics, aggregation
-└── runners/           # Standalone runner scripts executed per case
-    ├── qa/
-    └── agentic/
+└── runners/           # Runner implementations
+    ├── qa_long_context.py
+    ├── qa_mem0.py
+    ├── agentic_long_context.py
+    └── agentic_mem0.py
 ```
 
 ## Code Style Rules (Enforced by Ruff)
@@ -157,25 +149,10 @@ The Dataset's `evaluate_case()` method defines how correctness is judged. QA dat
 
 Runners can be implemented in two ways:
 
-#### 1. External Command Runners (Any Language)
+#### 1. External Command Runners
 
-Runners are standalone scripts that follow a simple JSON protocol:
+*Not currently implemented in CLI, but architecture supports it.*
 
-1. **Built-in runners**: Place scripts under `runners/{qa|agentic}/` with naming pattern `{name}_runner.py` (e.g., `runners/qa/long_context_runner.py`). Reference them via shorthand: `qa/long_context`.
-
-2. **External runners**: Place scripts anywhere on the filesystem. Reference them via:
-   - Relative path: `./path/to/my_runner.py`
-   - Absolute path: `/abs/path/to/my_runner.py`
-
-3. **Runner Protocol**:
-   - Read `Case` JSON from stdin: `{"id": "...", "task_type": "...", "inputs": {...}}`
-   - Read configuration from environment:
-     - `MODEL`: Model name
-     - `OPENAI_API_KEY`: API key
-     - `OPENAI_BASE_URL`: Proxy base URL (always route LLM calls here for metrics)
-     - `AGENTBENCH_RUN_ID`: Run identifier
-     - `AGENTBENCH_DATASET`: Dataset name
-   - Write JSON to stdout: `{"result": "...", "error": null}` or `{"result": null, "error": "..."}`
 
 #### 2. Python Library Runners
 
@@ -234,9 +211,8 @@ cat runs/*/metrics.json | jq '.avg_llm_latency_ms, .p50_llm_latency_ms, .p95_llm
 - Proxy metrics accumulate per case and are flushed after each result (`proxy.metrics.clear_metrics("_current")`).
 
 ### Runner Spec Resolution
-- Built-in shorthand (e.g., `qa/long_context`) → `runners/{spec}_runner.py` in project root.
-- Filesystem paths (`./script.py`, `/abs/path.py`) → resolved directly, no renaming.
-- Centralized resolver (`runners/resolver.py`) handles all path logic.
+- Built-in shorthand (e.g., `qa/long_context`) → Resolved via `RUNNERS` map in `agentbench/cli.py`.
+- Maps to runner implementations in `agentbench/runners/`.
 
 ### Metrics Collection
 - Capture runner duration (`runner_duration_ms`) plus proxy metrics (`llm_latency_ms`, token counts, cost).
@@ -286,9 +262,9 @@ cat runs/*/metrics.json | jq '.avg_llm_latency_ms, .p50_llm_latency_ms, .p95_llm
 
 ### Issue: Ruff failing
 ```bash
-uv run ruff check agentbench/ runners/        # Inspect failures
-uv run ruff check agentbench/ runners/ --fix  # Auto-fix
-uv run ruff format agentbench/ runners/       # Format
+uv run ruff check agentbench/        # Inspect failures
+uv run ruff check agentbench/ --fix  # Auto-fix
+uv run ruff format agentbench/       # Format
 ```
 
 ### Issue: Missing dependencies
@@ -314,9 +290,9 @@ uv sync --all-extras
 ## Workflow
 
 1. Make your code changes
-2. Run `uv run ruff check agentbench/ runners/ --fix`
-3. Run `uv run ruff format agentbench/ runners/`
-4. Verify `uv run ruff check agentbench/ runners/` passes
+2. Run `uv run ruff check agentbench/ --fix`
+3. Run `uv run ruff format agentbench/`
+4. Verify `uv run ruff check agentbench/` passes
 5. Test with `uv run agentbench --dataset membench --runner qa/long_context --limit 2`
 6. Verify latency metrics appear in `runs/*/metrics.json`
 7. Task complete ✅
