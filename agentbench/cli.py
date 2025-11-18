@@ -77,6 +77,12 @@ def main(
         "--judge-model",
         help="Model to use for LLM-as-judge evaluations.",
     ),
+    concurrency: int = typer.Option(  # noqa: B008
+        1,
+        "--concurrency",
+        "-c",
+        help="Number of concurrent case evaluations.",
+    ),
     verbose: bool = typer.Option(  # noqa: B008
         False,
         "--verbose",
@@ -129,6 +135,7 @@ def main(
         "upstream_base_url": upstream_base_url,
         "embedding_model": embedding_model,
         "judge_model": judge_model,
+        "concurrency": concurrency,
     }
 
     results = asyncio.run(
@@ -144,6 +151,7 @@ def main(
             judge_model=judge_model,
             upstream_base_url=upstream_base_url,
             limit=limit,
+            concurrency=concurrency,
         )
     )
 

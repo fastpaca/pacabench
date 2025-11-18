@@ -1,6 +1,7 @@
 """Mem0 agentic runner with tools and memory."""
 
 import time
+from pathlib import Path
 
 from mem0 import AsyncMemory
 from smolagents import (
@@ -15,6 +16,39 @@ from smolagents.models import OpenAIServerModel
 
 from agentbench.types import Case, Runner, RunnerContext, RunnerOutput
 
+_MEMORIES: dict[int, AsyncMemory] = {}
+
+
+async def _get_memory(worker_id: int, ctx: RunnerContext) -> AsyncMemory:
+    """
+    Get or create AsyncMemory instance for a specific worker.
+
+    Lazy initialization: creates AsyncMemory on first use per worker.
+    Each worker gets its own Chroma database path to avoid contention.
+
+    Args:
+        worker_id: Stable worker identifier
+        ctx: Runner context (for embedder config)
+
+    Returns:
+        AsyncMemory instance for this worker
+    """
+    if worker_id not in _MEMORIES:
+        db_path = str(Path(f"/tmp/mem0-chroma-agentbench-gaia-worker-{worker_id}").resolve())
+        config = {
+            "vector_store": {
+                "provider": "chroma",
+                "config": {
+                    "collection_name": "agentbench_gaia",
+                    "path": db_path,
+                },
+            },
+            "embedder": {"provider": "openai"},
+        }
+        _MEMORIES[worker_id] = await AsyncMemory.from_config(config)
+
+    return _MEMORIES[worker_id]
+
 
 class Mem0AgenticRunner(Runner):
     """Mem0 agentic runner with tools and memory."""
@@ -25,25 +59,25 @@ class Mem0AgenticRunner(Runner):
 
         Args:
             case: Test case
-            ctx: Evaluation context
+            ctx: Evaluation context (must have worker_id set)
 
         Returns:
             RunnerOutput with output, error, and metrics
         """
         start_time = time.time()
 
+        if ctx.worker_id is None:
+            return RunnerOutput(
+                output=None,
+                error="Runner execution failed: worker_id is required for Mem0AgenticRunner",
+                duration_ms=(time.time() - start_time) * 1000,
+            )
+
         try:
-            config = {
-                "vector_store": {
-                    "provider": "qdrant",
-                    "config": {"collection_name": "agentbench_gaia", "host": "memory"},
-                },
-                "embedder": {"provider": "openai"},
-            }
-            memory = await AsyncMemory.from_config(config)
+            memory = await _get_memory(ctx.worker_id, ctx)
             model_obj = OpenAIServerModel(
                 model_id=ctx.model,
-                api_base=f"http://localhost:{ctx.proxy_port}/v1",
+                api_base=f"http://localhost:{ctx.proxy_port}/v1/case/{ctx.case_id}",
                 api_key=ctx.openai_api_key,
             )
             tools = [

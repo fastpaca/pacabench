@@ -126,15 +126,17 @@ class ProxyServer:
 
     def _setup_routes(self) -> None:
         @self.app.post("/v1/chat/completions")
+        @self.app.post("/v1/case/{case_id}/chat/completions")
         async def chat_completions(
             request: Request,
+            case_id: str | None = None,
             x_case_id: str | None = Header(None, alias="X-Case-ID"),
         ) -> JSONResponse:
             """Proxy chat completions to OpenAI and track metrics."""
             body = await request.json()
             model = body.get("model", "gpt-4o-mini")
 
-            case_id = x_case_id or "_current"
+            case_id = x_case_id or case_id or "_current"
             self._log_request("/v1/chat/completions", body, case_id)
 
             start_time = time.time()
@@ -152,15 +154,17 @@ class ProxyServer:
                 )
 
         @self.app.post("/v1/beta/chat/completions")
+        @self.app.post("/v1/case/{case_id}/beta/chat/completions")
         async def beta_chat_completions(
             request: Request,
+            case_id: str | None = None,
             x_case_id: str | None = Header(None, alias="X-Case-ID"),
         ) -> JSONResponse:
             """Proxy beta chat completions (structured outputs) to OpenAI."""
 
             body = await request.json()
             model = body.get("model", "gpt-4o-mini")
-            case_id = x_case_id or "_current"
+            case_id = x_case_id or case_id or "_current"
             self._log_request("/v1/beta/chat/completions", body, case_id)
 
             if not self._openai_api_key:
@@ -210,13 +214,15 @@ class ProxyServer:
             return JSONResponse(content=response_data)
 
         @self.app.post("/v1/embeddings")
+        @self.app.post("/v1/case/{case_id}/embeddings")
         async def embeddings(
             request: Request,
+            case_id: str | None = None,
             x_case_id: str | None = Header(None, alias="X-Case-ID"),
         ) -> JSONResponse:
             """Proxy embeddings to OpenAI."""
             body = await request.json()
-            case_id = x_case_id or "_current"
+            case_id = x_case_id or case_id or "_current"
             self._log_request("/v1/embeddings", body, case_id)
 
             try:
