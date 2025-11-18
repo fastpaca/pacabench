@@ -13,7 +13,7 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from genai_prices import Usage, calc_price
 from loguru import logger
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 
 class MetricsCollector:
@@ -109,7 +109,7 @@ class ProxyServer:
         ).rstrip("/")
         self._upstream_base_url = upstream_base
         self._upstream_api_url = f"{self._upstream_base_url}/v1"
-        self.openai_client = OpenAI(
+        self.openai_client = AsyncOpenAI(
             api_key=openai_api_key,
             base_url=self._upstream_api_url,
         )
@@ -141,7 +141,7 @@ class ProxyServer:
 
             start_time = time.time()
             try:
-                response = self.openai_client.chat.completions.create(**body)
+                response = await self.openai_client.chat.completions.create(**body)
                 latency_ms = (time.time() - start_time) * 1000
 
                 self._record_usage(case_id, model, usage=response.usage, latency_ms=latency_ms)
@@ -184,12 +184,13 @@ class ProxyServer:
 
             start_time = time.time()
             try:
-                response = httpx.post(
-                    self._beta_chat_url,
-                    json=body,
-                    headers=headers,
-                    timeout=self._request_timeout,
-                )
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        self._beta_chat_url,
+                        json=body,
+                        headers=headers,
+                        timeout=self._request_timeout,
+                    )
             except httpx.HTTPError as exc:
                 logger.error(f"Proxy beta request failed: {exc}")
                 return JSONResponse(status_code=500, content={"error": str(exc)})
@@ -226,7 +227,7 @@ class ProxyServer:
             self._log_request("/v1/embeddings", body, case_id)
 
             try:
-                response = self.openai_client.embeddings.with_raw_response.create(**body)
+                response = await self.openai_client.embeddings.with_raw_response.create(**body)
             except Exception as e:
                 return JSONResponse(
                     status_code=500,
