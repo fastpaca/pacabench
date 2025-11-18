@@ -9,7 +9,7 @@ from agentbench.types import CaseResult
 
 
 class Results:
-    """Results container that ingests cases incrementally and saves to disk."""
+    """Results container that accumulates cases in memory and saves to disk on finalize."""
 
     def __init__(self, output_dir: Path, config: dict[str, Any], run_id: str) -> None:
         """
@@ -31,26 +31,23 @@ class Results:
         with open(self.output_dir / "config.json", "w") as f:
             json.dump(self.config, f, indent=2)
 
-        results_file = self.output_dir / "results.jsonl"
-        if results_file.exists():
-            results_file.unlink()
-
     def add_case(self, case_result: CaseResult) -> None:
         """
-        Add a case result and update metrics/files incrementally.
+        Add a case result to the in-memory collection.
 
         Args:
             case_result: Case result to add
         """
         self.cases.append(case_result)
 
-        with open(self.output_dir / "results.jsonl", "a") as f:
-            f.write(json.dumps(_case_result_to_dict(case_result)) + "\n")
-        # Aggregated metrics are computed on finalize() to avoid recomputing on every case.
-
     def finalize(self) -> None:
-        """Compute final aggregated metrics and write metrics to disk."""
+        """Compute final aggregated metrics and write all results to disk."""
         self.metrics = aggregate_results(self.cases)
+
+        with open(self.output_dir / "results.jsonl", "w") as f:
+            for case_result in self.cases:
+                f.write(json.dumps(_case_result_to_dict(case_result)) + "\n")
+
         with open(self.output_dir / "metrics.json", "w") as f:
             json.dump(self.metrics.model_dump(exclude_none=False), f, indent=2)
 

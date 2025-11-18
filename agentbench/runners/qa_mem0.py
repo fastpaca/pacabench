@@ -1,6 +1,7 @@
 """Mem0 QA runner with memory retrieval."""
 
 import time
+from pathlib import Path
 
 from mem0 import AsyncMemory
 from pydantic_ai import Agent, ModelRequest, UserPromptPart
@@ -8,6 +9,41 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from agentbench.types import Case, Runner, RunnerContext, RunnerOutput
+
+_MEMORIES: dict[int, AsyncMemory] = {}
+
+
+async def _get_memory(worker_id: int, ctx: RunnerContext) -> AsyncMemory:
+    """
+    Get or create AsyncMemory instance for a specific worker.
+
+    Lazy initialization: creates AsyncMemory on first use per worker.
+    Each worker gets its own Chroma database path to avoid contention.
+
+    Args:
+        worker_id: Stable worker identifier
+        ctx: Runner context (for embedder config)
+
+    Returns:
+        AsyncMemory instance for this worker
+    """
+    if worker_id not in _MEMORIES:
+        db_path = str(Path(f"/tmp/mem0-chroma-agentbench-worker-{worker_id}").resolve())
+        vector_store = {
+            "provider": "chroma",
+            "config": {
+                "collection_name": "agentbench",
+                "path": db_path,
+            },
+        }
+        embedder_config = {"provider": "openai"}
+        if ctx.embedding_model:
+            embedder_config["config"] = {"model": ctx.embedding_model}
+
+        config = {"vector_store": vector_store, "embedder": embedder_config}
+        _MEMORIES[worker_id] = await AsyncMemory.from_config(config)
+
+    return _MEMORIES[worker_id]
 
 
 class Mem0Runner(Runner):
@@ -19,29 +55,26 @@ class Mem0Runner(Runner):
 
         Args:
             case: Test case
-            ctx: Evaluation context
+            ctx: Evaluation context (must have worker_id set)
 
         Returns:
             RunnerOutput with output, error, and metrics
         """
         start_time = time.time()
 
+        if ctx.worker_id is None:
+            return RunnerOutput(
+                output=None,
+                error="Runner execution failed: worker_id is required for Mem0Runner",
+                duration_ms=(time.time() - start_time) * 1000,
+            )
+
         try:
-            vector_store = {
-                "provider": "qdrant",
-                "config": {"collection_name": "agentbench", "host": "memory"},
-            }
-            embedder_config = {"provider": "openai"}
-            if ctx.embedding_model:
-                embedder_config["config"] = {"model": ctx.embedding_model}
-
-            config = {"vector_store": vector_store, "embedder": embedder_config}
-
-            memory = await AsyncMemory.from_config(config)
+            memory = await _get_memory(ctx.worker_id, ctx)
             model_obj = OpenAIChatModel(
                 ctx.model,
                 provider=OpenAIProvider(
-                    base_url=f"http://localhost:{ctx.proxy_port}/v1",
+                    base_url=f"http://localhost:{ctx.proxy_port}/v1/case/{ctx.case_id}",
                     api_key=ctx.openai_api_key,
                 ),
             )
@@ -58,7 +91,11 @@ class Mem0Runner(Runner):
                 ]
                 await memory.add(messages, user_id=user_id)
 
-            search_result = await memory.search(query=question, user_id=user_id, limit=5)
+            search_result = await memory.search(
+                query=question,
+                user_id=user_id,
+                limit=5,
+            )
             relevant_memories = (
                 search_result.get("results", [])
                 if isinstance(search_result, dict)

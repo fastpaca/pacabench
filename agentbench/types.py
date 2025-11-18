@@ -67,6 +67,8 @@ class RunnerContext(BaseModel):
     proxy_port: int = Field(..., description="Proxy server port")
     openai_api_key: str = Field(..., description="OpenAI API key")
     embedding_model: str | None = Field(None, description="Embedding model name if applicable")
+    case_id: str = Field(..., description="Case ID for metrics tracking")
+    worker_id: int | None = Field(None, description="Worker ID for per-worker resource reuse")
 
     model_config = {"extra": "forbid"}
 

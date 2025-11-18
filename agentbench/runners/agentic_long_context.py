@@ -37,7 +37,7 @@ class LongContextAgenticRunner(Runner):
         try:
             model_obj = OpenAIServerModel(
                 model_id=ctx.model,
-                api_base=f"http://localhost:{ctx.proxy_port}/v1",
+                api_base=f"http://localhost:{ctx.proxy_port}/v1/case/{ctx.case_id}",
                 api_key=ctx.openai_api_key,
             )
             tools = [
@@ -54,7 +54,7 @@ class LongContextAgenticRunner(Runner):
             if case.inputs.get("file_name"):
                 question += f"\n\nNote: A file '{case.inputs['file_name']}' is mentioned but not yet accessible."
 
-            result = await agent.run(question, return_full_result=True)
+            result = agent.run(question, return_full_result=True)
             output = str(result.output).strip()
 
             duration_ms = (time.time() - start_time) * 1000

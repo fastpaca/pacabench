@@ -32,7 +32,7 @@ class LongContextRunner(Runner):
             model_obj = OpenAIChatModel(
                 ctx.model,
                 provider=OpenAIProvider(
-                    base_url=f"http://localhost:{ctx.proxy_port}/v1",
+                    base_url=f"http://localhost:{ctx.proxy_port}/v1/case/{ctx.case_id}",
                     api_key=ctx.openai_api_key,
                 ),
             )
