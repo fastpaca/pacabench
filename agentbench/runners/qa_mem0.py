@@ -11,6 +11,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from agentbench.types import Case, Runner, RunnerContext, RunnerOutput
 
 _MEMORIES: dict[int, AsyncMemory] = {}
+_AGENTS: dict[int, Agent] = {}
 
 
 async def _get_memory(worker_id: int, ctx: RunnerContext) -> AsyncMemory:
@@ -71,6 +72,21 @@ async def _get_memory(worker_id: int, ctx: RunnerContext) -> AsyncMemory:
     return _MEMORIES[worker_id]
 
 
+async def _get_agent(worker_id: int, ctx: RunnerContext) -> Agent:
+    """Get or create Agent instance for a specific worker."""
+    if worker_id not in _AGENTS:
+        model_obj = OpenAIChatModel(
+            ctx.model,
+            provider=OpenAIProvider(
+                base_url=f"http://localhost:{ctx.proxy_port}/v1",
+                api_key=ctx.openai_api_key,
+                http_client=None,  # Use default client
+            ),
+        )
+        _AGENTS[worker_id] = Agent(model=model_obj)
+    return _AGENTS[worker_id]
+
+
 class Mem0Runner(Runner):
     """Mem0 QA runner with memory retrieval."""
 
@@ -96,14 +112,7 @@ class Mem0Runner(Runner):
 
         try:
             memory = await _get_memory(ctx.worker_id, ctx)
-            model_obj = OpenAIChatModel(
-                ctx.model,
-                provider=OpenAIProvider(
-                    base_url=f"http://localhost:{ctx.proxy_port}/v1",
-                    api_key=ctx.openai_api_key,
-                ),
-            )
-            agent = Agent(model=model_obj)
+            agent = await _get_agent(ctx.worker_id, ctx)
 
             user_id = case.id
             conversation = case.inputs["conversation"]
