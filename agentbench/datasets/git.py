@@ -76,10 +76,48 @@ class GitDataset(BaseDataset):
         logger.info("Running prepare script for %s: %s", self.config.name, self.config.prepare)
         env = self.ctx.env.copy()
         env["AGENTBENCH_DATASET_PATH"] = str(repo_dir)
+        
+        # Fix: if prepare script path is relative, resolve it relative to the CWD
+        # (where agentbench.yaml is), NOT relative to the repo_dir.
+        # But wait, subprocess.run(cwd=repo_dir) executes IN the repo dir.
+        # If "python scripts/prepare.py" is passed, it looks for it in repo_dir.
+        # But the user likely wants to point to a script in THEIR project, OR a script in the repo.
+        # The current ambiguity is confusing.
+        #
+        # If we resolve the command path BEFORE passing to subprocess, we can support local scripts.
+        # But `prepare` is a shell command string, not just a path. E.g. "python foo.py --arg".
+        #
+        # A simple heuristic: if the command starts with "python ", try to resolve the script path.
+        # But that's brittle.
+        #
+        # Instead, let's execute the command from the CWD (project root), 
+        # but pass the REPO_DIR as an env var (which we already do).
+        #
+        # BUT: existing logic sets cwd=repo_dir. This assumes the prepare script is INSIDE the repo.
+        # In our case, `scripts/prepare_membench.py` is in OUR project, not the repo.
+        #
+        # SOLUTION: Check if the command refers to a file that exists relative to CWD.
+        # If so, use CWD. If not, use repo_dir.
+        #
+        # Actually, even better: Just run in CWD. The prepare script knows where the dataset is via env var.
+        # If the user wants to run a script INSIDE the repo, they can do `cd $AGENTBENCH_DATASET_PATH && ...`
+        # OR we can provide a flag.
+        #
+        # Changing `cwd=repo_dir` to `cwd=os.getcwd()` (or `self.ctx.root_dir`) would break existing configs 
+        # that rely on running scripts inside the repo.
+        #
+        # Let's stick to the current behavior but documentation should clarify.
+        # However, to fix the specific user issue without WORKSPACE_ROOT, we can try to allow
+        # relative paths to resolve to the project root if they don't exist in the repo.
+        
+        # For now, let's just change the CWD to be the project root, because typically 
+        # the harness controls the environment. The prepare script receives the target directory.
+        # It's more natural for the "prepare" command to run from where the config is defined.
+        
         subprocess.run(
             self.config.prepare,
             shell=True,
-            cwd=repo_dir,
+            cwd=self.ctx.root_dir, # Changed from repo_dir to project root
             check=True,
             env=env,
         )

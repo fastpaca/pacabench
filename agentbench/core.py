@@ -238,6 +238,9 @@ class Harness:
                             else None,
                             judge_reason=eval_result.reason,
                             judge_metrics=eval_result.metrics,
+                            judge_cost_usd=eval_result.metrics.get("cost_usd")
+                            if eval_result.metrics
+                            else None,
                         )
 
                         if runner_output.error_type == ErrorType.SYSTEM:

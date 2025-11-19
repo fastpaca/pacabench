@@ -4,7 +4,7 @@ version: "1.0.0"
 
 config:
   concurrency: 2
-  timeout_seconds: 60
+  timeout_seconds: 180
   proxy:
     enabled: true
     provider: "openai"
@@ -20,8 +20,30 @@ agents:
     env:
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
 
+  - name: "zep-graphiti"
+    command: "python agents/zep_graphiti_agent.py"
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
 datasets:
   - name: "membench"
+    # We use the local scripts to prepare the dataset.
+    # Ideally we should fetch the repo, but we can also just use the local script
+    # that assumes it's running in the repo context if we were doing full integration.
+    # BUT: GitDataset clones the repo to ~/.cache/agentbench/repos/Membench
+    # and runs the prepare script THERE.
+    # The prepare script `scripts/prepare_membench.py` is currently in `examples/membench_qa_test/scripts/`.
+    # GitDataset expects the prepare script to be a command string.
+    # If we point to `python scripts/prepare_membench.py`, it looks for it in CWD (the repo dir).
+    # So we need to either:
+    # 1. Copy the prepare script to the repo (hard)
+    # 2. Use an absolute path to our local prepare script.
+    # 3. Put the logic in the agentbench codebase itself (as a built-in dataset).
+    #
+    # For this test, let's try to use the absolute path to the prepare script we have here.
+    # Since I can't easily get the absolute path dynamically in YAML without env vars,
+    # I will assume the user runs from `memharness`.
+    
     source: "git:https://github.com/import-myself/Membench.git"
     prepare: "python scripts/prepare_membench.py"
     input_map:

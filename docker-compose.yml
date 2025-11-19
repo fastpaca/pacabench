@@ -12,13 +12,28 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage
 
+  neo4j:
+    image: neo4j:5.21
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - ./neo4j_data:/data
+
   agentbench:
     build: .
     depends_on:
       - qdrant
+      - neo4j
     environment:
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
       MEM0_QDRANT_HOST: "qdrant"
+      NEO4J_URI: "bolt://neo4j:7687"
+      NEO4J_USER: "neo4j"
+      NEO4J_PASSWORD: "password"
       LOG_LEVEL: "ERROR"
     working_dir: /app
     volumes:
@@ -28,4 +43,4 @@ services:
       nproc: 65535
       nofile: 1048576
     command: >
-      resume membench-qa-mem0-20251118-222118 
+      resume membench-qa-mem0-20251118-222118
