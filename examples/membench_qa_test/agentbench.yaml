@@ -1,0 +1,35 @@
+name: membench-qa-test
+description: Recreation of QA test for long-context & mem0
+version: "1.0.0"
+
+config:
+  concurrency: 2
+  timeout_seconds: 60
+  proxy:
+    enabled: true
+    provider: "openai"
+
+agents:
+  - name: "long-context-baseline"
+    command: "python agents/long_context_agent.py"
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+  - name: "mem0-v1"
+    command: "python agents/mem0_agent.py"
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+datasets:
+  - name: "membench"
+    source: "git:https://github.com/import-myself/Membench.git"
+    prepare: "python scripts/prepare_membench.py"
+    input_map:
+      input: "question"
+      expected: "ground_truth"
+    evaluator:
+      type: "llm_judge"
+      model: "gpt-4o-mini"
+
+output:
+  directory: "./runs"
