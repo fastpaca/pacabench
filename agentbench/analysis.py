@@ -45,6 +45,7 @@ def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
 
     latencies = []
     total_cost = 0.0
+    total_judge_cost = 0.0
     total_input = 0
     total_output = 0
 
@@ -54,6 +55,7 @@ def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
         total_cost += metrics.get("llm_total_cost_usd", 0.0)
         total_input += metrics.get("llm_input_tokens", 0)
         total_output += metrics.get("llm_output_tokens", 0)
+        total_judge_cost += r.judge_cost_usd or 0.0
 
         lats = metrics.get("llm_latency_ms", [])
         if isinstance(lats, list):
@@ -78,6 +80,7 @@ def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
         total_input_tokens=total_input,
         total_output_tokens=total_output,
         total_cost_usd=total_cost,
+        total_judge_cost_usd=total_judge_cost,
     )
 
 
@@ -151,7 +154,7 @@ def print_report(run_id: str, run_dir: Path):
                 f"  LLM Latency: avg={m.avg_llm_latency_ms:.0f}ms, p50={m.p50_llm_latency_ms:.0f}ms, p95={m.p95_llm_latency_ms:.0f}ms"
             )
             console.print(f"  Tokens: In={m.total_input_tokens}, Out={m.total_output_tokens}")
-            console.print(f"  Cost: ${m.total_cost_usd:.8f}")
+            console.print(f"  Cost: ${m.total_cost_usd:.6f} (Agent) + ${m.total_judge_cost_usd:.6f} (Judge) = ${m.total_cost_usd + m.total_judge_cost_usd:.6f}")
 
     # System Errors
     errors_path = run_dir / "system_errors.jsonl"

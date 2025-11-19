@@ -44,10 +44,29 @@ class BaseDataset(ABC):
         case_id = str(record.get("case_id", record.get("id", fallback_id)))
         history = record.get("history")
         history_list = history if isinstance(history, list) else []
+
+        # Keys to exclude from metadata to prevent leakage
+        exclude_keys = {
+            input_key,
+            expected_key,
+            "history",
+            "case_id",
+            "id",
+            # Common answer/ground-truth fields
+            "ground_truth",
+            "answer",
+            "solution",
+            "explanation",
+            "reasoning",
+            "correct_answer",
+            "label",
+            "target",
+        }
+
         metadata = {
             key: value
             for key, value in record.items()
-            if key not in {input_key, expected_key, "history"}
+            if key not in exclude_keys
         }
         return Case(
             case_id=case_id,

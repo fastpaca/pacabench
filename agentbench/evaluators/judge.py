@@ -1,6 +1,7 @@
 import os
 import time
 
+from genai_prices import Usage, calc_price
 from openai import AsyncOpenAI
 
 from agentbench.evaluators.base import BaseEvaluator
@@ -67,9 +68,26 @@ Respond with ONLY "YES" or "NO"."""
             judgment = judgment.strip().upper()
             passed = judgment.startswith("YES")
 
+            input_tokens = completion.usage.prompt_tokens if completion.usage else 0
+            output_tokens = completion.usage.completion_tokens if completion.usage else 0
+
+            # Calculate cost
+            cost_usd = 0.0
+            try:
+                usage_obj = Usage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+                price_calc = calc_price(usage_obj, self.model)
+                cost_usd = float(price_calc.total_price)
+            except Exception:
+                # If cost calculation fails (e.g. unknown model), default to 0
+                pass
+
             usage = {
-                "input_tokens": completion.usage.prompt_tokens if completion.usage else 0,
-                "output_tokens": completion.usage.completion_tokens if completion.usage else 0,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd
             }
 
             return EvaluationResult(
@@ -89,5 +107,18 @@ Respond with ONLY "YES" or "NO"."""
             )
 
     def _build_client(self, proxy_url: str | None) -> AsyncOpenAI:
-        base_url = proxy_url or self._default_base_url or "https://api.openai.com/v1"
+        # NOTE: We explicitly prefer direct OpenAI connection (or env var) for the judge,
+        # unless the user forces everything through proxy.
+        # But the spec says: "we don't need to route the judge eval to the proxy"
+        # So we will ignore proxy_url if we have a direct key/url, or use default.
+        # Actually, to be safe and independent, we should just use standard env vars.
+
+        # However, the current code passed proxy_url. We should probably ignore it
+        # if we want to enforce "side effect cost".
+        # But if the user runs locally with no internet and a local LLM at proxy_url,
+        # we might want to use it?
+        # The user instruction: "we don't need to route the judge eval to the proxy but we should include it as a secondary cost metric"
+        # So using direct OpenAI is fine.
+
+        base_url = self._default_base_url or "https://api.openai.com/v1"
         return AsyncOpenAI(api_key=self._api_key, base_url=base_url)

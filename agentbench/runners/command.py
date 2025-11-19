@@ -48,6 +48,7 @@ class CommandRunner(BaseRunner):
             if proc.returncode != 0:
                 raise RuntimeError(f"Setup failed for {self.config.name}")
 
+        # Ensure stdout/stderr are buffered properly? default is typically fine.
         self._process = await asyncio.create_subprocess_shell(
             self.config.command,
             stdin=asyncio.subprocess.PIPE,
@@ -122,10 +123,17 @@ class CommandRunner(BaseRunner):
                     # Implement timeout? Harness level timeout vs Runner level.
                     # Spec says "timeout_seconds" in GlobalConfig.
                     # We should probably use `asyncio.wait_for`.
-
+                    
+                    # FIX: If EOF is encountered, it might mean the process crashed or closed stdout.
+                    # We should inspect stderr or returncode?
+                    # Currently we return EOF error immediately.
+                    # Maybe wait for stderr to drain?
+                    
                     line_bytes = await self._process.stdout.readline()
                     if not line_bytes:
                         # EOF
+                        # Wait a brief moment for stderr to drain to logs
+                        await asyncio.sleep(0.1)
                         return RunnerOutput(
                             error="Process exited unexpectedly (EOF)",
                             duration_ms=(time.perf_counter() - start_time) * 1000,
