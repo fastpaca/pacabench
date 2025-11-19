@@ -210,3 +210,6 @@ runs/
 .qdrant/
 
 .DS_Store
+
+neo4j_data/
+qdrant_storage/
