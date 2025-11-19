@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    environment:
+      QDRANT__LOG_LEVEL: "ERROR"   # Qdrant’s config key
+      RUST_LOG: "error"            # extra belt-and-suspenders
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+
+  agentbench:
+    build: .
+    depends_on:
+      - qdrant
+    environment:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      MEM0_QDRANT_HOST: "qdrant"
+      LOG_LEVEL: "ERROR"
+    working_dir: /app
+    volumes:
+      - ./runs:/app/runs
+    # Relax limits inside the container to avoid thread/FD caps
+    ulimits:
+      nproc: 65535
+      nofile: 1048576
+    command: >
+      resume membench-qa-mem0-20251118-222118 
