@@ -1,8 +1,15 @@
-"""Dataset loaders for AgentBench."""
+from agentbench.config import DatasetConfig
+from agentbench.datasets.base import BaseDataset
+from agentbench.datasets.git import GitDataset
+from agentbench.datasets.hf import HuggingFaceDataset
+from agentbench.datasets.local import LocalDataset
 
-from agentbench.datasets.base import Dataset
-from agentbench.datasets.gaia import GaiaDataset
-from agentbench.datasets.longmemeval import LongMemEvalDataset
-from agentbench.datasets.membench import MemBenchDataset
 
-__all__ = ["Dataset", "GaiaDataset", "LongMemEvalDataset", "MemBenchDataset"]
+def get_dataset(config: DatasetConfig) -> BaseDataset:
+    if config.source.startswith("git:"):
+        return GitDataset(config)
+    elif config.source.startswith("huggingface:"):
+        return HuggingFaceDataset(config)
+    else:
+        return LocalDataset(config)
+

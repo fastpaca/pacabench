@@ -110,12 +110,13 @@ class ProxyServer:
         self._upstream_base_url = upstream_base
         self._upstream_api_url = f"{self._upstream_base_url}/v1"
         self.openai_client = AsyncOpenAI(
-            api_key=openai_api_key,
+            api_key=openai_api_key or "dummy",  # Client needs key even if proxy handles auth
             base_url=self._upstream_api_url,
         )
         self._beta_chat_url = f"{self._upstream_api_url}/beta/chat/completions"
         self._server_thread: threading.Thread | None = None
         self._should_stop = False
+        self._server = None
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -141,6 +142,8 @@ class ProxyServer:
 
             start_time = time.time()
             try:
+                # If key is missing, try to use env var or what was passed to init
+                # OpenAI client will look for env var OPENAI_API_KEY
                 response = await self.openai_client.chat.completions.create(**body)
                 latency_ms = (time.time() - start_time) * 1000
 
@@ -167,14 +170,18 @@ class ProxyServer:
             case_id = x_case_id or case_id or "_current"
             self._log_request("/v1/beta/chat/completions", body, case_id)
 
-            if not self._openai_api_key:
+            # Manual fetch using httpx because openai python client might not fully support beta paths via same client easily
+            # Actually new client does, but let's keep the logic if it works.
+
+            api_key = self._openai_api_key or os.environ.get("OPENAI_API_KEY")
+            if not api_key:
                 return JSONResponse(
                     status_code=500,
                     content={"error": "Proxy missing OPENAI_API_KEY for upstream requests."},
                 )
 
             headers = {
-                "Authorization": f"Bearer {self._openai_api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             }
             for header_name in ("OpenAI-Beta", "OpenAI-Organization", "OpenAI-Project"):
@@ -264,7 +271,7 @@ class ProxyServer:
                 pass
             time.sleep(0.1)
 
-        raise RuntimeError("Proxy server failed to start")
+        raise RuntimeError(f"Proxy server failed to start on port {self.port}")
 
     async def _run_server(self) -> None:
         """Run the uvicorn server."""
@@ -274,12 +281,16 @@ class ProxyServer:
             port=self.port,
             log_level="error",
         )
-        server = uvicorn.Server(config)
-        await server.serve()
+        self._server = uvicorn.Server(config)
+        await self._server.serve()
 
     def stop(self) -> None:
         """Stop the proxy server."""
         self._should_stop = True
+        if self._server:
+            self._server.should_exit = True
+        if self._server_thread:
+            self._server_thread.join(timeout=2.0)
 
     def _record_usage(self, case_id: str, model: str, usage: Any, latency_ms: float) -> None:
         """Record token usage for metrics from OpenAI responses."""

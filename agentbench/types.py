@@ -1,105 +1,91 @@
-"""Common types used across the evaluation pipeline."""
-
-from __future__ import annotations
-
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
+class Case(BaseModel):
+    """Represents a single test case input to the agent."""
+
+    case_id: str
+    dataset_name: str
+    input: str
+    expected: str | None = None
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    # Allow extra fields for dataset-specific metadata
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunnerMetrics(BaseModel):
-    """Performance metrics collected by runners."""
+    """Metrics returned by the agent runner (optional override/supplement to proxy)."""
 
-    model_duration_ms: float = Field(..., description="Model execution duration in milliseconds")
-    llm_metrics: dict[str, Any] = Field(
-        ..., description="LLM proxy metrics (tokens, latency, cost, etc.)"
-    )
-
-    model_config = {"extra": "forbid"}
+    call_count: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cost_usd: float | None = None
+    latency_ms: float | None = None
 
 
 class RunnerOutput(BaseModel):
-    """Output from a runner execution."""
+    """Raw output from the agent runner process."""
 
-    output: str | None = Field(None, description="Model output")
-    error: str | None = Field(None, description="Error message if execution failed")
-    duration_ms: float = Field(..., description="Runner execution duration in milliseconds")
-
-    model_config = {"extra": "forbid"}
+    output: str | None = None
+    error: str | None = None
+    metrics: RunnerMetrics | None = None
+    duration_ms: float = 0.0
 
 
 class EvaluationResult(BaseModel):
-    """Results from dataset evaluation."""
+    """Result of an evaluation (judge or heuristic)."""
 
-    passed: bool = Field(..., description="Whether the case passed")
-    f1_score: float | None = Field(None, description="F1 score if applicable")
-    f1_passed: bool | None = Field(None, description="Whether F1 evaluation passed")
-    judge_passed: bool | None = Field(None, description="Whether judge evaluation passed")
-
-    model_config = {"extra": "forbid"}
-
-
-class Case(BaseModel):
-    """Canonical test case input."""
-
-    id: str = Field(..., description="Unique identifier for the test case")
-    task_type: str = Field(..., description="Type of task (e.g., 'qa', 'agentic')")
-    inputs: dict[str, Any] = Field(..., description="Input data for the case")
-    expected_output: str = Field(..., description="Expected output/answer")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
-
-    model_config = {"extra": "forbid"}
-
-
-class JudgeMetrics(BaseModel):
-    """Metrics from LLM-as-judge evaluation."""
-
-    input_tokens: int = Field(..., description="Judge input tokens")
-    output_tokens: int = Field(..., description="Judge output tokens")
-
-    model_config = {"extra": "forbid"}
-
-
-class RunnerContext(BaseModel):
-    """Lightweight context for runner execution - only runtime config."""
-
-    model: str = Field(..., description="Model name")
-    proxy_port: int = Field(..., description="Proxy server port")
-    openai_api_key: str = Field(..., description="OpenAI API key")
-    embedding_model: str | None = Field(None, description="Embedding model name if applicable")
-    case_id: str = Field(..., description="Case ID for metrics tracking")
-    worker_id: int | None = Field(None, description="Worker ID for per-worker resource reuse")
-
-    model_config = {"extra": "forbid"}
+    passed: bool
+    score: float  # 0.0 to 1.0
+    reason: str | None = None
+    evaluator_latency_ms: float = 0.0
+    metrics: dict[str, Any] = Field(default_factory=dict)  # e.g. judge tokens
 
 
 class CaseResult(BaseModel):
-    """Complete result for a test case (pipeline-level combination)."""
+    """Final consolidated result for a single case."""
 
-    case_id: str = Field(..., description="Case identifier")
-    output: str | None = Field(None, description="Model output")
-    error: str | None = Field(None, description="Error message if any")
-    metrics: RunnerMetrics = Field(..., description="Performance metrics from runner")
-    evaluation: EvaluationResult = Field(..., description="Evaluation results from dataset")
-    judge_metrics: JudgeMetrics | None = Field(
-        None, description="Judge token metrics if judge was used"
-    )
+    case_id: str
+    dataset_name: str
+    agent_name: str
+    passed: bool
+    output: str | None = None
+    error: str | None = None
 
-    model_config = {"extra": "forbid"}
+    # Performance metrics
+    runner_duration_ms: float = 0.0
+    llm_metrics: dict[str, Any] = Field(default_factory=dict)  # From Proxy or Runner
+
+    # Evaluation details
+    f1_score: float | None = None
+    f1_passed: bool | None = None
+    judge_passed: bool | None = None
+    judge_reason: str | None = None
+    judge_metrics: dict[str, Any] = Field(default_factory=dict)
+
+    # For serialization flexibility
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
-class Runner(Protocol):
-    """Protocol for runners that execute test cases."""
+class AggregatedMetrics(BaseModel):
+    """Aggregated metrics for a run or subset."""
 
-    async def run_case(self, case: Case, ctx: RunnerContext) -> RunnerOutput:
-        """
-        Execute a test case and return the result.
+    accuracy: float = 0.0
+    precision: float = 0.0  # If applicable
+    total_cases: int = 0
+    failed_cases: int = 0
 
-        Args:
-            case: Test case to execute
-            ctx: Runner execution context
+    p50_duration_ms: float = 0.0
+    p95_duration_ms: float = 0.0
 
-        Returns:
-            RunnerOutput with output, error, and metrics
-        """
-        ...
+    avg_llm_latency_ms: float = 0.0
+    p50_llm_latency_ms: float = 0.0
+    p95_llm_latency_ms: float = 0.0
+
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cost_usd: float = 0.0

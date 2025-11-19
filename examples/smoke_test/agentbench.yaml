@@ -1,0 +1,28 @@
+name: my-benchmark
+description: Example benchmark
+version: "0.1.0"
+
+config:
+  concurrency: 2
+  timeout_seconds: 60
+  proxy:
+    enabled: true
+    provider: "openai"
+
+agents:
+  - name: "echo-agent"
+    command: "python agents/echo_agent.py"
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+datasets:
+  - name: "example-data"
+    source: "data/example.jsonl"
+    input_map:
+      input: "question"
+      expected: "answer"
+    evaluator:
+      type: "exact_match"
+
+output:
+  directory: "./runs"
