@@ -13,4 +13,3 @@ def get_evaluator(config: EvaluatorConfig) -> BaseEvaluator:
         return LLMJudgeEvaluator(config)
     else:
         raise ValueError(f"Unknown evaluator type: {config.type}")
-

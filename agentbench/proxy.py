@@ -99,24 +99,29 @@ class ProxyServer:
         port: int = 8000,
         openai_api_key: str | None = None,
         upstream_base_url: str | None = None,
+        provider: str = "openai",
     ) -> None:
         self.port = port
         self.metrics = MetricsCollector()
         self._openai_api_key = openai_api_key or ""
         self._request_timeout = float(os.getenv("LLM_PROXY_TIMEOUT", "60"))
+        self._provider = provider
         upstream_base = (
-            upstream_base_url or os.getenv("UPSTREAM_OPENAI_BASE_URL") or "https://api.openai.com"
+            upstream_base_url
+            or os.getenv("UPSTREAM_OPENAI_BASE_URL")
+            or self._default_base_for_provider(provider)
         ).rstrip("/")
         self._upstream_base_url = upstream_base
         self._upstream_api_url = f"{self._upstream_base_url}/v1"
         self.openai_client = AsyncOpenAI(
-            api_key=openai_api_key or "dummy",  # Client needs key even if proxy handles auth
+            api_key=openai_api_key or os.getenv("OPENAI_API_KEY") or "dummy",
             base_url=self._upstream_api_url,
         )
         self._beta_chat_url = f"{self._upstream_api_url}/beta/chat/completions"
         self._server_thread: threading.Thread | None = None
         self._should_stop = False
         self._server = None
+        self._active_case_id = "_current"
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -124,6 +129,11 @@ class ProxyServer:
 
         self.app = FastAPI(title="AgentBench LLM Proxy", lifespan=lifespan)
         self._setup_routes()
+
+    def _default_base_for_provider(self, provider: str) -> str:
+        if provider == "openai":
+            return "https://api.openai.com"
+        return "https://api.openai.com"
 
     def _setup_routes(self) -> None:
         @self.app.post("/v1/chat/completions")
@@ -137,7 +147,7 @@ class ProxyServer:
             body = await request.json()
             model = body.get("model", "gpt-4o-mini")
 
-            case_id = x_case_id or case_id or "_current"
+            case_id = x_case_id or case_id or self._active_case_id
             self._log_request("/v1/chat/completions", body, case_id)
 
             start_time = time.time()
@@ -167,7 +177,7 @@ class ProxyServer:
 
             body = await request.json()
             model = body.get("model", "gpt-4o-mini")
-            case_id = x_case_id or case_id or "_current"
+            case_id = x_case_id or case_id or self._active_case_id
             self._log_request("/v1/beta/chat/completions", body, case_id)
 
             # Manual fetch using httpx because openai python client might not fully support beta paths via same client easily
@@ -230,7 +240,7 @@ class ProxyServer:
         ) -> JSONResponse:
             """Proxy embeddings to OpenAI."""
             body = await request.json()
-            case_id = x_case_id or case_id or "_current"
+            case_id = x_case_id or case_id or self._active_case_id
             self._log_request("/v1/embeddings", body, case_id)
 
             try:
@@ -291,6 +301,10 @@ class ProxyServer:
             self._server.should_exit = True
         if self._server_thread:
             self._server_thread.join(timeout=2.0)
+
+    def set_active_case(self, case_id: str) -> None:
+        """Set the case id the proxy should attribute metrics to when no header is provided."""
+        self._active_case_id = case_id
 
     def _record_usage(self, case_id: str, model: str, usage: Any, latency_ms: float) -> None:
         """Record token usage for metrics from OpenAI responses."""

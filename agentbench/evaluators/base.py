@@ -9,5 +9,7 @@ class BaseEvaluator(ABC):
         self.config = config
 
     @abstractmethod
-    async def evaluate(self, case: Case, output: RunnerOutput) -> EvaluationResult:
+    async def evaluate(
+        self, case: Case, output: RunnerOutput, proxy_url: str | None = None
+    ) -> EvaluationResult:
         pass

@@ -10,12 +10,13 @@ class LocalDataset(BaseDataset):
     def load(self, limit: int | None = None) -> list[Case]:
         source_path = self.config.source
         if "*" in source_path:
-            files = glob.glob(source_path, recursive=True)
+            pattern = self.resolve_pattern(source_path)
+            files = glob.glob(pattern, recursive=True)
         else:
-            p = Path(source_path)
-            files = glob.glob(str(p / "*.jsonl"), recursive=True) if p.is_dir() else [source_path]
+            p = self.resolve_path(source_path)
+            files = glob.glob(str(p / "*.jsonl"), recursive=True) if p.is_dir() else [str(p)]
 
-        cases = []
+        cases: list[Case] = []
         input_key = self.config.input_map.get("input", "input")
         expected_key = self.config.input_map.get("expected", "expected")
 
@@ -34,22 +35,14 @@ class LocalDataset(BaseDataset):
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-
-                    case_input = data.get(input_key)
-                    if case_input is None:
-                        continue
-
-                    case_expected = data.get(expected_key)
-                    c_id = str(data.get("case_id", data.get("id", f"{Path(fpath).stem}-{i}")))
-
-                    cases.append(
-                        Case(
-                            case_id=c_id,
-                            dataset_name=self.config.name,
-                            input=str(case_input),
-                            expected=str(case_expected) if case_expected is not None else None,
-                            metadata=data,
-                        )
+                    case = self._prepare_case(
+                        record=data,
+                        fallback_id=f"{Path(fpath).stem}-{i}",
+                        input_key=input_key,
+                        expected_key=expected_key,
                     )
+                    if case is None:
+                        continue
+                    cases.append(case)
                     count += 1
         return cases

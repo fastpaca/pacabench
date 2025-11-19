@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -27,6 +28,13 @@ class RunnerMetrics(BaseModel):
     latency_ms: float | None = None
 
 
+class ErrorType(str, Enum):
+    NONE = "none"
+    TASK = "task_failure"
+    SYSTEM = "system_failure"
+    FATAL = "fatal_error"
+
+
 class RunnerOutput(BaseModel):
     """Raw output from the agent runner process."""
 
@@ -34,6 +42,9 @@ class RunnerOutput(BaseModel):
     error: str | None = None
     metrics: RunnerMetrics | None = None
     duration_ms: float = 0.0
+    error_type: ErrorType = ErrorType.NONE
+    error_traceback: str | None = None
+    retry_count: int = 0
 
 
 class EvaluationResult(BaseModel):
@@ -55,6 +66,7 @@ class CaseResult(BaseModel):
     passed: bool
     output: str | None = None
     error: str | None = None
+    error_type: ErrorType = ErrorType.NONE
 
     # Performance metrics
     runner_duration_ms: float = 0.0

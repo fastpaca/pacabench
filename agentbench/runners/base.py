@@ -22,4 +22,3 @@ class BaseRunner(ABC):
     async def stop(self):
         """Stop the runner process/resources."""
         pass
-

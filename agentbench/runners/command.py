@@ -5,23 +5,27 @@ import os
 import time
 
 from agentbench.runners.base import BaseRunner
-from agentbench.types import Case, RunnerMetrics, RunnerOutput
+from agentbench.types import Case, ErrorType, RunnerMetrics, RunnerOutput
 
 logger = logging.getLogger(__name__)
 
 
 class CommandRunner(BaseRunner):
-    def __init__(self, config, proxy_url: str | None = None):
+    def __init__(
+        self, config, proxy_url: str | None = None, base_env: dict[str, str] | None = None
+    ):
         super().__init__(config)
         self.proxy_url = proxy_url
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
+        self._base_env = base_env.copy() if base_env is not None else os.environ.copy()
+        self._stderr_task: asyncio.Task | None = None
 
     async def start(self):
         if self._process:
             return
 
-        env = os.environ.copy()
+        env = self._base_env.copy()
         # Inject Agent env vars
         if self.config.env:
             env.update(self.config.env)
@@ -48,13 +52,12 @@ class CommandRunner(BaseRunner):
             self.config.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,  # We might want to capture stderr too
+            stderr=asyncio.subprocess.PIPE,
             env=env,
-            limit=1024 * 1024 * 10,  # 10MB buffer for large JSONs
+            limit=1024 * 1024 * 10,
         )
 
-        # Start a background task to log stderr?
-        # For now, let's just focus on stdin/stdout loop.
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
     async def stop(self):
         if self._process:
@@ -68,6 +71,9 @@ class CommandRunner(BaseRunner):
                 except ProcessLookupError:
                     pass
             self._process = None
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            self._stderr_task = None
 
         if self.config.teardown:
             logger.info(f"Running teardown for {self.config.name}: {self.config.teardown}")
@@ -105,6 +111,7 @@ class CommandRunner(BaseRunner):
                 return RunnerOutput(
                     error="Process crashed (BrokenPipe)",
                     duration_ms=(time.perf_counter() - start_time) * 1000,
+                    error_type=ErrorType.SYSTEM,
                 )
 
             # Read output
@@ -122,6 +129,7 @@ class CommandRunner(BaseRunner):
                         return RunnerOutput(
                             error="Process exited unexpectedly (EOF)",
                             duration_ms=(time.perf_counter() - start_time) * 1000,
+                            error_type=ErrorType.SYSTEM,
                         )
 
                     line = line_bytes.decode().strip()
@@ -152,4 +160,20 @@ class CommandRunner(BaseRunner):
                 except Exception as e:
                     duration = (time.perf_counter() - start_time) * 1000
                     logger.error(f"Error reading from runner {self.config.name}: {e}")
-                    return RunnerOutput(error=str(e), duration_ms=duration)
+                    return RunnerOutput(
+                        error=str(e), duration_ms=duration, error_type=ErrorType.SYSTEM
+                    )
+
+    async def _drain_stderr(self):
+        if not self._process or not self._process.stderr:
+            return
+        try:
+            while True:
+                line = await self._process.stderr.readline()
+                if not line:
+                    break
+                logger.debug("[%s STDERR]: %s", self.config.name, line.decode().rstrip())
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("Failed to drain stderr for %s: %s", self.config.name, exc)
