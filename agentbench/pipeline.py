@@ -329,7 +329,6 @@ async def run(
     # Simplest is to show progress for *this run*.
     observer = ProgressObserver(total_cases=len(cases_to_run), progress_counter=progress_counter)
 
-
     start_time = time.time()
 
     workers = [

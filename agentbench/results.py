@@ -55,7 +55,7 @@ class Results:
                     # For now, we'll store the ID in a set for fast checking.
                     case_id = data.get("case_id")
                     if case_id:
-                        self.cases_map[case_id] = None # Placeholder, we don't need full object yet
+                        self.cases_map[case_id] = None  # Placeholder, we don't need full object yet
         except Exception as e:
             print(f"Warning: Failed to load existing results: {e}")
 
@@ -81,7 +81,7 @@ class Results:
         """Compute final aggregated metrics from all results on disk."""
         all_cases = []
         results_file = self.output_dir / "results.jsonl"
-        
+
         if results_file.exists():
             with open(results_file) as f:
                 for line in f:
@@ -101,13 +101,13 @@ class Results:
                         # Fallback: if we can't validate, maybe it's the old flat format.
                         # We could try to reconstruct, but for now let's just skip aggregation of legacy lines.
                         continue
-        
+
         # If we couldn't load anything (e.g. all legacy), fall back to in-memory cases
         if not all_cases:
             all_cases = self.cases
 
         self.metrics = aggregate_results(all_cases)
-        
+
         with open(self.output_dir / "metrics.json", "w") as f:
             json.dump(self.metrics.model_dump(exclude_none=False), f, indent=2)
 
