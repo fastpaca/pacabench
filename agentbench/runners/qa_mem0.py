@@ -1,75 +1,93 @@
-"""Mem0 QA runner with memory retrieval."""
-
+import asyncio
+import os
 import time
-from pathlib import Path
 
-from mem0 import AsyncMemory
+from mem0 import Memory  # Sync memory
 from pydantic_ai import Agent, ModelRequest, UserPromptPart
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from agentbench.types import Case, Runner, RunnerContext, RunnerOutput
 
-_MEMORIES: dict[int, AsyncMemory] = {}
 _AGENTS: dict[int, Agent] = {}
 
 
-async def _get_memory(worker_id: int, ctx: RunnerContext) -> AsyncMemory:
+def _run_sync_memory_logic(case: Case, ctx: RunnerContext, proxy_url: str) -> str:
     """
-    Get or create AsyncMemory instance for a specific worker.
-
-    Lazy initialization: creates AsyncMemory on first use per worker.
-    Each worker gets its own Chroma database path to avoid contention.
-    Uses generic proxy URL since pipeline.py handles metrics aggregation via "_current".
-
-    Args:
-        worker_id: Stable worker identifier
-        ctx: Runner context (for embedder config)
-
-    Returns:
-        AsyncMemory instance for this worker
+    Synchronous wrapper for memory operations.
+    Runs in a thread pool to avoid blocking the event loop.
+    Initializes Memory fresh every time to avoid client leaks.
     """
-    if worker_id not in _MEMORIES:
-        db_path = str(Path(f"/tmp/mem0-chroma-agentbench-worker-{worker_id}").resolve())
-        proxy_url = f"http://localhost:{ctx.proxy_port}/v1"
-
-        vector_store = {
-            "provider": "chroma",
+    # Config
+    qdrant_host = os.getenv("MEM0_QDRANT_HOST", "localhost")
+    config = {
+        "vector_store": {
+            "provider": "qdrant",
             "config": {
                 "collection_name": "agentbench",
-                "path": db_path,
+                "host": qdrant_host,
+                "port": 6333,
             },
-        }
-
-        embedder_config = {
+        },
+        "embedder": {
             "provider": "openai",
             "config": {
                 "openai_base_url": proxy_url,
                 "api_key": ctx.openai_api_key,
-                "http_client_proxies": None,  # Disable proxies to prevent socket exhaustion
+                "http_client_proxies": None,
             },
-        }
-        if ctx.embedding_model:
-            embedder_config["config"]["model"] = ctx.embedding_model
-
-        llm_config = {
+        },
+        "llm": {
             "provider": "openai",
             "config": {
                 "model": ctx.model,
                 "openai_base_url": proxy_url,
                 "api_key": ctx.openai_api_key,
-                "http_client_proxies": None,  # Disable proxies to prevent socket exhaustion
+                "http_client_proxies": None,
             },
-        }
+        },
+    }
 
-        config = {
-            "vector_store": vector_store,
-            "embedder": embedder_config,
-            "llm": llm_config,
-        }
-        _MEMORIES[worker_id] = await AsyncMemory.from_config(config)
+    # Init SYNC Memory
+    m = Memory.from_config(config)
 
-    return _MEMORIES[worker_id]
+    user_id = case.id
+    conversation = case.inputs["conversation"]
+    question = case.inputs["question"]
+
+    # Add
+    if conversation:
+        messages = [{"role": msg["role"], "content": msg["content"]} for msg in conversation]
+        m.add(messages, user_id=user_id)
+
+    # Search
+    search_result = m.search(
+        query=question,
+        user_id=user_id,
+        limit=5,
+    )
+
+    relevant_memories = (
+        search_result.get("results", [])
+        if isinstance(search_result, dict)
+        else (search_result if isinstance(search_result, list) else [])
+    )
+
+    memory_context = ""
+    if relevant_memories:
+        memory_lines = []
+        for idx, mem in enumerate(relevant_memories, 1):
+            memory_text = (
+                mem.get("memory", "") or mem.get("text", "")
+                if isinstance(mem, dict)
+                else (mem if isinstance(mem, str) else str(mem))
+            )
+            if memory_text:
+                memory_lines.append(f"{idx}. {memory_text}")
+        if memory_lines:
+            memory_context = "Relevant context from memory:\n" + "\n".join(memory_lines) + "\n\n"
+
+    return memory_context
 
 
 async def _get_agent(worker_id: int, ctx: RunnerContext) -> Agent:
@@ -111,46 +129,20 @@ class Mem0Runner(Runner):
             )
 
         try:
-            memory = await _get_memory(ctx.worker_id, ctx)
+            # Offload SYNC memory operations to a thread
+            proxy_url = f"http://localhost:{ctx.proxy_port}/v1"
+            memory_context = await asyncio.get_running_loop().run_in_executor(
+                None,  # Use default thread pool
+                _run_sync_memory_logic,
+                case,
+                ctx,
+                proxy_url,
+            )
+
             agent = await _get_agent(ctx.worker_id, ctx)
 
-            user_id = case.id
-            conversation = case.inputs["conversation"]
             question = case.inputs["question"]
             choices = case.inputs.get("choices")
-
-            if conversation:
-                messages = [
-                    {"role": msg["role"], "content": msg["content"]} for msg in conversation
-                ]
-                await memory.add(messages, user_id=user_id)
-
-            search_result = await memory.search(
-                query=question,
-                user_id=user_id,
-                limit=5,
-            )
-            relevant_memories = (
-                search_result.get("results", [])
-                if isinstance(search_result, dict)
-                else (search_result if isinstance(search_result, list) else [])
-            )
-
-            memory_context = ""
-            if relevant_memories:
-                memory_lines = []
-                for idx, mem in enumerate(relevant_memories, 1):
-                    memory_text = (
-                        mem.get("memory", "") or mem.get("text", "")
-                        if isinstance(mem, dict)
-                        else (mem if isinstance(mem, str) else str(mem))
-                    )
-                    if memory_text:
-                        memory_lines.append(f"{idx}. {memory_text}")
-                if memory_lines:
-                    memory_context = (
-                        "Relevant context from memory:\n" + "\n".join(memory_lines) + "\n\n"
-                    )
 
             message_history = [
                 ModelRequest(parts=[UserPromptPart(content=memory_context)])

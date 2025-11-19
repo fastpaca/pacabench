@@ -36,7 +36,7 @@ def list_runs(
         Path("runs"),
         "--runs-dir",
         help="Directory containing runs",
-    )
+    ),
 ) -> None:
     """List all runs and their status."""
     if not runs_dir.exists():
@@ -49,7 +49,7 @@ def list_runs(
     table.add_column("Runner", style="magenta")
     table.add_column("Completed", style="green")
     table.add_column("Status", style="yellow")
-    
+
     # Use builtin list by not shadowing it, or just sorted(..., reverse=True) accepts iterable
     runs = sorted(runs_dir.iterdir(), reverse=True)
 
@@ -69,6 +69,7 @@ def list_runs(
         if config_path.exists():
             try:
                 import json
+
                 with open(config_path) as f:
                     config = json.load(f)
                     dataset = config.get("dataset", "?")
@@ -122,6 +123,7 @@ def resume(
         raise typer.Exit(1)
 
     import json
+
     with open(config_path) as f:
         config = json.load(f)
 
