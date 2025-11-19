@@ -1,7 +1,6 @@
 import glob
 import json
 import logging
-import os
 import subprocess
 from pathlib import Path
 
@@ -15,26 +14,17 @@ logger = logging.getLogger(__name__)
 
 class GitDataset(BaseDataset):
     def load(self, limit: int | None = None) -> list[Case]:
-        source = self.config.source
-        repo_url = source[len("git:") :] if source.startswith("git:") else source
-
-        repo_name = repo_url.split("/")[-1].replace(".git", "")
-        cache_dir = Path.home() / ".cache" / "agentbench" / "repos" / repo_name
-
-        self._ensure_repo(repo_url, cache_dir)
+        repo_url = self._normalize_repo_url(self.config.source)
+        repo_dir = self._ensure_repo(repo_url)
 
         if self.config.prepare:
-            logger.info(f"Running prepare script: {self.config.prepare}")
-            env = os.environ.copy()
-            env["AGENTBENCH_DATASET_PATH"] = str(cache_dir)
-            subprocess.check_call(self.config.prepare, shell=True, env=env)
+            self._run_prepare(repo_dir)
 
-        files = glob.glob(str(cache_dir / "**/*.jsonl"), recursive=True)
-
-        cases = []
+        files = glob.glob(str(repo_dir / "**" / "*.jsonl"), recursive=True)
         input_key = self.config.input_map.get("input", "input")
         expected_key = self.config.input_map.get("expected", "expected")
 
+        cases: list[Case] = []
         count = 0
         for fpath in files:
             if limit is not None and count >= limit:
@@ -50,34 +40,46 @@ class GitDataset(BaseDataset):
                         data = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-
-                    case_input = data.get(input_key)
-                    if case_input is None:
-                        continue
-
-                    case_expected = data.get(expected_key)
-                    c_id = str(data.get("case_id", data.get("id", f"{Path(fpath).stem}-{i}")))
-
-                    cases.append(
-                        Case(
-                            case_id=c_id,
-                            dataset_name=self.config.name,
-                            input=str(case_input),
-                            expected=str(case_expected) if case_expected is not None else None,
-                            metadata=data,
-                        )
+                    case = self._prepare_case(
+                        record=data,
+                        fallback_id=f"{Path(fpath).stem}-{i}",
+                        input_key=input_key,
+                        expected_key=expected_key,
                     )
+                    if case is None:
+                        continue
+                    cases.append(case)
                     count += 1
-
         return cases
 
-    def _ensure_repo(self, url: str, dest: Path):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists() and (dest / ".git").exists():
+    def _normalize_repo_url(self, source: str) -> str:
+        return source[len("git:") :] if source.startswith("git:") else source
+
+    def _repo_cache_dir(self, repo_url: str) -> Path:
+        repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+        return self.datasets_cache_dir / "repos" / repo_name
+
+    def _ensure_repo(self, repo_url: str) -> Path:
+        repo_dir = self._repo_cache_dir(repo_url)
+        repo_dir.parent.mkdir(parents=True, exist_ok=True)
+        if repo_dir.exists() and (repo_dir / ".git").exists():
             try:
-                repo = Repo(dest)
+                repo = Repo(repo_dir)
                 repo.remotes.origin.pull()
-            except Exception as e:
-                logger.warning(f"Failed to update repo at {dest}: {e}")
+            except Exception as exc:
+                logger.warning("Failed to update repo at %s: %s", repo_dir, exc)
         else:
-            Repo.clone_from(url, dest)
+            Repo.clone_from(repo_url, repo_dir)
+        return repo_dir
+
+    def _run_prepare(self, repo_dir: Path) -> None:
+        logger.info("Running prepare script for %s: %s", self.config.name, self.config.prepare)
+        env = self.ctx.env.copy()
+        env["AGENTBENCH_DATASET_PATH"] = str(repo_dir)
+        subprocess.run(
+            self.config.prepare,
+            shell=True,
+            cwd=repo_dir,
+            check=True,
+            env=env,
+        )

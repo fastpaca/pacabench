@@ -7,7 +7,9 @@ from agentbench.types import Case, EvaluationResult, RunnerOutput
 
 
 class ExactMatchEvaluator(BaseEvaluator):
-    async def evaluate(self, case: Case, output: RunnerOutput) -> EvaluationResult:
+    async def evaluate(
+        self, case: Case, output: RunnerOutput, proxy_url: str | None = None
+    ) -> EvaluationResult:
         start = time.perf_counter()
         if output.error or not output.output:
             return EvaluationResult(
@@ -37,7 +39,9 @@ class ExactMatchEvaluator(BaseEvaluator):
 
 
 class F1Evaluator(BaseEvaluator):
-    async def evaluate(self, case: Case, output: RunnerOutput) -> EvaluationResult:
+    async def evaluate(
+        self, case: Case, output: RunnerOutput, proxy_url: str | None = None
+    ) -> EvaluationResult:
         start = time.perf_counter()
         if output.error or not output.output:
             return EvaluationResult(

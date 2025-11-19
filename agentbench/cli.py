@@ -2,12 +2,13 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
 from agentbench.analysis import print_report
 from agentbench.config import load_config
+from agentbench.context import build_eval_context, resolve_run_directory, resolve_runs_dir_from_cli
 from agentbench.core import Harness
 
 app = typer.Typer()
@@ -25,26 +26,52 @@ def run(
     agents: Annotated[
         str | None, typer.Option(help="Comma-separated list of agents to run")
     ] = None,
+    runs_dir: Annotated[
+        Path | None,
+        typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
+    ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Use or create a specific run directory name"),
+    ] = None,
+    fresh_run: Annotated[
+        bool,
+        typer.Option("--fresh-run", help="Force a brand new run even if incomplete runs exist"),
+    ] = False,
 ):
     """Execute a benchmark run."""
     if not config.exists():
         typer.echo(f"Config file not found: {config}")
         raise typer.Exit(code=1)
 
-    cfg = load_config(config)
+    base_cfg = load_config(config)
+    runtime_cfg = base_cfg.model_copy(deep=True)
+    overrides: dict[str, Any] = {}
 
-    # Overrides
     if concurrency:
-        cfg.config.concurrency = concurrency
+        runtime_cfg.config.concurrency = concurrency
+        overrides["concurrency"] = concurrency
 
     if agents:
         agent_names = [a.strip() for a in agents.split(",")]
-        cfg.agents = [a for a in cfg.agents if a.name in agent_names]
-        if not cfg.agents:
+        runtime_cfg.agents = [a for a in runtime_cfg.agents if a.name in agent_names]
+        if not runtime_cfg.agents:
             typer.echo(f"No agents found matching: {agents}")
             raise typer.Exit(code=1)
+        overrides["agents"] = agent_names
 
-    harness = Harness(cfg)
+    ctx = build_eval_context(
+        config_path=config,
+        base_config=base_cfg,
+        runtime_config=runtime_cfg,
+        runs_dir_override=runs_dir,
+        overrides=overrides,
+    )
+    try:
+        harness = Harness(ctx, run_id=run_id, force_new_run=fresh_run)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from None
     asyncio.run(harness.run(limit=limit))
 
 
@@ -140,13 +167,25 @@ if __name__ == "__main__":
 
 
 @app.command()
-def analyze(run_id: str):
+def analyze(
+    run_id: str,
+    config: Annotated[
+        Path | None, typer.Option("--config", "-c", help="Path to configuration file")
+    ] = Path("agentbench.yaml"),
+    runs_dir: Annotated[
+        Path | None,
+        typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
+    ] = None,
+):
     """Analyze a benchmark run."""
-    # Find run directory
-    run_dir = Path("runs") / run_id
-    if not run_dir.exists():
-        typer.echo(f"Run directory not found: {run_dir}")
-        raise typer.Exit(code=1)
+    resolved_runs_dir = resolve_runs_dir_from_cli(config, runs_dir)
+    try:
+        run_dir = resolve_run_directory(run_id, resolved_runs_dir)
+    except FileNotFoundError:
+        typer.echo(
+            f"Run directory not found for id '{run_id}'. Searched under {resolved_runs_dir}."
+        )
+        raise typer.Exit(code=1) from None
 
     print_report(run_id, run_dir)
 
@@ -160,12 +199,23 @@ def retry(
             "--failures-only", help="Retry task failures (wrong answers) as well as system errors"
         ),
     ] = False,
+    config: Annotated[
+        Path | None, typer.Option("--config", "-c", help="Path to configuration file")
+    ] = Path("agentbench.yaml"),
+    runs_dir: Annotated[
+        Path | None,
+        typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
+    ] = None,
 ):
     """Retry failed cases from a previous run."""
-    run_dir = Path("runs") / run_id
-    if not run_dir.exists():
-        typer.echo(f"Run directory not found: {run_dir}")
-        raise typer.Exit(code=1)
+    resolved_runs_dir = resolve_runs_dir_from_cli(config, runs_dir)
+    try:
+        run_dir = resolve_run_directory(run_id, resolved_runs_dir)
+    except FileNotFoundError:
+        typer.echo(
+            f"Run directory not found for id '{run_id}'. Searched under {resolved_runs_dir}."
+        )
+        raise typer.Exit(code=1) from None
 
     # Load config from the run
     config_path = run_dir / "agentbench.yaml"
@@ -176,7 +226,9 @@ def retry(
     cfg = load_config(config_path)
 
     # Identify cases to retry
-    retry_ids = set()
+    retry_ids: set[str] = set()
+    system_error_ids: set[str] = set()
+    task_failure_ids: set[str] = set()
 
     # System errors
     errors_path = run_dir / "system_errors.jsonl"
@@ -186,9 +238,11 @@ def retry(
                 try:
                     err = json.loads(line)
                     if "case_id" in err:
-                        retry_ids.add(err["case_id"])
+                        system_error_ids.add(err["case_id"])
                 except Exception:
                     pass
+
+    retry_ids.update(system_error_ids)
 
     if failures_only:
         # Load results and find passed=False
@@ -199,18 +253,34 @@ def retry(
                     try:
                         res = json.loads(line)
                         if not res.get("passed", False):
-                            retry_ids.add(res["case_id"])
+                            task_failure_ids.add(res["case_id"])
                     except Exception:
                         pass
+
+        retry_ids.update(task_failure_ids)
 
     if not retry_ids:
         typer.echo("No failed cases found to retry.")
         return
 
-    typer.echo(f"Retrying {len(retry_ids)} cases...")
+    if failures_only:
+        typer.echo(
+            f"Retrying {len(retry_ids)} cases "
+            f"(system errors: {len(system_error_ids)}, task failures: {len(task_failure_ids)})."
+        )
+    else:
+        typer.echo(f"Retrying {len(system_error_ids)} system-error cases...")
 
     # Run
-    harness = Harness(cfg, run_id=run_id)
+    base_cfg = cfg
+    runtime_cfg = base_cfg.model_copy(deep=True)
+    ctx = build_eval_context(
+        config_path=config_path,
+        base_config=base_cfg,
+        runtime_config=runtime_cfg,
+        runs_dir_override=run_dir.parent,
+    )
+    harness = Harness(ctx, run_id=run_id)
     asyncio.run(harness.run(whitelist_ids=retry_ids))
 
 

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table
@@ -156,13 +157,17 @@ def print_report(run_id: str, run_dir: Path):
     errors_path = run_dir / "system_errors.jsonl"
     if errors_path.exists():
         console.print("\n[bold red]System Errors[/bold red]")
+        entries: list[dict[str, Any]] = []
         with open(errors_path) as f:
-            lines = f.readlines()
-            console.print(f"  Total Errors: {len(lines)}")
-            # Print top 5
-            for line in lines[:5]:
+            for line in f:
                 try:
-                    err = json.loads(line)
-                    console.print(f"  Case {err.get('case_id')}: {err.get('error')}")
-                except Exception:
-                    console.print(f"  {line.strip()}")
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        console.print(f"  Total Errors: {len(entries)}")
+        for entry in entries[:5]:
+            case_id = entry.get("case_id")
+            agent = entry.get("agent_name")
+            dataset = entry.get("dataset_name")
+            error = entry.get("error")
+            console.print(f"  {case_id} ({agent} on {dataset}): {error}")

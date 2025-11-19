@@ -10,10 +10,13 @@ from agentbench.types import Case, EvaluationResult, RunnerOutput
 class LLMJudgeEvaluator(BaseEvaluator):
     def __init__(self, config):
         super().__init__(config)
-        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = self.config.model or "gpt-4o-mini"
+        self._default_base_url = os.getenv("OPENAI_BASE_URL")
+        self._api_key = os.getenv("OPENAI_API_KEY")
 
-    async def evaluate(self, case: Case, output: RunnerOutput) -> EvaluationResult:
+    async def evaluate(
+        self, case: Case, output: RunnerOutput, proxy_url: str | None = None
+    ) -> EvaluationResult:
         start = time.perf_counter()
         if output.error or not output.output:
             return EvaluationResult(
@@ -34,9 +37,6 @@ class LLMJudgeEvaluator(BaseEvaluator):
 
         response_text = output.output.strip()
         expected_text = expected.strip()
-
-        # Construct prompt
-        # We assume case.input is the question/prompt
         question = case.input
 
         prompt = f"""You are evaluating if a model's answer is semantically equivalent to the expected answer.
@@ -54,8 +54,10 @@ Does the model's answer convey the same information as the expected answer? Cons
 
 Respond with ONLY "YES" or "NO"."""
 
+        client = self._build_client(proxy_url)
+
         try:
-            completion = await self.client.chat.completions.create(
+            completion = await client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
@@ -85,3 +87,7 @@ Respond with ONLY "YES" or "NO"."""
                 reason=f"Judge error: {str(e)}",
                 evaluator_latency_ms=(time.perf_counter() - start) * 1000,
             )
+
+    def _build_client(self, proxy_url: str | None) -> AsyncOpenAI:
+        base_url = proxy_url or self._default_base_url or "https://api.openai.com/v1"
+        return AsyncOpenAI(api_key=self._api_key, base_url=base_url)

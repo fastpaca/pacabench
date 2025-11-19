@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ProxyConfig(BaseModel):
     enabled: bool = True
     provider: str = "openai"
+    base_url: str | None = None
 
 
 class GlobalConfig(BaseModel):
@@ -15,6 +16,9 @@ class GlobalConfig(BaseModel):
     timeout_seconds: float = 60.0
     max_retries: int = 2
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
+    worker_recycle_interval: int = 0
+    circuit_breaker_error_ratio: float | None = None
+    circuit_breaker_min_cases: int = 10
 
 
 class AgentConfig(BaseModel):
