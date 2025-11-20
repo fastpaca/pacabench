@@ -1,9 +1,25 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 from agentbench.config import DatasetConfig
 from agentbench.context import EvalContext
 from agentbench.types import Case
+
+# Common fields to exclude from metadata to prevent leakage
+_COMMON_EXCLUDE_KEYS = {
+    "history",
+    "case_id",
+    "id",
+    "ground_truth",
+    "answer",
+    "solution",
+    "explanation",
+    "reasoning",
+    "correct_answer",
+    "label",
+    "target",
+}
 
 
 class BaseDataset(ABC):
@@ -25,14 +41,12 @@ class BaseDataset(ABC):
         return (self.root_dir / path).resolve()
 
     def resolve_pattern(self, pattern: str) -> str:
-        candidate = Path(pattern).expanduser()
-        if candidate.is_absolute():
-            return str(candidate)
-        return str(self.root_dir / candidate)
+        # Helper for glob patterns which need string paths
+        return str(self.resolve_path(pattern))
 
     def _prepare_case(
         self,
-        record: dict,
+        record: dict[str, Any],
         fallback_id: str,
         input_key: str,
         expected_key: str,
@@ -40,35 +54,25 @@ class BaseDataset(ABC):
         case_input = record.get(input_key)
         if case_input is None:
             return None
+
         expected = record.get(expected_key)
-        case_id = str(record.get("case_id", record.get("id", fallback_id)))
-        history = record.get("history")
-        history_list = history if isinstance(history, list) else []
+        # Prioritize case_id, then id, then fallback
+        case_id = str(record.get("case_id") or record.get("id") or fallback_id)
 
-        # Keys to exclude from metadata to prevent leakage
-        exclude_keys = {
-            input_key,
-            expected_key,
-            "history",
-            "case_id",
-            "id",
-            # Common answer/ground-truth fields
-            "ground_truth",
-            "answer",
-            "solution",
-            "explanation",
-            "reasoning",
-            "correct_answer",
-            "label",
-            "target",
-        }
+        history = record.get("history", [])
+        if not isinstance(history, list):
+            # Fallback or error? We'll coerce to empty list to be safe but strictly typed
+            history = []
 
-        metadata = {key: value for key, value in record.items() if key not in exclude_keys}
+        # Combine dynamic keys with static exclude list
+        exclude_keys = _COMMON_EXCLUDE_KEYS | {input_key, expected_key}
+        metadata = {k: v for k, v in record.items() if k not in exclude_keys}
+
         return Case(
             case_id=case_id,
             dataset_name=self.config.name,
             input=str(case_input),
             expected=str(expected) if expected is not None else None,
-            history=history_list,
+            history=history,
             metadata=metadata,
         )

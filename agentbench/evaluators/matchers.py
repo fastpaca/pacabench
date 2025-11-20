@@ -1,5 +1,6 @@
 import re
 import time
+from typing import Any
 
 import tiktoken
 
@@ -22,7 +23,6 @@ class ExactMatchEvaluator(BaseEvaluator):
 
         expected = case.expected
         if not expected:
-            # If no expected output, can't evaluate? Or passed?
             return EvaluationResult(
                 passed=True,
                 score=1.0,
@@ -62,7 +62,6 @@ class F1Evaluator(BaseEvaluator):
             )
 
         # Simple token overlap F1
-        # Using cl100k_base as default
         try:
             encoding = tiktoken.get_encoding("cl100k_base")
         except Exception:
@@ -85,7 +84,6 @@ class F1Evaluator(BaseEvaluator):
 
         f1 = 0.0 if precision + recall == 0 else 2 * (precision * recall) / (precision + recall)
 
-        # Pass threshold? usually 0.5? Configurable?
         threshold = self.config.extra_config.get("threshold", 0.5)
         passed = f1 >= threshold
 
@@ -97,7 +95,7 @@ class F1Evaluator(BaseEvaluator):
         )
 
 
-def _normalize_choice_map(choices: object) -> dict[str, str]:
+def _normalize_choice_map(choices: Any) -> dict[str, str]:
     if not isinstance(choices, dict):
         return {}
     normalized: dict[str, str] = {}

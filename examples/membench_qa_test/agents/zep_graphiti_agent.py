@@ -1,12 +1,11 @@
 import asyncio
 import json
-
-# Initialize logging
 import logging
 import os
 import sys
 import time
 from datetime import UTC, datetime
+from typing import Literal
 
 from graphiti_core import Graphiti
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
@@ -14,56 +13,54 @@ from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_client import OpenAIClient
 from graphiti_core.nodes import EpisodeType
 from openai import OpenAI
+from pydantic import BaseModel, Field
 
-# Increase log level to avoid noise, but keep zep_agent at DEBUG
+# Initialize logging
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger("zep_agent")
 logger.setLevel(logging.DEBUG)
 logging.getLogger("neo4j").setLevel(logging.ERROR)
-logging.getLogger("graphiti_core").setLevel(logging.INFO)  # Reduce graphiti noise
+logging.getLogger("graphiti_core").setLevel(logging.INFO)
 
 
-async def process_case(line, graphiti, client, model):
+class Message(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+class InputCase(BaseModel):
+    case_id: str
+    input: str
+    history: list[Message] = Field(default_factory=list)
+    choices: dict[str, str] = Field(default_factory=dict)
+
+
+async def process_case(line: str, graphiti: Graphiti, client: OpenAI, model: str):
     try:
         data = json.loads(line)
-    except json.JSONDecodeError:
+        case = InputCase.model_validate(data)
+    except Exception:
         return
 
-    logger.info(f"Processing case: {data.get('case_id')}")
-    question = data.get("input", "")
-    case_id = data.get("case_id")
-    group_id = str(case_id)
+    logger.info(f"Processing case: {case.case_id}")
+
+    group_id = str(case.case_id)
 
     try:
-        history = data.get("history", [])
-        for i, msg in enumerate(history):
-            content = ""
-            role = "user"
-            if isinstance(msg, dict):
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if not content:
-                    u = msg.get("user_message") or msg.get("user")
-                    a = msg.get("assistant_message") or msg.get("assistant")
-                    if u:
-                        role = "user"
-                        content = u
-                    elif a:
-                        role = "assistant"
-                        content = a
-
-            if content:
+        # History is already normalized
+        for i, msg in enumerate(case.history):
+            if msg.content:
                 ref_time = datetime.now(UTC)
                 await graphiti.add_episode(
                     name=f"History {i}",
-                    episode_body=content,
-                    source_description=f"History message from {role}",
+                    episode_body=msg.content,
+                    source_description=f"History message from {msg.role}",
                     reference_time=ref_time,
                     source=EpisodeType.message,
                     group_id=group_id,
                 )
 
-        results = await graphiti.search(query=question, group_ids=[group_id], num_results=10)
+        results = await graphiti.search(query=case.input, group_ids=[group_id], num_results=10)
         memory_context = ""
         if results:
             lines = []
@@ -75,11 +72,13 @@ async def process_case(line, graphiti, client, model):
                     "Relevant context from knowledge graph:\n" + "\n".join(lines) + "\n\n"
                 )
 
-        prompt_content = f"{memory_context}Question: {question}"
+        prompt_content = f"{memory_context}Question: {case.input}"
         system_prompt = "You are a helpful assistant with a long memory."
-        choices = data.get("choices")
-        if choices and isinstance(choices, dict):
-            choices_text = "\n".join(f"{key}. {value}" for key, value in sorted(choices.items()))
+
+        if case.choices:
+            choices_text = "\n".join(
+                f"{key}. {value}" for key, value in sorted(case.choices.items())
+            )
             prompt_content += f"\n\nChoices:\n{choices_text}\n\nRespond with only the choice letter (A, B, C, or D)."
 
         # Run sync OpenAI call in executor to avoid blocking async loop
@@ -97,10 +96,9 @@ async def process_case(line, graphiti, client, model):
 
         output = await loop.run_in_executor(None, call_openai)
 
-        # Critical: flush stdout immediately
         print(json.dumps({"output": output, "error": None}))
         sys.stdout.flush()
-        logger.info(f"Finished case {case_id}")
+        logger.info(f"Finished case {case.case_id}")
 
     except Exception as e:
         logger.exception(f"Error in agent loop: {e}")
@@ -124,6 +122,7 @@ async def run_agent():
     embedder = OpenAIEmbedder(config=embedder_config)
 
     graphiti = None
+    # Retry loop for Neo4j connection
     for i in range(10):
         try:
             graphiti = Graphiti(
@@ -136,6 +135,7 @@ async def run_agent():
             try:
                 await graphiti.build_indices_and_constraints()
             except Exception as e:
+                # Ignore if schema rules already exist (common in Neo4j restarts)
                 if "EquivalentSchemaRuleAlreadyExists" not in str(e):
                     raise e
             break
@@ -165,8 +165,7 @@ async def run_agent():
             line = line_bytes.decode()
             if not line.strip():
                 continue
-            # Process sequentially to avoid Graphiti concurrency issues if any,
-            # and to ensure we don't overload with parallel reqs in this test
+            # Process sequentially to avoid Graphiti concurrency issues
             await process_case(line, graphiti, client, model)
         except Exception as e:
             logger.error(f"Error reading stdin: {e}")
