@@ -13,7 +13,7 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from genai_prices import Usage, calc_price
 from loguru import logger
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 
 
 class MetricsCollector:
@@ -30,6 +30,7 @@ class MetricsCollector:
                 "llm_cache_write_tokens": 0,
                 "llm_total_cost_usd": 0.0,
                 "llm_latency_ms": [],
+                "llm_calls": [],
             }
         )
 
@@ -42,6 +43,10 @@ class MetricsCollector:
         cache_read_tokens: int,
         cache_write_tokens: int,
         latency_ms: float,
+        ttft_ms: float | None = None,
+        status_code: int = 200,
+        error: str | None = None,
+        provider: str = "openai",
     ) -> None:
         """Record a single LLM call's metrics."""
         with self._lock:
@@ -57,6 +62,23 @@ class MetricsCollector:
                 model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
             )
             metrics["llm_total_cost_usd"] += cost
+
+            metrics["llm_calls"].append(
+                {
+                    "timestamp": time.time(),
+                    "model": model,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_tokens": cache_read_tokens,
+                    "cache_write_tokens": cache_write_tokens,
+                    "latency_ms": latency_ms,
+                    "ttft_ms": ttft_ms,
+                    "status_code": status_code,
+                    "error": error,
+                    "provider": provider,
+                    "cost_usd": cost,
+                }
+            )
 
     def get_metrics(self, case_id: str) -> dict[str, Any]:
         """Get aggregated metrics for a case."""
@@ -157,10 +179,39 @@ class ProxyServer:
                 response = await self.openai_client.chat.completions.create(**body)
                 latency_ms = (time.time() - start_time) * 1000
 
-                self._record_usage(case_id, model, usage=response.usage, latency_ms=latency_ms)
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=response.usage,
+                    latency_ms=latency_ms,
+                    status_code=200,
+                )
 
                 return JSONResponse(content=response.model_dump())
+            except APIStatusError as e:
+                latency_ms = (time.time() - start_time) * 1000
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=latency_ms,
+                    status_code=e.status_code,
+                    error=e.message,
+                )
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content={"error": {"message": e.message, "type": "api_error"}},
+                )
             except Exception as e:
+                latency_ms = (time.time() - start_time) * 1000
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=latency_ms,
+                    status_code=500,
+                    error=str(e),
+                )
                 return JSONResponse(
                     status_code=500,
                     content={"error": str(e)},
@@ -210,6 +261,14 @@ class ProxyServer:
                     )
             except httpx.HTTPError as exc:
                 logger.error(f"Proxy beta request failed: {exc}")
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=(time.time() - start_time) * 1000,
+                    status_code=500,
+                    error=str(exc),
+                )
                 return JSONResponse(status_code=500, content={"error": str(exc)})
 
             latency_ms = (time.time() - start_time) * 1000
@@ -220,6 +279,14 @@ class ProxyServer:
                 response_data = {"error": response.text}
 
             if response.status_code >= 400:
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=latency_ms,
+                    status_code=response.status_code,
+                    error=str(response_data.get("error", response.text)),
+                )
                 return JSONResponse(status_code=response.status_code, content=response_data)
 
             self._record_usage(
@@ -227,6 +294,7 @@ class ProxyServer:
                 model,
                 usage=response_data.get("usage"),
                 latency_ms=latency_ms,
+                status_code=response.status_code,
             )
 
             return JSONResponse(content=response_data)
@@ -242,20 +310,57 @@ class ProxyServer:
             body = await request.json()
             case_id = x_case_id or case_id or self._active_case_id
             self._log_request("/v1/embeddings", body, case_id)
+            model = body.get("model", "text-embedding-ada-002")
 
+            start_time = time.time()
             try:
                 response = await self.openai_client.embeddings.with_raw_response.create(**body)
+                latency_ms = (time.time() - start_time) * 1000
+                try:
+                    response_data = response.http_response.json()
+                    usage = response_data.get("usage")
+                except ValueError:
+                    response_data = {"error": response.http_response.text}
+                    usage = None
+
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=usage,
+                    latency_ms=latency_ms,
+                    status_code=response.status_code,
+                )
+                return JSONResponse(status_code=response.status_code, content=response_data)
+
+            except APIStatusError as e:
+                latency_ms = (time.time() - start_time) * 1000
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=latency_ms,
+                    status_code=e.status_code,
+                    error=e.message,
+                )
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content={"error": {"message": e.message, "type": "api_error"}},
+                )
+
             except Exception as e:
+                latency_ms = (time.time() - start_time) * 1000
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=latency_ms,
+                    status_code=500,
+                    error=str(e),
+                )
                 return JSONResponse(
                     status_code=500,
                     content={"error": str(e)},
                 )
-            try:
-                response_data = response.http_response.json()
-            except ValueError:
-                response_data = {"error": response.http_response.text}
-
-            return JSONResponse(status_code=response.status_code, content=response_data)
 
         @self.app.get("/health")
         async def health() -> dict[str, str]:
@@ -306,10 +411,16 @@ class ProxyServer:
         """Set the case id the proxy should attribute metrics to when no header is provided."""
         self._active_case_id = case_id
 
-    def _record_usage(self, case_id: str, model: str, usage: Any, latency_ms: float) -> None:
+    def _record_usage(
+        self,
+        case_id: str,
+        model: str,
+        usage: Any,
+        latency_ms: float,
+        status_code: int,
+        error: str | None = None,
+    ) -> None:
         """Record token usage for metrics from OpenAI responses."""
-        if usage is None:
-            return
 
         def _get(value: Any, attr: str) -> Any:
             if value is None:
@@ -331,6 +442,9 @@ class ProxyServer:
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=0,
             latency_ms=latency_ms,
+            status_code=status_code,
+            error=error,
+            provider=self._provider,
         )
 
     def _log_request(self, route: str, body: dict[str, Any], case_id: str) -> None:

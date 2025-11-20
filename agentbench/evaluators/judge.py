@@ -87,7 +87,7 @@ Respond with ONLY "YES" or "NO"."""
             usage = {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
-                "cost_usd": cost_usd
+                "cost_usd": cost_usd,
             }
 
             return EvaluationResult(

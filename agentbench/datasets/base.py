@@ -63,11 +63,7 @@ class BaseDataset(ABC):
             "target",
         }
 
-        metadata = {
-            key: value
-            for key, value in record.items()
-            if key not in exclude_keys
-        }
+        metadata = {key: value for key, value in record.items() if key not in exclude_keys}
         return Case(
             case_id=case_id,
             dataset_name=self.config.name,

@@ -1,6 +1,7 @@
 import json
+import math
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
 from rich.console import Console
 from rich.table import Table
@@ -14,14 +15,32 @@ def load_results(run_dir: Path) -> list[CaseResult]:
     if not results_path.exists():
         return results
 
+    # Dedup results: keep only the LAST result for each (agent, dataset, case_id)
+    # Use 'attempt' to tiebreak if available, otherwise strict file order
+    deduped = {}
     with open(results_path) as f:
         for line in f:
             try:
                 data = json.loads(line)
-                results.append(CaseResult(**data))
+                res = CaseResult(**data)
+                key = (res.agent_name, res.dataset_name, res.case_id)
+                deduped[key] = res
             except Exception:
                 pass
-    return results
+    return list(deduped.values())
+
+
+def _calculate_percentile(data: list[float], percentile: float) -> float:
+    """Calculate percentile using linear interpolation (numpy-style)."""
+    if not data:
+        return 0.0
+    data.sort()
+    index = (len(data) - 1) * percentile
+    lower = math.floor(index)
+    upper = math.ceil(index)
+    if lower == upper:
+        return data[int(index)]
+    return data[lower] * (upper - index) + data[upper] * (index - lower)
 
 
 def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
@@ -33,21 +52,18 @@ def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
     accuracy = passed / total
 
     # Durations
-    durations = sorted([r.runner_duration_ms for r in results])
-    p50_dur = durations[int(total * 0.5)] if total > 0 else 0
-    p95_dur = durations[int(total * 0.95)] if total > 0 else 0
+    durations = [r.runner_duration_ms for r in results]
+    p50_dur = _calculate_percentile(durations, 0.50)
+    p95_dur = _calculate_percentile(durations, 0.95)
 
     # LLM Latency
-    # r.llm_metrics is a dict. We need "llm_latency_ms".
-    # It might be a list of latencies (one per call) or single.
-    # Let's assume we want average latency per case? Or per call?
-    # Spec: "avg_llm_latency_ms"
-
     latencies = []
     total_cost = 0.0
     total_judge_cost = 0.0
     total_input = 0
     total_output = 0
+    judge_total_input = 0
+    judge_total_output = 0
 
     for r in results:
         metrics = r.llm_metrics
@@ -55,7 +71,14 @@ def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
         total_cost += metrics.get("llm_total_cost_usd", 0.0)
         total_input += metrics.get("llm_input_tokens", 0)
         total_output += metrics.get("llm_output_tokens", 0)
+
+        # Judge Metrics
         total_judge_cost += r.judge_cost_usd or 0.0
+        if r.judge_metrics:
+            judge_total_input += r.judge_metrics.get("input_tokens", 0)
+            judge_total_output += r.judge_metrics.get("output_tokens", 0)
+            # Assume judge latency is not explicitly tracked in metrics yet unless added
+            # If judge metrics had latency, we'd add it here.
 
         lats = metrics.get("llm_latency_ms", [])
         if isinstance(lats, list):
@@ -64,9 +87,8 @@ def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
             latencies.append(lats)
 
     avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
-    sorted_lat = sorted(latencies)
-    p50_lat = sorted_lat[int(len(sorted_lat) * 0.5)] if sorted_lat else 0.0
-    p95_lat = sorted_lat[int(len(sorted_lat) * 0.95)] if sorted_lat else 0.0
+    p50_lat = _calculate_percentile(latencies, 0.50)
+    p95_lat = _calculate_percentile(latencies, 0.95)
 
     return AggregatedMetrics(
         accuracy=accuracy,
@@ -84,12 +106,13 @@ def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:
     )
 
 
-def print_report(run_id: str, run_dir: Path):
-    console = Console()
+def print_report(
+    run_id: str, run_dir: Path, output_format: Literal["text", "json", "markdown"] = "text"
+):
     results = load_results(run_dir)
-
     if not results:
-        console.print(f"[red]No results found for run {run_id}[/red]")
+        if output_format == "text":
+            Console().print(f"[red]No results found for run {run_id}[/red]")
         return
 
     # Group by Agent / Dataset
@@ -105,6 +128,108 @@ def print_report(run_id: str, run_dir: Path):
         agents.add(r.agent_name)
         datasets.add(r.dataset_name)
 
+    # Load system errors
+    errors_path = run_dir / "system_errors.jsonl"
+    system_errors = []
+    if errors_path.exists():
+        with open(errors_path) as f:
+            for line in f:
+                try:
+                    system_errors.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    if output_format == "json":
+        _print_json_report(run_id, agents, datasets, grouped, system_errors)
+    elif output_format == "markdown":
+        _print_markdown_report(run_id, agents, datasets, grouped, system_errors)
+    else:
+        _print_text_report(run_id, agents, datasets, grouped, system_errors)
+
+
+def _print_json_report(run_id, agents, datasets, grouped, system_errors):
+    report = {"run_id": run_id, "leaderboard": [], "detailed": {}, "system_errors": system_errors}
+
+    for agent in sorted(agents):
+        agent_data = {"agent": agent, "total_cost": 0.0, "scores": {}}
+        for ds in sorted(datasets):
+            res = grouped.get((agent, ds), [])
+            if not res:
+                continue
+            m = calculate_metrics(res)
+            agent_data["total_cost"] += m.total_cost_usd + m.total_judge_cost_usd
+            agent_data["scores"][ds] = {
+                "accuracy": m.accuracy,
+                "total_cases": m.total_cases,
+                "metrics": m.model_dump(),
+            }
+
+            if agent not in report["detailed"]:
+                report["detailed"][agent] = {}
+            report["detailed"][agent][ds] = m.model_dump()
+
+        report["leaderboard"].append(agent_data)
+
+    print(json.dumps(report, indent=2))
+
+
+def _print_markdown_report(run_id, agents, datasets, grouped, system_errors):
+    print(f"# AgentBench Run Report: {run_id}\n")
+
+    print("## Leaderboard\n")
+    headers = ["Agent"] + sorted(datasets) + ["Total Cost"]
+    print("| " + " | ".join(headers) + " |")
+    print("| " + " | ".join(["---"] * len(headers)) + " |")
+
+    for agent in sorted(agents):
+        row = [agent]
+        total_cost = 0.0
+        for ds in sorted(datasets):
+            res = grouped.get((agent, ds), [])
+            if res:
+                m = calculate_metrics(res)
+                total_cost += m.total_cost_usd + m.total_judge_cost_usd
+                row.append(f"{m.accuracy:.1%}")
+            else:
+                row.append("-")
+        row.append(f"${total_cost:.4f}")
+        print("| " + " | ".join(row) + " |")
+
+    print("\n## Detailed Metrics\n")
+    for agent in sorted(agents):
+        print(f"### Agent: {agent}")
+        for ds in sorted(datasets):
+            res = grouped.get((agent, ds), [])
+            if not res:
+                continue
+            m = calculate_metrics(res)
+            print(f"#### Dataset: {ds}")
+            print(
+                f"- **Accuracy**: {m.accuracy:.1%} ({m.total_cases - m.failed_cases}/{m.total_cases})"
+            )
+            print(f"- **Duration**: p50={m.p50_duration_ms:.0f}ms, p95={m.p95_duration_ms:.0f}ms")
+            print(
+                f"- **LLM Latency**: avg={m.avg_llm_latency_ms:.0f}ms, p50={m.p50_llm_latency_ms:.0f}ms"
+            )
+            print(f"- **Cost**: ${m.total_cost_usd + m.total_judge_cost_usd:.6f}")
+            print("")
+
+    if system_errors:
+        print("\n## System Errors\n")
+        print(f"Total Errors: {len(system_errors)}\n")
+        print("| Case ID | Agent | Dataset | Error |")
+        print("| --- | --- | --- | --- |")
+        for err in system_errors[:20]:
+            print(
+                f"| {err.get('case_id')} | {err.get('agent_name')} | {err.get('dataset_name')} | {err.get('error')} |"
+            )
+        if len(system_errors) > 20:
+            print(f"\n... and {len(system_errors) - 20} more.")
+
+
+def _print_text_report(run_id, agents, datasets, grouped, system_errors):
+    console = Console()
+
     # Leaderboard Table
     table = Table(title=f"Leaderboard - Run {run_id}")
     table.add_column("Agent", style="cyan")
@@ -118,7 +243,7 @@ def print_report(run_id: str, run_dir: Path):
         for ds in sorted(datasets):
             res = grouped.get((agent, ds), [])
             metrics = calculate_metrics(res)
-            agent_cost += metrics.total_cost_usd
+            agent_cost += metrics.total_cost_usd + metrics.total_judge_cost_usd
 
             score = f"{metrics.accuracy:.1%}"
             if metrics.total_cases > 0:
@@ -154,21 +279,15 @@ def print_report(run_id: str, run_dir: Path):
                 f"  LLM Latency: avg={m.avg_llm_latency_ms:.0f}ms, p50={m.p50_llm_latency_ms:.0f}ms, p95={m.p95_llm_latency_ms:.0f}ms"
             )
             console.print(f"  Tokens: In={m.total_input_tokens}, Out={m.total_output_tokens}")
-            console.print(f"  Cost: ${m.total_cost_usd:.6f} (Agent) + ${m.total_judge_cost_usd:.6f} (Judge) = ${m.total_cost_usd + m.total_judge_cost_usd:.6f}")
+            console.print(
+                f"  Cost: ${m.total_cost_usd:.6f} (Agent) + ${m.total_judge_cost_usd:.6f} (Judge) = ${m.total_cost_usd + m.total_judge_cost_usd:.6f}"
+            )
 
     # System Errors
-    errors_path = run_dir / "system_errors.jsonl"
-    if errors_path.exists():
+    if system_errors:
         console.print("\n[bold red]System Errors[/bold red]")
-        entries: list[dict[str, Any]] = []
-        with open(errors_path) as f:
-            for line in f:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-        console.print(f"  Total Errors: {len(entries)}")
-        for entry in entries[:5]:
+        console.print(f"  Total Errors: {len(system_errors)}")
+        for entry in system_errors[:5]:
             case_id = entry.get("case_id")
             agent = entry.get("agent_name")
             dataset = entry.get("dataset_name")

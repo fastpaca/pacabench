@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import json
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,11 +28,7 @@ class RunManager:
             metadata = self._read_metadata_file(self.run_dir / "metadata.json")
             if self.run_dir.exists():
                 fingerprint = metadata.get("config_fingerprint")
-                status = metadata.get("status")
-                if (
-                    fingerprint
-                    and fingerprint == self._config_fingerprint
-                ):
+                if fingerprint and fingerprint == self._config_fingerprint:
                     if force_new_run:
                         raise ValueError(
                             f"Run directory {self.run_dir} already exists; cannot force a fresh run."
@@ -60,6 +57,7 @@ class RunManager:
         self.metadata_path = self.run_dir / "metadata.json"
         self.config_path = self.run_dir / "agentbench.yaml"
         self._completed_entries: set[tuple[str, str, str]] = set()
+        self._case_attempts: dict[tuple[str, str, str], int] = defaultdict(int)
         self._load_completed_entries()
         self.completed_cases = len(self._completed_entries)
         self.total_cases = self._load_total_cases()
@@ -141,14 +139,30 @@ class RunManager:
                 }
             )
 
+    def get_next_attempt(self, agent: str, dataset: str, case_id: str) -> int:
+        """Get the next attempt number for a case."""
+        return self._case_attempts.get((agent, dataset, case_id), 0) + 1
+
+    def get_attempt_count(self, agent: str, dataset: str, case_id: str) -> int:
+        """Get the current attempt count for a case."""
+        return self._case_attempts.get((agent, dataset, case_id), 0)
+
     def save_result(self, result: CaseResult):
         entry = (result.agent_name, result.dataset_name, result.case_id)
+
+        if result.timestamp is None:
+            result.timestamp = datetime.now().isoformat()
+
         with open(self.results_path, "a") as f:
             f.write(result.model_dump_json() + "\n")
+
         if entry not in self._completed_entries:
             self._completed_entries.add(entry)
             self.completed_cases = len(self._completed_entries)
             self._write_progress()
+
+        # Update attempts
+        self._case_attempts[entry] = result.attempt
 
     def save_error(self, error_data: dict[str, Any], error_type: ErrorType = ErrorType.SYSTEM):
         payload = {
@@ -202,7 +216,15 @@ class RunManager:
                     dataset = data.get("dataset_name", "")
                     cid = data.get("case_id", "")
                     if agent and dataset and cid:
-                        self._completed_entries.add((agent, dataset, cid))
+                        key = (agent, dataset, cid)
+                        self._completed_entries.add(key)
+                        # Track attempts
+                        attempt = data.get("attempt")
+                        if attempt:
+                            self._case_attempts[key] = max(self._case_attempts[key], int(attempt))
+                        else:
+                            # Fallback: count occurrences
+                            self._case_attempts[key] += 1
 
     def _write_progress(self):
         progress = None
