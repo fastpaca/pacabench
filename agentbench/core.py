@@ -79,7 +79,7 @@ class Harness:
                 pending_cases = pending_case_map.get((agent_config.name, ds_config.name), [])
                 await self._run_dataset_agent(agent_config, ds_config, pending_cases, whitelist_ids)
 
-        self.run_manager.mark_completed()
+        self.run_manager.mark_completed(failed=self._circuit_open)
 
     async def _run_dataset_agent(
         self,
@@ -155,12 +155,15 @@ class Harness:
                 runner = runners[runner_idx]
                 proxy = proxies[runner_idx] if runner_idx < len(proxies) else None
 
-                while not queue.empty():
+                while True:
                     if self._circuit_open:
                         break
                     try:
-                        case = queue.get_nowait()
-                    except asyncio.QueueEmpty:
+                        # Use a small timeout to allow checking circuit breaker periodically
+                        # or just wait indefinitely if no cancellation needed?
+                        # queue.get() is better than get_nowait loop
+                        case = await queue.get()
+                    except asyncio.CancelledError:
                         break
 
                     try:
