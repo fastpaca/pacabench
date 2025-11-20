@@ -1,11 +1,13 @@
 import json
 import math
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from rich.console import Console
-from rich.table import Table
 
+from agentbench.dashboard import DashboardRenderer, DashboardState
 from agentbench.types import AggregatedMetrics, CaseResult
 
 
@@ -139,12 +141,22 @@ def print_report(
                 except json.JSONDecodeError:
                     continue
 
+    # Load metadata for timing
+    metadata_path = run_dir / "metadata.json"
+    metadata = {}
+    if metadata_path.exists():
+        try:
+            with open(metadata_path) as f:
+                metadata = json.load(f)
+        except Exception:
+            pass
+
     if output_format == "json":
         _print_json_report(run_id, agents, datasets, grouped, system_errors)
     elif output_format == "markdown":
         _print_markdown_report(run_id, agents, datasets, grouped, system_errors)
     else:
-        _print_text_report(run_id, agents, datasets, grouped, system_errors)
+        _print_text_report(run_id, agents, datasets, grouped, system_errors, metadata)
 
 
 def _print_json_report(run_id, agents, datasets, grouped, system_errors):
@@ -227,34 +239,69 @@ def _print_markdown_report(run_id, agents, datasets, grouped, system_errors):
             print(f"\n... and {len(system_errors) - 20} more.")
 
 
-def _print_text_report(run_id, agents, datasets, grouped, system_errors):
+def _print_text_report(run_id, agents, datasets, grouped, system_errors, metadata):
     console = Console()
+    console.print(f"\n[bold]Analysis Report for Run: {run_id}[/bold]\n")
 
-    # Leaderboard Table
-    table = Table(title=f"Leaderboard - Run {run_id}")
-    table.add_column("Agent", style="cyan")
-    for ds in sorted(datasets):
-        table.add_column(ds, justify="right")
-    table.add_column("Total Cost", justify="right")
+    # Build Dashboard State from historical data
+    state = DashboardState()
 
-    for agent in sorted(agents):
-        row = [agent]
-        agent_cost = 0.0
-        for ds in sorted(datasets):
+    # Calculate duration from metadata
+    start_str = metadata.get("start_time")
+    end_str = metadata.get("completed_time") or metadata.get("last_resumed")
+    duration_sec = 0.0
+    if start_str:
+        try:
+            start_dt = datetime.fromisoformat(start_str)
+            end_dt = datetime.fromisoformat(end_str) if end_str else datetime.now()
+            duration_sec = (end_dt - start_dt).total_seconds()
+        except Exception:
+            pass
+
+    # Trick dashboard renderer to show correct elapsed time
+    state.start_time = time.time() - duration_sec
+
+    # Populate states
+    overall_cost = 0.0
+    for agent in agents:
+        for ds in datasets:
             res = grouped.get((agent, ds), [])
-            metrics = calculate_metrics(res)
-            agent_cost += metrics.total_cost_usd + metrics.total_judge_cost_usd
+            if not res:
+                # Could initialize with 0 if we know it was supposed to run
+                continue
 
-            score = f"{metrics.accuracy:.1%}"
-            if metrics.total_cases > 0:
-                row.append(score)
-            else:
-                row.append("-")
+            # Aggregate
+            m = calculate_metrics(res)
 
-        row.append(f"${agent_cost:.4f}")
-        table.add_row(*row)
+            ds_state = state.get_state(agent, ds)
+            ds_state.status = (
+                "Completed"  # Or 'Failed' if metadata says so? Assume Completed for report
+            )
+            ds_state.total_cases = m.total_cases
+            ds_state.completed_cases = m.total_cases
+            ds_state.passed_cases = m.total_cases - m.failed_cases
+            ds_state.failed_cases = m.failed_cases
+            ds_state.total_cost = m.total_cost_usd + m.total_judge_cost_usd
+            ds_state.avg_latency_ms = m.avg_llm_latency_ms
+            ds_state.last_case_id = res[-1].case_id if res else None
 
-    console.print(table)
+            # Count errors from system_errors list?
+            # The system_errors list is global. Let's filter it.
+            agent_ds_errors = [
+                e
+                for e in system_errors
+                if e.get("agent_name") == agent and e.get("dataset_name") == ds
+            ]
+            ds_state.error_cases = len(agent_ds_errors)
+
+            overall_cost += ds_state.total_cost
+
+    state.total_cost = overall_cost
+    state.circuit_open = metadata.get("status") == "failed"
+
+    # Render Dashboard
+    renderer = DashboardRenderer()
+    console.print(renderer.render(state))
 
     # Detailed Metrics per Agent/Dataset
     console.print("\n[bold]Detailed Metrics[/bold]")

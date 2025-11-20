@@ -1,12 +1,14 @@
 import asyncio
 import contextlib
 import logging
+import time
 
 import portpicker
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
+from rich.live import Live
 
 from agentbench.config import AgentConfig, DatasetConfig
 from agentbench.context import EvalContext
+from agentbench.dashboard import DashboardRenderer, DashboardState
 from agentbench.datasets import get_dataset
 from agentbench.evaluators import get_evaluator
 from agentbench.persistence import RunManager
@@ -58,6 +60,10 @@ class Harness:
         pending_case_map: dict[tuple[str, str], list[Case]] = {}
         total_pending = 0
 
+        # Initialize Dashboard State
+        dashboard_state = DashboardState()
+        dashboard_renderer = DashboardRenderer()
+
         for agent_config in self.config.agents:
             for _, (ds_config, cases) in datasets.items():
                 key = (agent_config.name, ds_config.name)
@@ -66,6 +72,31 @@ class Harness:
                 )
                 pending_case_map[key] = pending
                 total_pending += len(pending)
+
+                # Initialize agent state in dashboard
+                # Use total cases from dataset for the progress bar total
+                # (or just pending if we want to show work remaining)
+                # Let's use total loaded cases to show overall progress
+                dashboard_state.init_agent(
+                    agent_config.name, ds_config.name, total_cases=len(cases)
+                )
+                # Mark already completed cases in dashboard state
+                state = dashboard_state.get_state(agent_config.name, ds_config.name)
+
+                # We need to count how many were completed for this agent/dataset
+                # This is a bit expensive to scan completed_entries, but okay for init
+                completed_count = 0
+                for entry in completed_entries:
+                    if entry[0] == agent_config.name and entry[1] == ds_config.name:
+                        completed_count += 1
+                state.completed_cases = completed_count
+                # Ideally we would restore passed/failed/cost counts too if we want accurate resumption stats
+                # But parsing results.jsonl again is slow. Let's accept 0 start for resumed stats or...
+                # For now, leave cost/pass rate as "Session Stats" or accept they start at 0.
+                # Correctness: The user wants "Snapshot of current state".
+                # If we resume, we want to see TOTAL progress.
+                # Let's just count completed for progress bar. Pass rate will be for "this run" unless we parse everything.
+                # TODO: Load full stats from results.jsonl if possible.
 
         if self.run_manager.resuming and whitelist_ids is None:
             planned_total = self.run_manager.completed_cases + total_pending
@@ -79,40 +110,33 @@ class Harness:
 
         self.run_manager.set_total_cases(planned_total)
 
-        # Progress bar with custom columns
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.fields[agent_name]}[/bold blue]", justify="right"),
-            BarColumn(bar_width=40),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("•"),
-            TextColumn("{task.completed}/{task.total}"),
-            TextColumn("•"),
-            TextColumn("[red]Err: {task.fields[errors]}[/red]"),
-            TextColumn("•"),
-            TextColumn("[yellow]Fail: {task.fields[failures]}[/yellow]"),
-            TextColumn("•"),
-            TextColumn("[green]${task.fields[cost]:.5f}[/green]"),
-        ) as progress:
-            task_id = progress.add_task(
-                "",
-                total=planned_total,
-                agent_name="Initializing",
-                errors=0,
-                failures=0,
-                cost=0.0,
-            )
-            # Handle previously completed cases in progress bar
-            if self.run_manager.resuming and self.run_manager.completed_cases > 0:
-                progress.advance(task_id, advance=self.run_manager.completed_cases)
-
+        # Live Dashboard
+        with Live(dashboard_renderer.render(dashboard_state), refresh_per_second=4) as live:
             # For each agent, for each dataset
             for agent_config in self.config.agents:
                 for _, (ds_config, _cases) in datasets.items():
                     pending_cases = pending_case_map.get((agent_config.name, ds_config.name), [])
+
+                    # Update status to Running
+                    dashboard_state.get_state(agent_config.name, ds_config.name).status = "Running"
+                    live.update(dashboard_renderer.render(dashboard_state))
+
                     await self._run_dataset_agent(
-                        agent_config, ds_config, pending_cases, progress, task_id, whitelist_ids
+                        agent_config,
+                        ds_config,
+                        pending_cases,
+                        live,
+                        dashboard_renderer,
+                        dashboard_state,
+                        whitelist_ids,
                     )
+
+                    # Update status to Completed
+                    dashboard_state.get_state(
+                        agent_config.name, ds_config.name
+                    ).status = "Completed"
+                    live.update(dashboard_renderer.render(dashboard_state))
+                    self.run_manager.save_dashboard_state(dashboard_state.model_dump_json(indent=2))
 
         self.run_manager.mark_completed(failed=self._circuit_open)
 
@@ -121,19 +145,14 @@ class Harness:
         agent_config: AgentConfig,
         ds_config: DatasetConfig,
         pending_cases: list[Case],
-        progress: Progress,
-        task_id: TaskID,
+        live: Live,
+        renderer: DashboardRenderer,
+        state: DashboardState,
         whitelist_ids: set[str] | None = None,
     ):
-        progress.console.print(f"\nRunning Agent: {agent_config.name} on Dataset: {ds_config.name}")
-
-        # Update progress bar immediately to show current agent
-        self._update_progress_display(progress, task_id, agent_config.name, ds_config.name)
-
         concurrency = self.config.config.concurrency
 
         if not pending_cases:
-            progress.console.print("All cases completed or skipped.")
             return
 
         # Setup Proxies
@@ -143,7 +162,6 @@ class Harness:
         if self.config.config.proxy.enabled:
             for _ in range(concurrency):
                 port = portpicker.pick_unused_port()
-                # Ideally use portpicker or handle port conflicts
                 api_key = self.ctx.env.get("OPENAI_API_KEY")
                 proxy_cfg = self.config.config.proxy
                 p = ProxyServer(
@@ -204,6 +222,7 @@ class Harness:
                     )
 
                     # Run (with timeout)
+                    start_time = time.time()
                     try:
                         runner_output = await asyncio.wait_for(
                             runner.run_case(case), timeout=self.config.config.timeout_seconds
@@ -214,6 +233,10 @@ class Harness:
                             duration_ms=self.config.config.timeout_seconds * 1000,
                             error_type=ErrorType.SYSTEM,
                         )
+
+                    # Determine latency if not provided
+                    if runner_output.duration_ms == 0:
+                        runner_output.duration_ms = (time.time() - start_time) * 1000
 
                     if proxy:
                         proxy_metrics = proxy.metrics.get_metrics(case.case_id)
@@ -287,7 +310,6 @@ class Harness:
                         )
                     else:
                         self.run_manager.save_result(result)
-                    progress.advance(task_id)
 
                     # Calculate cost and passed
                     cost = 0.0
@@ -298,15 +320,30 @@ class Harness:
                             cost += result.judge_cost_usd
                         passed = result.passed
 
+                    # Update Dashboard State
+                    agent_state = state.get_state(agent_config.name, ds_config.name)
+                    agent_state.update_metrics(
+                        passed=passed,
+                        error=(runner_output.error_type == ErrorType.SYSTEM),
+                        cost=cost,
+                        latency_ms=runner_output.duration_ms,
+                        case_id=case.case_id,
+                    )
+
+                    state.total_cost += cost
+
                     await self._record_case_outcome(
                         runner_output.error_type,
-                        progress,
-                        task_id,
-                        cost=cost,
                         passed=passed,
                         agent_name=agent_config.name,
                         dataset_name=ds_config.name,
                     )
+
+                    # Refresh Live Dashboard
+                    live.update(renderer.render(state))
+
+                    # Save Snapshot
+                    self.run_manager.save_dashboard_state(state.model_dump_json(indent=2))
 
                     tasks_since_restart[runner_idx] += 1
                     if (
@@ -321,12 +358,17 @@ class Harness:
                 except Exception as e:
                     logger.error(f"System error processing case {case.case_id}: {e}")
                     self.run_manager.save_error({"case_id": case.case_id, "error": str(e)})
-                    progress.advance(task_id)
+
+                    # Update Dashboard on System Error Exception
+                    agent_state = state.get_state(agent_config.name, ds_config.name)
+                    agent_state.update_metrics(
+                        passed=False, error=True, cost=0.0, latency_ms=0.0, case_id=case.case_id
+                    )
+                    live.update(renderer.render(state))
+                    self.run_manager.save_dashboard_state(state.model_dump_json(indent=2))
+
                     await self._record_case_outcome(
                         ErrorType.SYSTEM,
-                        progress,
-                        task_id,
-                        cost=0.0,
                         passed=False,
                         agent_name=agent_config.name,
                         dataset_name=ds_config.name,
@@ -334,6 +376,8 @@ class Harness:
                 finally:
                     queue.task_done()
                 if self._circuit_open:
+                    state.circuit_open = True
+                    live.update(renderer.render(state))
                     self._drain_queue(queue)
                     break
 
@@ -376,38 +420,15 @@ class Harness:
             pending.append(case)
         return pending
 
-    def _update_progress_display(
-        self, progress: Progress, task_id: TaskID, agent_name: str | None, dataset_name: str | None
-    ):
-        system_errors = self._system_error_cases
-        failures = self._task_failures
-        total_cost = self._total_cost_usd
-
-        # Format context string
-        context = "Initializing"
-        if agent_name and dataset_name:
-            context = f"{agent_name}/{dataset_name}"
-
-        if self._circuit_open:
-            context += " [CIRCUIT OPEN]"
-
-        progress.update(
-            task_id, agent_name=context, errors=system_errors, failures=failures, cost=total_cost
-        )
-
     async def _record_case_outcome(
         self,
         error_type: ErrorType,
-        progress: Progress | None,
-        task_id: TaskID | None,
-        cost: float = 0.0,
         passed: bool = True,
         agent_name: str | None = None,
         dataset_name: str | None = None,
     ):
         async with self._counts_lock:
             self._processed_cases += 1
-            self._total_cost_usd += cost
             if error_type == ErrorType.SYSTEM:
                 self._system_error_cases += 1
             elif not passed:
@@ -426,8 +447,6 @@ class Harness:
                         ratio * 100,
                         threshold * 100,
                     )
-        if progress and task_id is not None:
-            self._update_progress_display(progress, task_id, agent_name, dataset_name)
 
     def _drain_queue(self, queue: asyncio.Queue):
         while not queue.empty():

@@ -16,25 +16,10 @@ def main():
         except json.JSONDecodeError:
             continue
 
-        question = data.get("input", "")
-        # We have history in metadata/history usually or direct history field?
-        # CommandRunner sends: {case_id, dataset_name, agent_name, input, history, ...metadata...}
-
-        # In our prepare script, we put 'history' in JSONL.
-        # GitDataset puts 'history' in metadata['history'].
-        # CommandRunner spreads metadata, so 'history' will be in the root of input JSON.
-
-        # history = data.get("history", [])
-        # Also 'context_text' we created
-        context_text = data.get("context_text", "")
-
-        # Construct prompt
-        # For long context, we just dump everything.
-
+        question = data.input
+        history = data.history
         system_prompt = "You are a helpful assistant with a long memory."
-        user_prompt = f"Context:\n{context_text}\n\nQuestion: {question}"
-
-        # Handle choices if present
+        user_prompt = f"History:\n{history}\n\nQuestion: {question}"
         choices = data.get("choices")
         if choices and isinstance(choices, dict):
             choices_text = "\n".join(f"{key}. {value}" for key, value in sorted(choices.items()))

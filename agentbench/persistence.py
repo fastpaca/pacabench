@@ -176,6 +176,11 @@ class RunManager:
             self.system_error_count += 1
             self.update_metadata({"system_error_count": self.system_error_count})
 
+    def save_dashboard_state(self, state_json: str):
+        path = self.run_dir / "status.json"
+        with open(path, "w") as f:
+            f.write(state_json)
+
     def update_metadata(self, data: dict[str, Any]):
         # Read existing
         current = {}
