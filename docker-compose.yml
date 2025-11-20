@@ -13,7 +13,7 @@ services:
       - ./qdrant_storage:/qdrant/storage
 
   neo4j:
-    image: neo4j:5.21
+    image: neo4j:latest
     restart: unless-stopped
     environment:
       NEO4J_AUTH: neo4j/password
