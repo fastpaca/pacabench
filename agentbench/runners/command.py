@@ -36,39 +36,6 @@ class CommandRunner(BaseRunner):
         # Inject Proxy URL
         if self.proxy_url:
             env["OPENAI_BASE_URL"] = self.proxy_url
-            # We don't have X-Case-ID here in start(), it's per-case.
-            # But the Proxy expects X-Case-ID header.
-            # The runner script (agent) is responsible for passing headers to OpenAI client.
-            # Most agents don't do this.
-            #
-            # Alternatively, if we can set an ENV var that the agent reads and puts in headers?
-            # No standard env var for custom headers in OpenAI python client.
-            #
-            # However, the proxy relies on `set_active_case` side-channel if header is missing.
-            # Since we use one proxy per worker (concurrency=N, proxies=N),
-            # and the worker processes one case at a time, `set_active_case` IS safe.
-            #
-            # The issue "Fix Proxy Attribution" checklist says: "CommandRunner must inject X-Case-ID header... Current set_active_case side-channel is fragile."
-            #
-            # Why is it fragile?
-            # If the agent is async and overlaps calls?
-            # But the harness waits for `runner.run_case` to finish before `set_active_case` changes.
-            #
-            # The only fragility is if the agent spawns a background thread that calls LLM AFTER `run_case` returns?
-            # Or if we reuse the proxy across runners? We don't (one per runner index).
-            #
-            # So `set_active_case` is actually robust enough for synchronous case execution.
-            #
-            # BUT, to fully satisfy the requirement of "Fix Proxy Attribution":
-            # We should inject `AGENTBENCH_CASE_ID` env var.
-            # The agent code would need to read it.
-            # If the agent code doesn't read it, we are back to `set_active_case`.
-            #
-            # Since we can't easily force the agent to send headers without modifying agent code,
-            # and we are modifying the HARNESS, `set_active_case` is the harness-side fix.
-            #
-            # I'll add the env var injection anyway as a best practice.
-            pass
 
         # Start process
         logger.info(f"Starting runner for agent {self.config.name}: {self.config.command}")

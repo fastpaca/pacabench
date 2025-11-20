@@ -1,5 +1,8 @@
 import asyncio
 import json
+
+# Initialize logging
+import logging
 import os
 import sys
 import time
@@ -12,14 +15,13 @@ from graphiti_core.llm_client.openai_client import OpenAIClient
 from graphiti_core.nodes import EpisodeType
 from openai import OpenAI
 
-# Initialize logging
-import logging
 # Increase log level to avoid noise, but keep zep_agent at DEBUG
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger("zep_agent")
 logger.setLevel(logging.DEBUG)
 logging.getLogger("neo4j").setLevel(logging.ERROR)
-logging.getLogger("graphiti_core").setLevel(logging.INFO) # Reduce graphiti noise
+logging.getLogger("graphiti_core").setLevel(logging.INFO)  # Reduce graphiti noise
+
 
 async def process_case(line, graphiti, client, model):
     try:
@@ -69,26 +71,32 @@ async def process_case(line, graphiti, client, model):
                 fact = getattr(edge, "fact", str(edge))
                 lines.append(f"- {fact}")
             if lines:
-                memory_context = "Relevant context from knowledge graph:\n" + "\n".join(lines) + "\n\n"
+                memory_context = (
+                    "Relevant context from knowledge graph:\n" + "\n".join(lines) + "\n\n"
+                )
 
         prompt_content = f"{memory_context}Question: {question}"
+        system_prompt = "You are a helpful assistant with a long memory."
         choices = data.get("choices")
         if choices and isinstance(choices, dict):
-            choices_text = "\n".join(
-                f"{key}. {value}" for key, value in sorted(choices.items())
-            )
+            choices_text = "\n".join(f"{key}. {value}" for key, value in sorted(choices.items()))
             prompt_content += f"\n\nChoices:\n{choices_text}\n\nRespond with only the choice letter (A, B, C, or D)."
 
         # Run sync OpenAI call in executor to avoid blocking async loop
         loop = asyncio.get_running_loop()
+
         def call_openai():
             response = client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": prompt_content}]
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_content},
+                ],
             )
             return response.choices[0].message.content
 
         output = await loop.run_in_executor(None, call_openai)
-        
+
         # Critical: flush stdout immediately
         print(json.dumps({"output": output, "error": None}))
         sys.stdout.flush()
@@ -110,7 +118,9 @@ async def run_agent():
 
     llm_config = LLMConfig(api_key=api_key, model=model, base_url=proxy_url)
     llm_client = OpenAIClient(config=llm_config)
-    embedder_config = OpenAIEmbedderConfig(api_key=api_key, base_url=proxy_url, embedding_model="text-embedding-3-small")
+    embedder_config = OpenAIEmbedderConfig(
+        api_key=api_key, base_url=proxy_url, embedding_model="text-embedding-3-small"
+    )
     embedder = OpenAIEmbedder(config=embedder_config)
 
     graphiti = None
@@ -155,12 +165,13 @@ async def run_agent():
             line = line_bytes.decode()
             if not line.strip():
                 continue
-            # Process sequentially to avoid Graphiti concurrency issues if any, 
+            # Process sequentially to avoid Graphiti concurrency issues if any,
             # and to ensure we don't overload with parallel reqs in this test
             await process_case(line, graphiti, client, model)
         except Exception as e:
             logger.error(f"Error reading stdin: {e}")
             break
+
 
 if __name__ == "__main__":
     try:

@@ -1,5 +1,6 @@
 """FastAPI-based OpenAI proxy for intercepting and tracking LLM calls."""
 
+import logging
 import os
 import threading
 import time
@@ -12,8 +13,9 @@ import uvicorn
 from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from genai_prices import Usage, calc_price
-from loguru import logger
 from openai import APIStatusError, AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 
 class MetricsCollector:
@@ -454,11 +456,11 @@ class ProxyServer:
             metadata = body.get("metadata")
             log_metadata = metadata if isinstance(metadata, list) else []
             logger.debug(
-                "[proxy] {route} case={case_id} model={model} metadata={metadata}",
-                route=route,
-                case_id=case_id,
-                model=model,
-                metadata=log_metadata,
+                "[proxy] %s case=%s model=%s metadata=%s",
+                route,
+                case_id,
+                model,
+                log_metadata,
             )
         except Exception as exc:
             logger.debug(f"Failed to log proxy request: {exc}")

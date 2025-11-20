@@ -50,8 +50,10 @@ datasets:
       input: "question"
       expected: "ground_truth"
     evaluator:
-      type: "llm_judge"
-      model: "gpt-4o-mini"
+      type: "multiple_choice"
+      # Fallback to F1 when choices are missing; avoids LLM judge by default.
+      extra_config:
+        fallback: "f1"
 
 output:
   directory: "./runs"
