@@ -3,8 +3,8 @@ description: Recreation of QA test for long-context & mem0
 version: "1.0.0"
 
 config:
-  concurrency: 2
-  timeout_seconds: 180
+  concurrency: 10
+  timeout_seconds: 600
   proxy:
     enabled: true
     provider: "openai"
