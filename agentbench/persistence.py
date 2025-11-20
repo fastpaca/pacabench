@@ -16,7 +16,7 @@ class RunManager:
         self.config = ctx.runtime_config
         self.base_config = ctx.base_config
         self.base_dir = ctx.runs_dir
-        self._config_fingerprint = _compute_config_fingerprint(self.base_config)
+        self._config_fingerprint = _compute_config_fingerprint(self.config)
         self.resuming = False
         self._force_new_run = force_new_run
 
@@ -31,7 +31,6 @@ class RunManager:
                 if (
                     fingerprint
                     and fingerprint == self._config_fingerprint
-                    and status != "completed"
                 ):
                     if force_new_run:
                         raise ValueError(
@@ -179,10 +178,11 @@ class RunManager:
         self.total_cases = total_cases
         self._write_progress()
 
-    def mark_completed(self):
+    def mark_completed(self, failed: bool = False):
+        status = "failed" if failed else "completed"
         self.update_metadata(
             {
-                "status": "completed",
+                "status": status,
                 "completed_time": datetime.now().isoformat(),
                 "completed_cases": self.completed_cases,
             }

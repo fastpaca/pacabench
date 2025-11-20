@@ -23,7 +23,10 @@ class CommandRunner(BaseRunner):
 
     async def start(self):
         if self._process:
-            return
+            if self._process.returncode is None:
+                return
+            # Process is dead, clear it to allow restart
+            await self.stop()
 
         env = self._base_env.copy()
         # Inject Agent env vars
