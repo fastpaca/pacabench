@@ -10,7 +10,7 @@ from agentbench.analysis import print_report
 from agentbench.config import load_config
 from agentbench.context import build_eval_context, resolve_run_directory, resolve_runs_dir_from_cli
 from agentbench.core import Harness
-from agentbench.persistence import RunManager
+from agentbench.persistence import RunManager, find_latest_run
 
 app = typer.Typer()
 
@@ -185,7 +185,12 @@ if __name__ == "__main__":
 
 @app.command()
 def analyze(
-    run_id: str,
+    run_id: Annotated[
+        str | None,
+        typer.Argument(
+            help="Run ID to analyze. If not provided, defaults to the latest completed run."
+        ),
+    ] = None,
     config: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to configuration file")
     ] = Path("agentbench.yaml"),
@@ -200,6 +205,15 @@ def analyze(
 ):
     """Analyze a benchmark run."""
     resolved_runs_dir = resolve_runs_dir_from_cli(config, runs_dir)
+
+    if not run_id:
+        latest_run_path = find_latest_run(resolved_runs_dir)
+        if not latest_run_path:
+            typer.echo(f"No completed runs found in {resolved_runs_dir}.")
+            raise typer.Exit(code=1)
+        run_id = latest_run_path.name
+        typer.echo(f"Analyzing latest run: {run_id}")
+
     try:
         run_dir = resolve_run_directory(run_id, resolved_runs_dir)
     except FileNotFoundError:

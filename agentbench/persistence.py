@@ -250,3 +250,27 @@ class RunManager:
 def _compute_config_fingerprint(config: BenchmarkConfig) -> str:
     normalized = json.dumps(config.model_dump(mode="json"), sort_keys=True)
     return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def find_latest_run(runs_dir: Path) -> Path | None:
+    """Find the latest completed or failed run directory."""
+    if not runs_dir.exists():
+        return None
+
+    candidates = sorted(
+        [p for p in runs_dir.iterdir() if p.is_dir()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    for run_path in candidates:
+        metadata_path = run_path / "metadata.json"
+        if not metadata_path.exists():
+            continue
+
+        data = RunManager._read_metadata_file(metadata_path)
+        status = data.get("status")
+        if status in ("completed", "failed"):
+            return run_path
+
+    return None
