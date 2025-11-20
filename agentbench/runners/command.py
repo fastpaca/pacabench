@@ -95,30 +95,16 @@ class CommandRunner(BaseRunner):
         async with self._lock:
             start_time = time.perf_counter()
 
-            # Prepare input
-            # Filter out answer-leakage fields from metadata
-            safe_metadata = case.metadata.copy()
-            for forbidden in ["expected", "answer", "ground_truth", "solution"]:
-                if forbidden in safe_metadata:
-                    del safe_metadata[forbidden]
-
             input_data = {
+                **case.metadata,
                 "case_id": case.case_id,
                 "dataset_name": case.dataset_name,
                 "agent_name": self.config.name,
                 "input": case.input,
                 "history": case.history,
-                **safe_metadata,
             }
 
-            # Also inject AGENTBENCH_CASE_ID into the environment for this run?
-            # We can't easily update the ENV of a running process without restarting it.
-            # But CommandRunner is a persistent process.
-            # So we rely on input_data containing case_id.
-            # And we rely on the Proxy `set_active_case` call in `core.py`.
-
             json_line = json.dumps(input_data) + "\n"
-
             try:
                 self._process.stdin.write(json_line.encode())
                 await self._process.stdin.drain()
@@ -133,17 +119,6 @@ class CommandRunner(BaseRunner):
             # Read output
             while True:
                 try:
-                    # We need to read line by line.
-                    # If process prints logs, we ignore them unless it's valid JSON with specific fields.
-                    # Implement timeout? Harness level timeout vs Runner level.
-                    # Spec says "timeout_seconds" in GlobalConfig.
-                    # We should probably use `asyncio.wait_for`.
-
-                    # FIX: If EOF is encountered, it might mean the process crashed or closed stdout.
-                    # We should inspect stderr or returncode?
-                    # Currently we return EOF error immediately.
-                    # Maybe wait for stderr to drain?
-
                     line_bytes = await self._process.stdout.readline()
                     if not line_bytes:
                         # EOF
