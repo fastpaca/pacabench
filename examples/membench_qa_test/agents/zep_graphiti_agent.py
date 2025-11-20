@@ -10,7 +10,7 @@ from typing import Literal
 from graphiti_core import Graphiti
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client.config import LLMConfig
-from graphiti_core.llm_client.openai_client import OpenAIClient
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EpisodeType
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -115,7 +115,7 @@ async def run_agent():
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     llm_config = LLMConfig(api_key=api_key, model=model, base_url=proxy_url)
-    llm_client = OpenAIClient(config=llm_config)
+    llm_client = OpenAIGenericClient(config=llm_config)
     embedder_config = OpenAIEmbedderConfig(
         api_key=api_key, base_url=proxy_url, embedding_model="text-embedding-3-small"
     )
