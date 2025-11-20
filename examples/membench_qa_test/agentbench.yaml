@@ -15,7 +15,7 @@ agents:
     env:
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
 
-  - name: "mem0-v1"
+  - name: "mem0"
     command: "python agents/mem0_agent.py"
     env:
       OPENAI_API_KEY: "${OPENAI_API_KEY}"

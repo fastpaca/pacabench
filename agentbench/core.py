@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 
+import portpicker
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from agentbench.config import AgentConfig, DatasetConfig
@@ -64,12 +65,31 @@ class Harness:
                 pending_case_map[key] = pending
                 total_pending += len(pending)
 
-        if self.run_manager.resuming:
-            planned_total = self.run_manager.total_cases or (
-                self.run_manager.completed_cases + total_pending
-            )
+        if self.run_manager.resuming and whitelist_ids is None:
+            # If resuming a normal run, we want to preserve the original planned total
+            # if possible, or just use what we know.
+            # If we use RunManager's total_cases, it might be correct.
+            # But if we changed the dataset limit, it might be different.
+            # Let's trust the calculated pending + completed.
+            # But `completed_entries` contains ALL attempts.
+            # We want UNIQUE completed cases.
+            # RunManager.completed_cases is actually the set length (unique).
+            planned_total = self.run_manager.completed_cases + total_pending
         else:
-            planned_total = total_pending
+            # Fresh run or retry run
+            # For retry run (whitelist_ids set), we only care about the whitelisted ones.
+            # RunManager might have a huge total_cases from previous runs.
+            # We should probably update it to reflect the CURRENT target?
+            # But we want to keep history.
+            # If we just use total_pending, the progress bar will show 0/N.
+            # If we use existing total, it will show K/M.
+            # Let's use existing total if resuming, else pending.
+            if self.run_manager.resuming:
+                planned_total = self.run_manager.total_cases or (
+                    self.run_manager.completed_cases + total_pending
+                )
+            else:
+                planned_total = total_pending
 
         self.run_manager.set_total_cases(planned_total)
 
@@ -101,9 +121,8 @@ class Harness:
         proxy_urls: list[str] = []
 
         if self.config.config.proxy.enabled:
-            start_port = 8000
-            for i in range(concurrency):
-                port = start_port + i
+            for _ in range(concurrency):
+                port = portpicker.pick_unused_port()
                 # Ideally use portpicker or handle port conflicts
                 api_key = self.ctx.env.get("OPENAI_API_KEY")
                 proxy_cfg = self.config.config.proxy
@@ -155,15 +174,12 @@ class Harness:
                 runner = runners[runner_idx]
                 proxy = proxies[runner_idx] if runner_idx < len(proxies) else None
 
-                while True:
+                while not queue.empty():
                     if self._circuit_open:
                         break
                     try:
-                        # Use a small timeout to allow checking circuit breaker periodically
-                        # or just wait indefinitely if no cancellation needed?
-                        # queue.get() is better than get_nowait loop
-                        case = await queue.get()
-                    except asyncio.CancelledError:
+                        case = queue.get_nowait()
+                    except asyncio.QueueEmpty:
                         break
 
                     try:
@@ -172,6 +188,11 @@ class Harness:
                         if proxy:
                             proxy.set_active_case(case.case_id)
                             proxy.metrics.clear_metrics(case.case_id)
+
+                        # Get attempt number
+                        attempt = self.run_manager.get_next_attempt(
+                            agent_config.name, ds_config.name, case.case_id
+                        )
 
                         # Run (with timeout)
                         try:
@@ -224,6 +245,7 @@ class Harness:
                             case_id=case.case_id,
                             dataset_name=ds_config.name,
                             agent_name=agent_config.name,
+                            attempt=attempt,
                             passed=eval_result.passed,
                             output=runner_output.output,
                             error=runner_output.error,
@@ -306,6 +328,17 @@ class Harness:
             entry = (agent_config.name, ds_config.name, case.case_id)
             if whitelist_ids is None and entry in completed_entries:
                 continue
+
+            # Check max retries (only if not explicit retry)
+            if whitelist_ids is None:
+                current_attempts = self.run_manager.get_attempt_count(
+                    agent_config.name, ds_config.name, case.case_id
+                )
+                # max_retries = N means we allow 1 initial + N retries = N+1 total attempts
+                max_allowed = self.config.config.max_retries + 1
+                if current_attempts >= max_allowed:
+                    continue
+
             pending.append(case)
         return pending
 

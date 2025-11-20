@@ -10,6 +10,7 @@ from agentbench.analysis import print_report
 from agentbench.config import load_config
 from agentbench.context import build_eval_context, resolve_run_directory, resolve_runs_dir_from_cli
 from agentbench.core import Harness
+from agentbench.persistence import RunManager
 
 app = typer.Typer()
 
@@ -67,6 +68,21 @@ def run(
         runs_dir_override=runs_dir,
         overrides=overrides,
     )
+
+    # Check for incomplete run if not specified
+    if not run_id and not fresh_run:
+        # Use a temporary RunManager to check
+        rm = RunManager(ctx)
+        incomplete = rm._find_incomplete_run()
+        if incomplete:
+            should_resume = typer.confirm(
+                f"Found incomplete run '{incomplete.name}'. Resume?", default=True
+            )
+            if should_resume:
+                run_id = incomplete.name
+            else:
+                fresh_run = True
+
     try:
         harness = Harness(ctx, run_id=run_id, force_new_run=fresh_run)
     except ValueError as exc:
@@ -94,6 +110,7 @@ config:
   proxy:
     enabled: true
     provider: "openai"
+    base_url: "https://api.openai.com/v1"
 
 agents:
   - name: "example-agent"
@@ -176,6 +193,10 @@ def analyze(
         Path | None,
         typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
     ] = None,
+    output_format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format: text, json, or markdown"),
+    ] = "text",
 ):
     """Analyze a benchmark run."""
     resolved_runs_dir = resolve_runs_dir_from_cli(config, runs_dir)
@@ -187,7 +208,11 @@ def analyze(
         )
         raise typer.Exit(code=1) from None
 
-    print_report(run_id, run_dir)
+    if output_format not in ["text", "json", "markdown"]:
+        typer.echo(f"Invalid format: {output_format}. Must be text, json, or markdown.")
+        raise typer.Exit(code=1)
+
+    print_report(run_id, run_dir, output_format=output_format)
 
 
 @app.command()

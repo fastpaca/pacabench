@@ -85,6 +85,10 @@ class CaseResult(BaseModel):
     runner_duration_ms: float = 0.0
     llm_metrics: dict[str, Any] = Field(default_factory=dict)  # From Proxy or Runner
 
+    # Metadata
+    attempt: int = 1
+    timestamp: str | None = None
+
     # Evaluation details
     f1_score: float | None = None
     f1_passed: bool | None = None
