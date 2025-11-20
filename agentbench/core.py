@@ -3,7 +3,7 @@ import contextlib
 import logging
 
 import portpicker
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskID, TextColumn
 
 from agentbench.config import AgentConfig, DatasetConfig
 from agentbench.context import EvalContext
@@ -26,6 +26,8 @@ class Harness:
         self._counts_lock = asyncio.Lock()
         self._processed_cases = 0
         self._system_error_cases = 0
+        self._task_failures = 0
+        self._total_cost_usd = 0.0
         self._circuit_open = False
 
     async def run(self, limit: int | None = None, whitelist_ids: set[str] | None = None):
@@ -66,24 +68,8 @@ class Harness:
                 total_pending += len(pending)
 
         if self.run_manager.resuming and whitelist_ids is None:
-            # If resuming a normal run, we want to preserve the original planned total
-            # if possible, or just use what we know.
-            # If we use RunManager's total_cases, it might be correct.
-            # But if we changed the dataset limit, it might be different.
-            # Let's trust the calculated pending + completed.
-            # But `completed_entries` contains ALL attempts.
-            # We want UNIQUE completed cases.
-            # RunManager.completed_cases is actually the set length (unique).
             planned_total = self.run_manager.completed_cases + total_pending
         else:
-            # Fresh run or retry run
-            # For retry run (whitelist_ids set), we only care about the whitelisted ones.
-            # RunManager might have a huge total_cases from previous runs.
-            # We should probably update it to reflect the CURRENT target?
-            # But we want to keep history.
-            # If we just use total_pending, the progress bar will show 0/N.
-            # If we use existing total, it will show K/M.
-            # Let's use existing total if resuming, else pending.
             if self.run_manager.resuming:
                 planned_total = self.run_manager.total_cases or (
                     self.run_manager.completed_cases + total_pending
@@ -93,11 +79,40 @@ class Harness:
 
         self.run_manager.set_total_cases(planned_total)
 
-        # For each agent, for each dataset
-        for agent_config in self.config.agents:
-            for _, (ds_config, _cases) in datasets.items():
-                pending_cases = pending_case_map.get((agent_config.name, ds_config.name), [])
-                await self._run_dataset_agent(agent_config, ds_config, pending_cases, whitelist_ids)
+        # Progress bar with custom columns
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.fields[agent_name]}[/bold blue]", justify="right"),
+            BarColumn(bar_width=40),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("•"),
+            TextColumn("{task.completed}/{task.total}"),
+            TextColumn("•"),
+            TextColumn("[red]Err: {task.fields[errors]}[/red]"),
+            TextColumn("•"),
+            TextColumn("[yellow]Fail: {task.fields[failures]}[/yellow]"),
+            TextColumn("•"),
+            TextColumn("[green]${task.fields[cost]:.5f}[/green]"),
+        ) as progress:
+            task_id = progress.add_task(
+                "",
+                total=planned_total,
+                agent_name="Initializing",
+                errors=0,
+                failures=0,
+                cost=0.0,
+            )
+            # Handle previously completed cases in progress bar
+            if self.run_manager.resuming and self.run_manager.completed_cases > 0:
+                progress.advance(task_id, advance=self.run_manager.completed_cases)
+
+            # For each agent, for each dataset
+            for agent_config in self.config.agents:
+                for _, (ds_config, _cases) in datasets.items():
+                    pending_cases = pending_case_map.get((agent_config.name, ds_config.name), [])
+                    await self._run_dataset_agent(
+                        agent_config, ds_config, pending_cases, progress, task_id, whitelist_ids
+                    )
 
         self.run_manager.mark_completed(failed=self._circuit_open)
 
@@ -106,14 +121,19 @@ class Harness:
         agent_config: AgentConfig,
         ds_config: DatasetConfig,
         pending_cases: list[Case],
+        progress: Progress,
+        task_id: TaskID,
         whitelist_ids: set[str] | None = None,
     ):
-        print(f"\nRunning Agent: {agent_config.name} on Dataset: {ds_config.name}")
+        progress.console.print(f"\nRunning Agent: {agent_config.name} on Dataset: {ds_config.name}")
+
+        # Update progress bar immediately to show current agent
+        self._update_progress_display(progress, task_id, agent_config.name, ds_config.name)
 
         concurrency = self.config.config.concurrency
 
         if not pending_cases:
-            print("All cases completed or skipped.")
+            progress.console.print("All cases completed or skipped.")
             return
 
         # Setup Proxies
@@ -159,152 +179,166 @@ class Harness:
         recycle_interval = self.config.config.worker_recycle_interval
         tasks_since_restart = [0 for _ in range(concurrency)]
 
-        # Progress bar
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        ) as progress:
-            task_id = progress.add_task(
-                f"Processing {len(pending_cases)} cases...", total=len(pending_cases)
-            )
+        async def worker(runner_idx: int):
+            runner = runners[runner_idx]
+            proxy = proxies[runner_idx] if runner_idx < len(proxies) else None
 
-            async def worker(runner_idx: int):
-                runner = runners[runner_idx]
-                proxy = proxies[runner_idx] if runner_idx < len(proxies) else None
+            while not queue.empty():
+                if self._circuit_open:
+                    break
+                try:
+                    case = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
-                while not queue.empty():
-                    if self._circuit_open:
-                        break
+                try:
+                    # Get Metrics from Proxy if enabled
+                    llm_metrics = {}
+                    if proxy:
+                        proxy.set_active_case(case.case_id)
+                        proxy.metrics.clear_metrics(case.case_id)
+
+                    # Get attempt number
+                    attempt = self.run_manager.get_next_attempt(
+                        agent_config.name, ds_config.name, case.case_id
+                    )
+
+                    # Run (with timeout)
                     try:
-                        case = queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-
-                    try:
-                        # Get Metrics from Proxy if enabled
-                        llm_metrics = {}
-                        if proxy:
-                            proxy.set_active_case(case.case_id)
-                            proxy.metrics.clear_metrics(case.case_id)
-
-                        # Get attempt number
-                        attempt = self.run_manager.get_next_attempt(
-                            agent_config.name, ds_config.name, case.case_id
+                        runner_output = await asyncio.wait_for(
+                            runner.run_case(case), timeout=self.config.config.timeout_seconds
+                        )
+                    except TimeoutError:
+                        runner_output = RunnerOutput(
+                            error="Timeout",
+                            duration_ms=self.config.config.timeout_seconds * 1000,
+                            error_type=ErrorType.SYSTEM,
                         )
 
-                        # Run (with timeout)
-                        try:
-                            runner_output = await asyncio.wait_for(
-                                runner.run_case(case), timeout=self.config.config.timeout_seconds
-                            )
-                        except TimeoutError:
-                            runner_output = RunnerOutput(
-                                error="Timeout",
-                                duration_ms=self.config.config.timeout_seconds * 1000,
-                                error_type=ErrorType.SYSTEM,
-                            )
+                    if proxy:
+                        proxy_metrics = proxy.metrics.get_metrics(case.case_id)
+                        llm_metrics = proxy_metrics
 
-                        if proxy:
-                            proxy_metrics = proxy.metrics.get_metrics(case.case_id)
-                            llm_metrics = proxy_metrics
+                    if runner_output.metrics:
+                        # Merge logic
+                        runner_metrics_dict = runner_output.metrics.model_dump(exclude_none=True)
 
-                        if runner_output.metrics:
-                            # Merge logic
-                            runner_metrics_dict = runner_output.metrics.model_dump(
-                                exclude_none=True
-                            )
+                        mapping = {
+                            "call_count": "llm_call_count",
+                            "input_tokens": "llm_input_tokens",
+                            "output_tokens": "llm_output_tokens",
+                            "cache_read_tokens": "llm_cache_read_tokens",
+                            "cache_write_tokens": "llm_cache_write_tokens",
+                            "cost_usd": "llm_total_cost_usd",
+                            "latency_ms": "llm_latency_ms",
+                        }
 
-                            mapping = {
-                                "call_count": "llm_call_count",
-                                "input_tokens": "llm_input_tokens",
-                                "output_tokens": "llm_output_tokens",
-                                "cache_read_tokens": "llm_cache_read_tokens",
-                                "cache_write_tokens": "llm_cache_write_tokens",
-                                "cost_usd": "llm_total_cost_usd",
-                                "latency_ms": "llm_latency_ms",
-                            }
+                        for r_key, p_key in mapping.items():
+                            if r_key in runner_metrics_dict:
+                                val = runner_metrics_dict[r_key]
+                                if r_key == "latency_ms":
+                                    llm_metrics[p_key] = [val]
+                                else:
+                                    llm_metrics[p_key] = val
 
-                            for r_key, p_key in mapping.items():
-                                if r_key in runner_metrics_dict:
-                                    val = runner_metrics_dict[r_key]
-                                    if r_key == "latency_ms":
-                                        llm_metrics[p_key] = [val]
-                                    else:
-                                        llm_metrics[p_key] = val
+                    eval_result = EvaluationResult(passed=False, score=0.0)
+                    if evaluator and runner_output.error_type != ErrorType.SYSTEM:
+                        eval_result = await evaluator.evaluate(
+                            case, runner_output, proxy_url=proxy_urls[runner_idx]
+                        )
 
-                        eval_result = EvaluationResult(passed=False, score=0.0)
-                        if evaluator and runner_output.error_type != ErrorType.SYSTEM:
-                            eval_result = await evaluator.evaluate(
-                                case, runner_output, proxy_url=proxy_urls[runner_idx]
-                            )
+                    # Result
+                    result = CaseResult(
+                        case_id=case.case_id,
+                        dataset_name=ds_config.name,
+                        agent_name=agent_config.name,
+                        attempt=attempt,
+                        passed=eval_result.passed,
+                        output=runner_output.output,
+                        error=runner_output.error,
+                        error_type=runner_output.error_type,
+                        runner_duration_ms=runner_output.duration_ms,
+                        llm_metrics=llm_metrics,
+                        f1_score=eval_result.score
+                        if ds_config.evaluator and ds_config.evaluator.type == "f1"
+                        else None,
+                        f1_passed=eval_result.passed
+                        if ds_config.evaluator and ds_config.evaluator.type == "f1"
+                        else None,
+                        judge_passed=eval_result.passed
+                        if ds_config.evaluator and ds_config.evaluator.type == "llm_judge"
+                        else None,
+                        judge_reason=eval_result.reason,
+                        judge_metrics=eval_result.metrics,
+                        judge_cost_usd=eval_result.metrics.get("cost_usd")
+                        if eval_result.metrics
+                        else None,
+                    )
 
-                        # Result
-                        result = CaseResult(
-                            case_id=case.case_id,
-                            dataset_name=ds_config.name,
-                            agent_name=agent_config.name,
-                            attempt=attempt,
-                            passed=eval_result.passed,
-                            output=runner_output.output,
-                            error=runner_output.error,
+                    if runner_output.error_type == ErrorType.SYSTEM:
+                        self.run_manager.save_error(
+                            {
+                                "case_id": case.case_id,
+                                "agent_name": agent_config.name,
+                                "dataset_name": ds_config.name,
+                                "error": runner_output.error,
+                            },
                             error_type=runner_output.error_type,
-                            runner_duration_ms=runner_output.duration_ms,
-                            llm_metrics=llm_metrics,
-                            f1_score=eval_result.score
-                            if ds_config.evaluator and ds_config.evaluator.type == "f1"
-                            else None,
-                            f1_passed=eval_result.passed
-                            if ds_config.evaluator and ds_config.evaluator.type == "f1"
-                            else None,
-                            judge_passed=eval_result.passed
-                            if ds_config.evaluator and ds_config.evaluator.type == "llm_judge"
-                            else None,
-                            judge_reason=eval_result.reason,
-                            judge_metrics=eval_result.metrics,
-                            judge_cost_usd=eval_result.metrics.get("cost_usd")
-                            if eval_result.metrics
-                            else None,
                         )
+                    else:
+                        self.run_manager.save_result(result)
+                    progress.advance(task_id)
 
-                        if runner_output.error_type == ErrorType.SYSTEM:
-                            self.run_manager.save_error(
-                                {
-                                    "case_id": case.case_id,
-                                    "agent_name": agent_config.name,
-                                    "dataset_name": ds_config.name,
-                                    "error": runner_output.error,
-                                },
-                                error_type=runner_output.error_type,
-                            )
-                        else:
-                            self.run_manager.save_result(result)
-                        progress.advance(task_id)
-                        await self._record_case_outcome(runner_output.error_type, progress, task_id)
-                        tasks_since_restart[runner_idx] += 1
-                        if (
-                            recycle_interval
-                            and recycle_interval > 0
-                            and tasks_since_restart[runner_idx] >= recycle_interval
-                        ):
-                            await runners[runner_idx].stop()
-                            await runners[runner_idx].start()
-                            tasks_since_restart[runner_idx] = 0
+                    # Calculate cost and passed
+                    cost = 0.0
+                    passed = True
+                    if runner_output.error_type != ErrorType.SYSTEM:
+                        cost = result.llm_metrics.get("llm_total_cost_usd", 0.0)
+                        if result.judge_cost_usd:
+                            cost += result.judge_cost_usd
+                        passed = result.passed
 
-                    except Exception as e:
-                        logger.error(f"System error processing case {case.case_id}: {e}")
-                        self.run_manager.save_error({"case_id": case.case_id, "error": str(e)})
-                        progress.advance(task_id)
-                        await self._record_case_outcome(ErrorType.SYSTEM, progress, task_id)
-                    finally:
-                        queue.task_done()
-                    if self._circuit_open:
-                        self._drain_queue(queue)
-                        break
+                    await self._record_case_outcome(
+                        runner_output.error_type,
+                        progress,
+                        task_id,
+                        cost=cost,
+                        passed=passed,
+                        agent_name=agent_config.name,
+                        dataset_name=ds_config.name,
+                    )
 
-            # Run workers
-            await asyncio.gather(*[worker(i) for i in range(concurrency)])
+                    tasks_since_restart[runner_idx] += 1
+                    if (
+                        recycle_interval
+                        and recycle_interval > 0
+                        and tasks_since_restart[runner_idx] >= recycle_interval
+                    ):
+                        await runners[runner_idx].stop()
+                        await runners[runner_idx].start()
+                        tasks_since_restart[runner_idx] = 0
+
+                except Exception as e:
+                    logger.error(f"System error processing case {case.case_id}: {e}")
+                    self.run_manager.save_error({"case_id": case.case_id, "error": str(e)})
+                    progress.advance(task_id)
+                    await self._record_case_outcome(
+                        ErrorType.SYSTEM,
+                        progress,
+                        task_id,
+                        cost=0.0,
+                        passed=False,
+                        agent_name=agent_config.name,
+                        dataset_name=ds_config.name,
+                    )
+                finally:
+                    queue.task_done()
+                if self._circuit_open:
+                    self._drain_queue(queue)
+                    break
+
+        # Run workers
+        await asyncio.gather(*[worker(i) for i in range(concurrency)])
 
         # Cleanup
         for runner in runners:
@@ -342,13 +376,43 @@ class Harness:
             pending.append(case)
         return pending
 
+    def _update_progress_display(
+        self, progress: Progress, task_id: TaskID, agent_name: str | None, dataset_name: str | None
+    ):
+        system_errors = self._system_error_cases
+        failures = self._task_failures
+        total_cost = self._total_cost_usd
+
+        # Format context string
+        context = "Initializing"
+        if agent_name and dataset_name:
+            context = f"{agent_name}/{dataset_name}"
+
+        if self._circuit_open:
+            context += " [CIRCUIT OPEN]"
+
+        progress.update(
+            task_id, agent_name=context, errors=system_errors, failures=failures, cost=total_cost
+        )
+
     async def _record_case_outcome(
-        self, error_type: ErrorType, progress: Progress | None, task_id: int | None
+        self,
+        error_type: ErrorType,
+        progress: Progress | None,
+        task_id: TaskID | None,
+        cost: float = 0.0,
+        passed: bool = True,
+        agent_name: str | None = None,
+        dataset_name: str | None = None,
     ):
         async with self._counts_lock:
             self._processed_cases += 1
+            self._total_cost_usd += cost
             if error_type == ErrorType.SYSTEM:
                 self._system_error_cases += 1
+            elif not passed:
+                self._task_failures += 1
+
             processed = self._processed_cases
             system_errors = self._system_error_cases
             threshold = self.config.config.circuit_breaker_error_ratio or 0.0
@@ -363,13 +427,7 @@ class Harness:
                         threshold * 100,
                     )
         if progress and task_id is not None:
-            total_cases = max(self.run_manager.total_cases, processed)
-            desc = (
-                f"Processing {total_cases} cases... ({processed} done | sys errors {system_errors})"
-            )
-            if self._circuit_open:
-                desc += " [CIRCUIT OPEN]"
-            progress.update(task_id, description=desc)
+            self._update_progress_display(progress, task_id, agent_name, dataset_name)
 
     def _drain_queue(self, queue: asyncio.Queue):
         while not queue.empty():

@@ -115,6 +115,7 @@ def main():
 
             # 3. Generate Response
             prompt_content = f"{memory_context}Question: {question}"
+            system_prompt = "You are a helpful assistant with a long memory."
 
             # Handle choices if present
             choices = data.get("choices")
@@ -125,7 +126,11 @@ def main():
                 prompt_content += f"\n\nChoices:\n{choices_text}\n\nRespond with only the choice letter (A, B, C, or D)."
 
             response = client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": prompt_content}]
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_content},
+                ],
             )
             output = response.choices[0].message.content
 

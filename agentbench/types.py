@@ -11,19 +11,6 @@ class Case(BaseModel):
     dataset_name: str
     input: str
     expected: str | None = None
-    # history is technically list[dict], but some datasets might have irregular structures.
-    # Let's use list[Any] to be permissive, or robust custom validation if needed.
-    # The error was: Input should be a valid dictionary... input_value=[{'sid': 0...}]
-    # This means Pydantic expects list[dict[str, Any]] but maybe got something else?
-    # Wait, the error says: input_value=[{'sid': 0, ...}] which IS a list of dicts.
-    # Ah, maybe the inner dict validation failed?
-    # "Input should be a valid dictionary... input_type=list" suggests it expected a dict but got a list?
-    # Or maybe one of the items in the history list is NOT a dict?
-    # The error message `history.0 ... input_type=list` implies that the value at index 0 IS a list, but it expected a dict?
-    # Let's look closer at the error: `history.0 Input should be a valid dictionary ... input_value=[{'sid': 0...}]`.
-    # It seems `history` in the input JSON is `[[{'sid': 0...}]]` (nested list)?
-    # If `history` is defined as `list[dict]`, but the input has `list[list[dict]]`, that would fail.
-    # Let's relax the type to `list[Any]` to debugging or `Any`.
     history: list[Any] = Field(default_factory=list)
     # Allow extra fields for dataset-specific metadata
     metadata: dict[str, Any] = Field(default_factory=dict)
