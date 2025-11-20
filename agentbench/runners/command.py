@@ -143,11 +143,27 @@ class CommandRunner(BaseRunner):
                             if "metrics" in data:
                                 metrics = RunnerMetrics(**data["metrics"])
 
+                            # Determine error type
+                            error_msg = data.get("error")
+                            error_type = ErrorType.NONE
+                            if "error_type" in data:
+                                try:
+                                    error_type = ErrorType(data["error_type"])
+                                except ValueError:
+                                    logger.warning(
+                                        f"Invalid error_type '{data['error_type']}' from agent {self.config.name}"
+                                    )
+                            elif error_msg:
+                                # Default to SYSTEM if error is present but type is not specified
+                                # This ensures generic errors are treated as retryable system failures
+                                error_type = ErrorType.SYSTEM
+
                             return RunnerOutput(
                                 output=data.get("output"),
-                                error=data.get("error"),
+                                error=error_msg,
                                 metrics=metrics,
                                 duration_ms=duration,
+                                error_type=error_type,
                             )
                         else:
                             # Treat as log
