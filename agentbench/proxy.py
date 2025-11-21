@@ -301,6 +301,97 @@ class ProxyServer:
 
             return JSONResponse(content=response_data)
 
+        @self.app.post("/v1/responses")
+        @self.app.post("/v1/case/{case_id}/responses")
+        async def responses(
+            request: Request,
+            case_id: str | None = None,
+            x_case_id: str | None = Header(None, alias="X-Case-ID"),
+        ) -> JSONResponse:
+            """Proxy responses API to OpenAI."""
+            body = await request.json()
+            model = body.get("model", "gpt-4o-mini")
+
+            # Sanitize body: fix verbosity for gpt-4o-mini if needed
+            if (
+                "text" in body
+                and isinstance(body["text"], dict)
+                and body["text"].get("verbosity") == "low"
+                and model == "gpt-4o-mini"
+            ):
+                body["text"]["verbosity"] = "medium"
+
+            case_id = x_case_id or case_id or self._active_case_id
+            self._log_request("/v1/responses", body, case_id)
+
+            api_key = self._openai_api_key or os.environ.get("OPENAI_API_KEY")
+            if not api_key:
+                return JSONResponse(
+                    status_code=500,
+                    content={"error": "Proxy missing OPENAI_API_KEY for upstream requests."},
+                )
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            for header_name in ("OpenAI-Beta", "OpenAI-Organization", "OpenAI-Project"):
+                header_value = request.headers.get(header_name)
+                if header_value:
+                    headers[header_name] = header_value
+
+            url = f"{self._upstream_api_url}/responses"
+            logger.debug(f"Proxying response request to: {url}")
+            start_time = time.time()
+
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        url,
+                        json=body,
+                        headers=headers,
+                        timeout=self._request_timeout,
+                    )
+            except httpx.HTTPError as exc:
+                logger.error(f"Proxy responses request failed: {exc}")
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=(time.time() - start_time) * 1000,
+                    status_code=500,
+                    error=str(exc),
+                )
+                return JSONResponse(status_code=500, content={"error": str(exc)})
+
+            latency_ms = (time.time() - start_time) * 1000
+
+            try:
+                response_data = response.json()
+            except ValueError:
+                response_data = {"error": response.text}
+
+            if response.status_code >= 400:
+                self._record_usage(
+                    case_id,
+                    model,
+                    usage=None,
+                    latency_ms=latency_ms,
+                    status_code=response.status_code,
+                    error=str(response_data.get("error", response.text)),
+                )
+                return JSONResponse(status_code=response.status_code, content=response_data)
+
+            self._record_usage(
+                case_id,
+                model,
+                usage=response_data.get("usage"),
+                latency_ms=latency_ms,
+                status_code=response.status_code,
+            )
+
+            return JSONResponse(content=response_data)
+
         @self.app.post("/v1/embeddings")
         @self.app.post("/v1/case/{case_id}/embeddings")
         async def embeddings(

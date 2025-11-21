@@ -11,6 +11,7 @@ from pydantic import BaseModel
 class Message(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
+    timestamp: str | None = None
 
 
 class MemBenchInput(BaseModel):
@@ -88,7 +89,7 @@ def _extract_expected_choice(qa: dict[str, Any], choices: dict[str, str]) -> str
 
 def _normalize_history(message_list: list[Any]) -> list[Message]:
     normalized: list[Message] = []
-    
+
     # Flatten if list of lists
     flat_list = []
     for item in message_list:
@@ -103,18 +104,33 @@ def _normalize_history(message_list: list[Any]) -> list[Message]:
 
         role = msg.get("role")
         content = msg.get("content")
+        timestamp = msg.get("timestamp") or msg.get("time")
 
         # Handle alternative format
         if not role or not content:
             u = msg.get("user_message") or msg.get("user")
             a = msg.get("assistant_message") or msg.get("assistant")
             if u:
-                normalized.append(Message(role="user", content=str(u)))
+                normalized.append(
+                    Message(
+                        role="user", content=str(u), timestamp=str(timestamp) if timestamp else None
+                    )
+                )
             if a:
-                normalized.append(Message(role="assistant", content=str(a)))
+                normalized.append(
+                    Message(
+                        role="assistant",
+                        content=str(a),
+                        timestamp=str(timestamp) if timestamp else None,
+                    )
+                )
         else:
             # Map arbitrary roles to standard ones if needed, currently assuming compliant
-            normalized.append(Message(role=role, content=str(content)))
+            normalized.append(
+                Message(
+                    role=role, content=str(content), timestamp=str(timestamp) if timestamp else None
+                )
+            )
     return normalized
 
 
