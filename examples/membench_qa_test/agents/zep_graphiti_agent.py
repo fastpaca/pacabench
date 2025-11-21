@@ -10,9 +10,14 @@ from typing import Literal
 from graphiti_core import Graphiti
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client.config import LLMConfig
-from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+from graphiti_core.llm_client.openai_client import OpenAIClient
 from graphiti_core.nodes import EpisodeType
+from graphiti_core.utils.bulk_utils import RawEpisode
+from graphiti_core.prompts.models import Message as GraphitiMessage
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
+from openai import RateLimitError
+from typing import Any
 from pydantic import BaseModel, Field
 
 # Initialize logging
@@ -26,6 +31,7 @@ logging.getLogger("graphiti_core").setLevel(logging.INFO)
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
+    timestamp: str | None = None
 
 
 class InputCase(BaseModel):
@@ -48,17 +54,19 @@ async def process_case(line: str, graphiti: Graphiti, client: OpenAI, model: str
 
     try:
         # History is already normalized
-        for i, msg in enumerate(case.history):
-            if msg.content:
-                ref_time = datetime.now(UTC)
-                await graphiti.add_episode(
+        await graphiti.add_episode_bulk(
+            bulk_episodes=[
+                RawEpisode(
                     name=f"History {i}",
-                    episode_body=msg.content,
-                    source_description=f"History message from {msg.role}",
-                    reference_time=ref_time,
+                    content=f"{msg.role}: {msg.content}",
                     source=EpisodeType.message,
-                    group_id=group_id,
+                    source_description=f"History message from {msg.role}",
+                    reference_time=datetime.now(UTC),
                 )
+                for i, msg in enumerate(case.history)
+            ],
+            group_id=group_id,
+        )
 
         results = await graphiti.search(query=case.input, group_ids=[group_id], num_results=10)
         memory_context = ""
@@ -112,10 +120,10 @@ async def run_agent():
     neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user = os.getenv("NEO4J_USER", "neo4j")
     neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-5-nano")
 
     llm_config = LLMConfig(api_key=api_key, model=model, base_url=proxy_url)
-    llm_client = OpenAIGenericClient(config=llm_config)
+    llm_client = OpenAIClient(config=llm_config)
     embedder_config = OpenAIEmbedderConfig(
         api_key=api_key, base_url=proxy_url, embedding_model="text-embedding-3-small"
     )
