@@ -522,10 +522,43 @@ class ProxyServer:
                 return value.get(attr)
             return getattr(value, attr, None)
 
-        input_tokens = _get(usage, "prompt_tokens") or 0
-        output_tokens = _get(usage, "completion_tokens") or 0
-        cache_details = _get(usage, "prompt_tokens_details")
-        cache_read_tokens = _get(cache_details, "cached_tokens") or 0
+        def _first_present(attrs: tuple[str, ...]) -> int:
+            for attr in attrs:
+                value = _get(usage, attr)
+                if value is not None:
+                    return int(value)
+            return 0
+
+        def _extract_cache_tokens() -> tuple[int, int]:
+            token_details = _get(usage, "prompt_tokens_details") or _get(
+                usage, "input_token_details"
+            )
+            if token_details is None:
+                return 0, 0
+
+            cache_read_tokens = (
+                _get(token_details, "cached_tokens")
+                or _get(token_details, "cache_read_tokens")
+                or _get(token_details, "cache_read_input_tokens")
+                or 0
+            )
+            cache_write_tokens = (
+                _get(token_details, "cache_creation_tokens")
+                or _get(token_details, "cache_creation_input_tokens")
+                or _get(usage, "cache_creation_input_tokens")
+                or 0
+            )
+            return int(cache_read_tokens or 0), int(cache_write_tokens or 0)
+
+        input_tokens = _first_present(("prompt_tokens", "input_tokens"))
+        output_tokens = _first_present(("completion_tokens", "output_tokens"))
+
+        if output_tokens == 0:
+            total_tokens = _first_present(("total_tokens",))
+            if total_tokens and input_tokens:
+                output_tokens = max(total_tokens - input_tokens, 0)
+
+        cache_read_tokens, cache_write_tokens = _extract_cache_tokens()
 
         self.metrics.record_call(
             case_id=case_id,
@@ -533,7 +566,7 @@ class ProxyServer:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=0,
+            cache_write_tokens=cache_write_tokens,
             latency_ms=latency_ms,
             status_code=status_code,
             error=error,

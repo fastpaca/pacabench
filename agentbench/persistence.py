@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import json
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,22 @@ from typing import Any
 from agentbench.config import BenchmarkConfig
 from agentbench.context import EvalContext
 from agentbench.types import CaseResult, ErrorType
+
+
+@dataclass
+class RunSummary:
+    run_id: str
+    path: Path
+    status: str
+    start_time: str | None
+    elapsed_seconds: float | None
+    completed_cases: int
+    total_cases: int
+    progress: float | None
+    datasets: list[str]
+    agents: list[str]
+    models: list[str]
+    total_cost_usd: float | None
 
 
 class RunManager:
@@ -108,6 +125,19 @@ class RunManager:
         return None
 
     def initialize(self):
+        agent_meta = [
+            {
+                "name": a.name,
+                "command": a.command,
+                "env_keys": sorted(a.env.keys()),
+                "model": a.env.get("OPENAI_MODEL"),
+            }
+            for a in self.config.agents
+        ]
+        dataset_meta = [
+            {"name": d.name, "source": d.source, "split": d.split} for d in self.config.datasets
+        ]
+
         if not self.metadata_path.exists():
             self.run_dir.mkdir(parents=True, exist_ok=True)
             # Save config
@@ -120,9 +150,16 @@ class RunManager:
             # Init metadata
             self.update_metadata(
                 {
+                    "run_id": self.run_id,
                     "start_time": datetime.now().isoformat(),
                     "status": "running",
                     "config_name": self.config.name,
+                    "config_description": self.config.description,
+                    "config_version": self.config.version,
+                    "config_path": str(self.ctx.config_path),
+                    "agents": agent_meta,
+                    "datasets": dataset_meta,
+                    "overrides": self.ctx.overrides,
                     "config_fingerprint": self._config_fingerprint,
                     "completed_cases": 0,
                     "system_error_count": 0,
@@ -136,6 +173,8 @@ class RunManager:
                     "status": "running",
                     "completed_cases": self.completed_cases,
                     "system_error_count": self.system_error_count,
+                    "agents": agent_meta,
+                    "datasets": dataset_meta,
                 }
             )
 
@@ -258,7 +297,7 @@ def _compute_config_fingerprint(config: BenchmarkConfig) -> str:
 
 
 def find_latest_run(runs_dir: Path) -> Path | None:
-    """Find the latest completed or failed run directory."""
+    """Find the latest run directory, including in-progress runs."""
     if not runs_dir.exists():
         return None
 
@@ -275,7 +314,105 @@ def find_latest_run(runs_dir: Path) -> Path | None:
 
         data = RunManager._read_metadata_file(metadata_path)
         status = data.get("status")
-        if status in ("completed", "failed"):
+        if status in ("completed", "failed", "running"):
+            return run_path
+        if status is None and data:
             return run_path
 
     return None
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def get_run_summaries(runs_dir: Path) -> list[RunSummary]:
+    """Return run summaries sorted by start time, latest first."""
+    if not runs_dir.exists():
+        return []
+
+    summaries: list[RunSummary] = []
+
+    for run_path in runs_dir.iterdir():
+        if not run_path.is_dir():
+            continue
+
+        metadata_path = run_path / "metadata.json"
+        metadata = RunManager._read_metadata_file(metadata_path)
+        if not metadata:
+            continue
+
+        status = metadata.get("status", "unknown")
+        start_str = metadata.get("start_time")
+        end_str = metadata.get("completed_time") or metadata.get("last_resumed")
+        start_dt = _parse_datetime(start_str)
+        end_dt = _parse_datetime(end_str) or (datetime.now() if status == "running" else None)
+        elapsed = (end_dt - start_dt).total_seconds() if start_dt and end_dt else None
+
+        completed = int(metadata.get("completed_cases", 0) or 0)
+        total_cases = int(metadata.get("total_cases", 0) or 0)
+        progress = metadata.get("progress")
+        if progress is None and total_cases:
+            progress = completed / total_cases
+
+        datasets_field = metadata.get("datasets") or []
+        datasets: list[str] = []
+        if isinstance(datasets_field, list):
+            for entry in datasets_field:
+                if isinstance(entry, dict):
+                    datasets.append(entry.get("name", str(entry)))
+                elif isinstance(entry, str):
+                    datasets.append(entry)
+
+        agents_field = metadata.get("agents") or []
+        models: list[str] = []
+        agents: list[str] = []
+        if isinstance(agents_field, list):
+            for entry in agents_field:
+                if isinstance(entry, dict):
+                    name = entry.get("name")
+                    model = entry.get("model")
+                    if name:
+                        agents.append(name)
+                    if model:
+                        models.append(model)
+                elif isinstance(entry, str):
+                    agents.append(entry)
+
+        total_cost = None
+        status_path = run_path / "status.json"
+        if status_path.exists():
+            with contextlib.suppress(Exception), open(status_path) as f:
+                status_data = json.load(f)
+                if isinstance(status_data, dict):
+                    total_cost = status_data.get("total_cost")
+
+        summaries.append(
+            RunSummary(
+                run_id=run_path.name,
+                path=run_path,
+                status=status,
+                start_time=start_str,
+                elapsed_seconds=elapsed,
+                completed_cases=completed,
+                total_cases=total_cases,
+                progress=progress,
+                datasets=datasets,
+                agents=agents,
+                models=models,
+                total_cost_usd=total_cost,
+            )
+        )
+
+    summaries.sort(
+        key=lambda s: (
+            _parse_datetime(s.start_time) or datetime.fromtimestamp(s.path.stat().st_mtime)
+        ),
+        reverse=True,
+    )
+    return summaries

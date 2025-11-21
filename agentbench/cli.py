@@ -10,7 +10,7 @@ from agentbench.analysis import print_report
 from agentbench.config import load_config
 from agentbench.context import build_eval_context, resolve_run_directory, resolve_runs_dir_from_cli
 from agentbench.core import Harness
-from agentbench.persistence import RunManager, find_latest_run
+from agentbench.persistence import RunManager, get_run_summaries
 
 app = typer.Typer()
 
@@ -183,6 +183,51 @@ if __name__ == "__main__":
         typer.echo("Created data/test.jsonl")
 
 
+@app.command("list-runs")
+def list_runs_cmd(
+    config: Annotated[
+        Path | None, typer.Option("--config", "-c", help="Path to configuration file")
+    ] = Path("agentbench.yaml"),
+    runs_dir: Annotated[
+        Path | None,
+        typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option(help="Max number of runs to show (latest first)")
+    ] = 20,
+):
+    """List runs with basic metadata."""
+    resolved_runs_dir = resolve_runs_dir_from_cli(config, runs_dir)
+    summaries = get_run_summaries(resolved_runs_dir)
+
+    if not summaries:
+        typer.echo(f"No runs found in {resolved_runs_dir}.")
+        raise typer.Exit(code=0)
+
+    total_available = len(summaries)
+    if limit:
+        summaries = summaries[:limit]
+
+    typer.echo(f"Runs in {resolved_runs_dir} (showing {len(summaries)} of {total_available}):")
+    for idx, summary in enumerate(summaries, start=1):
+        progress_pct = f"{summary.progress * 100:.1f}%" if summary.progress is not None else "-"
+        cases = (
+            f"{summary.completed_cases}/{summary.total_cases}"
+            if summary.total_cases
+            else f"{summary.completed_cases}"
+        )
+        datasets = ",".join(summary.datasets) if summary.datasets else "-"
+        agents = ",".join(summary.agents) if summary.agents else "-"
+        models = ",".join(summary.models) if summary.models else "-"
+        cost = f"${summary.total_cost_usd:.3f}" if summary.total_cost_usd is not None else "-"
+        start_time = summary.start_time or "-"
+        typer.echo(
+            f"{idx}. {summary.run_id} status={summary.status} progress={progress_pct} "
+            f"cases={cases} cost={cost} datasets={datasets} agents={agents} models={models} "
+            f"start={start_time}"
+        )
+
+
 @app.command()
 def analyze(
     run_id: Annotated[
@@ -198,6 +243,13 @@ def analyze(
         Path | None,
         typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
     ] = None,
+    select: Annotated[
+        bool,
+        typer.Option(
+            "--select",
+            help="Interactively select a run when run_id is omitted",
+        ),
+    ] = False,
     output_format: Annotated[
         str,
         typer.Option("--format", "-f", help="Output format: text, json, or markdown"),
@@ -207,12 +259,38 @@ def analyze(
     resolved_runs_dir = resolve_runs_dir_from_cli(config, runs_dir)
 
     if not run_id:
-        latest_run_path = find_latest_run(resolved_runs_dir)
-        if not latest_run_path:
-            typer.echo(f"No completed runs found in {resolved_runs_dir}.")
+        summaries = get_run_summaries(resolved_runs_dir)
+        if not summaries:
+            typer.echo(f"No runs found in {resolved_runs_dir}.")
             raise typer.Exit(code=1)
-        run_id = latest_run_path.name
-        typer.echo(f"Analyzing latest run: {run_id}")
+        if select:
+            typer.echo("Select a run:")
+            for idx, summary in enumerate(summaries, start=1):
+                progress_pct = (
+                    f"{summary.progress * 100:.1f}%" if summary.progress is not None else "-"
+                )
+                cases = (
+                    f"{summary.completed_cases}/{summary.total_cases}"
+                    if summary.total_cases
+                    else f"{summary.completed_cases}"
+                )
+                typer.echo(
+                    f"{idx}. {summary.run_id} status={summary.status} "
+                    f"progress={progress_pct} cases={cases}"
+                )
+            choice = typer.prompt("Run number", default="1")
+            try:
+                idx = int(str(choice))
+                if idx < 1 or idx > len(summaries):
+                    raise ValueError
+            except Exception:
+                typer.echo("Invalid selection.")
+                raise typer.Exit(code=1) from None
+            chosen = summaries[idx - 1]
+        else:
+            chosen = summaries[0]
+            typer.echo(f"Analyzing latest run: {chosen.run_id} (status={chosen.status})")
+        run_id = chosen.run_id
 
     try:
         run_dir = resolve_run_directory(run_id, resolved_runs_dir)
