@@ -1,4 +1,4 @@
-<h1 align="center">AgentBench</h1>
+<h1 align="center">PacaBench</h1>
 
 <p align="center">
   <strong>A local-first Benchmark Harness for LLM agents</strong>
@@ -45,9 +45,9 @@ What should be a **"start it, walk away, come back for results"** evaluation tur
 
 You don't need an enterprise platform that takes weeks to integrate. You need a tool that works.
 
-## What is AgentBench
+## What is PacaBench
 
-AgentBench is a harness built for the reality of agentic LLM development. It handles the messy parts of benchmarking so you can focus on your agents.
+PacaBench is a harness built for the reality of agentic LLM development. It handles the messy parts of benchmarking so you can focus on your agents.
 
 * **It doesn't crash.** Agents run in isolated processes. If one crashes, the harness records the failure and keeps moving.
 * **It remembers where it left off.** State is saved after every single case. If you kill the process or your machine restarts, you resume exactly where you stopped.
@@ -156,12 +156,12 @@ Benchmarking agents became a game of whack-a-mole:
 
 **run → isolate failures → rerun → inspect → repeat → rage**
 
-AgentBench exists because I wanted to stop fighting my tools and start getting actual signal from my agents.
+PacaBench exists because I wanted to stop fighting my tools and start getting actual signal from my agents.
 
 
 ## Architecture
 
-AgentBench isolates your code from the harness.
+PacaBench isolates your code from the harness.
 
 ```mermaid
 graph LR

@@ -416,3 +416,34 @@ def get_run_summaries(runs_dir: Path) -> list[RunSummary]:
         reverse=True,
     )
     return summaries
+
+
+def get_failed_case_ids(run_dir: Path) -> set[str]:
+    """Identify failed cases (system errors + wrong answers) in a run."""
+    failed_ids: set[str] = set()
+
+    # System errors
+    errors_path = run_dir / "system_errors.jsonl"
+    if errors_path.exists():
+        with open(errors_path) as f:
+            for line in f:
+                try:
+                    err = json.loads(line)
+                    if "case_id" in err:
+                        failed_ids.add(err["case_id"])
+                except Exception:
+                    pass
+
+    # Task failures
+    results_path = run_dir / "results.jsonl"
+    if results_path.exists():
+        with open(results_path) as f:
+            for line in f:
+                try:
+                    res = json.loads(line)
+                    if not res.get("passed", False):
+                        failed_ids.add(res["case_id"])
+                except Exception:
+                    pass
+
+    return failed_ids

@@ -11,6 +11,7 @@ from pacabench.config import load_config
 from pacabench.context import build_eval_context, resolve_run_directory, resolve_runs_dir_from_cli
 from pacabench.core import Harness
 from pacabench.persistence import RunManager, get_run_summaries
+from pacabench.reporters import RichProgressReporter
 
 app = typer.Typer()
 
@@ -84,7 +85,9 @@ def run(
                 fresh_run = True
 
     try:
-        harness = Harness(ctx, run_id=run_id, force_new_run=fresh_run)
+        # Explicitly use RichProgressReporter for CLI
+        reporter = RichProgressReporter()
+        harness = Harness(ctx, run_id=run_id, force_new_run=fresh_run, reporter=reporter)
     except ValueError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from None
@@ -397,8 +400,18 @@ def retry(
         runtime_config=runtime_cfg,
         runs_dir_override=run_dir.parent,
     )
-    harness = Harness(ctx, run_id=run_id)
+    # Explicitly use RichProgressReporter for CLI
+    reporter = RichProgressReporter()
+    harness = Harness(ctx, run_id=run_id, reporter=reporter)
     asyncio.run(harness.run(whitelist_ids=retry_ids))
+
+
+@app.command()
+def tui():
+    """Launch the TUI cockpit."""
+    from pacabench.tui import PacaBenchApp
+    app = PacaBenchApp()
+    app.run()
 
 
 def cli_main():

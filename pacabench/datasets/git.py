@@ -75,7 +75,7 @@ class GitDataset(BaseDataset):
     def _run_prepare(self, repo_dir: Path) -> None:
         logger.info("Running prepare script for %s: %s", self.config.name, self.config.prepare)
         env = self.ctx.env.copy()
-        env["AGENTBENCH_DATASET_PATH"] = str(repo_dir)
+        env["PACABENCH_DATASET_PATH"] = str(repo_dir)
 
         # Fix: if prepare script path is relative, resolve it relative to the CWD
         # (where pacabench.yaml is), NOT relative to the repo_dir.
@@ -100,7 +100,7 @@ class GitDataset(BaseDataset):
         # If so, use CWD. If not, use repo_dir.
         #
         # Actually, even better: Just run in CWD. The prepare script knows where the dataset is via env var.
-        # If the user wants to run a script INSIDE the repo, they can do `cd $AGENTBENCH_DATASET_PATH && ...`
+        # If the user wants to run a script INSIDE the repo, they can do `cd $PACABENCH_DATASET_PATH && ...`
         # OR we can provide a flag.
         #
         # Changing `cwd=repo_dir` to `cwd=os.getcwd()` (or `self.ctx.root_dir`) would break existing configs

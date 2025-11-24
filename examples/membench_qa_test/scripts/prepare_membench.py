@@ -135,9 +135,9 @@ def _normalize_history(message_list: list[Any]) -> list[Message]:
 
 
 def main():
-    dataset_path = os.environ.get("AGENTBENCH_DATASET_PATH")
+    dataset_path = os.environ.get("PACABENCH_DATASET_PATH")
     if not dataset_path:
-        print("AGENTBENCH_DATASET_PATH not set, assuming current directory or skipping.")
+        print("PACABENCH_DATASET_PATH not set, assuming current directory or skipping.")
         return
 
     base_path = Path(dataset_path)
