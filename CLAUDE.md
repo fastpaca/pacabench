@@ -1,10 +1,10 @@
 # Claude Instructions for pacabench
 
-This document provides guidelines for Claude (and other LLMs) working on the AgentBench codebase.
+This document provides guidelines for Claude (and other LLMs) working on the PacaBench codebase.
 
 ## Project Overview
 
-**AgentBench** is a process-based benchmark harness for evaluating LLM memory systems and agentic workflows. It runs runners as standalone subprocesses, proxies all OpenAI API calls to track latency/tokens/cost, and aggregates precision + pass/fail metrics for QA and GAIA-style tasks.
+**PacaBench** is a process-based benchmark harness for evaluating LLM memory systems and agentic workflows. It runs runners as standalone subprocesses, proxies all OpenAI API calls to track latency/tokens/cost, and aggregates precision + pass/fail metrics for QA and GAIA-style tasks.
 
 ## Code Quality Standards
 

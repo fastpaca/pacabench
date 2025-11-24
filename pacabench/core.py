@@ -4,15 +4,16 @@ import logging
 import time
 
 import portpicker
-from rich.live import Live
 
+# from rich.live import Live  <-- Removed
 from pacabench.config import AgentConfig, DatasetConfig
 from pacabench.context import EvalContext
-from pacabench.dashboard import DashboardRenderer, DashboardState
+from pacabench.dashboard import DashboardState
 from pacabench.datasets import get_dataset
 from pacabench.evaluators import get_evaluator
 from pacabench.persistence import RunManager
 from pacabench.proxy import ProxyServer
+from pacabench.reporters import ProgressReporter, RichProgressReporter
 from pacabench.runners.command import CommandRunner
 from pacabench.types import Case, CaseResult, ErrorType, EvaluationResult, RunnerOutput
 
@@ -20,7 +21,13 @@ logger = logging.getLogger(__name__)
 
 
 class Harness:
-    def __init__(self, ctx: EvalContext, run_id: str | None = None, force_new_run: bool = False):
+    def __init__(
+        self,
+        ctx: EvalContext,
+        run_id: str | None = None,
+        force_new_run: bool = False,
+        reporter: ProgressReporter | None = None,
+    ):
         self.ctx = ctx
         self.config = ctx.runtime_config
         self.run_manager = RunManager(ctx, run_id=run_id, force_new_run=force_new_run)
@@ -31,6 +38,7 @@ class Harness:
         self._task_failures = 0
         self._total_cost_usd = 0.0
         self._circuit_open = False
+        self.reporter = reporter or RichProgressReporter()
 
     async def run(self, limit: int | None = None, whitelist_ids: set[str] | None = None):
         print(f"Starting benchmark: {self.config.name}")
@@ -62,7 +70,6 @@ class Harness:
 
         # Initialize Dashboard State
         dashboard_state = DashboardState()
-        dashboard_renderer = DashboardRenderer()
 
         for agent_config in self.config.agents:
             for _, (ds_config, cases) in datasets.items():
@@ -74,29 +81,17 @@ class Harness:
                 total_pending += len(pending)
 
                 # Initialize agent state in dashboard
-                # Use total cases from dataset for the progress bar total
-                # (or just pending if we want to show work remaining)
-                # Let's use total loaded cases to show overall progress
                 dashboard_state.init_agent(
                     agent_config.name, ds_config.name, total_cases=len(cases)
                 )
                 # Mark already completed cases in dashboard state
                 state = dashboard_state.get_state(agent_config.name, ds_config.name)
 
-                # We need to count how many were completed for this agent/dataset
-                # This is a bit expensive to scan completed_entries, but okay for init
                 completed_count = 0
                 for entry in completed_entries:
                     if entry[0] == agent_config.name and entry[1] == ds_config.name:
                         completed_count += 1
                 state.completed_cases = completed_count
-                # Ideally we would restore passed/failed/cost counts too if we want accurate resumption stats
-                # But parsing results.jsonl again is slow. Let's accept 0 start for resumed stats or...
-                # For now, leave cost/pass rate as "Session Stats" or accept they start at 0.
-                # Correctness: The user wants "Snapshot of current state".
-                # If we resume, we want to see TOTAL progress.
-                # Let's just count completed for progress bar. Pass rate will be for "this run" unless we parse everything.
-                # TODO: Load full stats from results.jsonl if possible.
 
         if self.run_manager.resuming and whitelist_ids is None:
             planned_total = self.run_manager.completed_cases + total_pending
@@ -110,8 +105,10 @@ class Harness:
 
         self.run_manager.set_total_cases(planned_total)
 
-        # Live Dashboard
-        with Live(dashboard_renderer.render(dashboard_state), refresh_per_second=4) as live:
+        # Start Reporter
+        await self.reporter.start(dashboard_state)
+
+        try:
             # For each agent, for each dataset
             for agent_config in self.config.agents:
                 for _, (ds_config, _cases) in datasets.items():
@@ -119,14 +116,12 @@ class Harness:
 
                     # Update status to Running
                     dashboard_state.get_state(agent_config.name, ds_config.name).status = "Running"
-                    live.update(dashboard_renderer.render(dashboard_state))
+                    await self.reporter.update(dashboard_state)
 
                     await self._run_dataset_agent(
                         agent_config,
                         ds_config,
                         pending_cases,
-                        live,
-                        dashboard_renderer,
                         dashboard_state,
                         whitelist_ids,
                     )
@@ -135,8 +130,10 @@ class Harness:
                     dashboard_state.get_state(
                         agent_config.name, ds_config.name
                     ).status = "Completed"
-                    live.update(dashboard_renderer.render(dashboard_state))
+                    await self.reporter.update(dashboard_state)
                     self.run_manager.save_dashboard_state(dashboard_state.model_dump_json(indent=2))
+        finally:
+            await self.reporter.stop()
 
         self.run_manager.mark_completed(failed=self._circuit_open)
 
@@ -145,8 +142,6 @@ class Harness:
         agent_config: AgentConfig,
         ds_config: DatasetConfig,
         pending_cases: list[Case],
-        live: Live,
-        renderer: DashboardRenderer,
         state: DashboardState,
         whitelist_ids: set[str] | None = None,
     ):
@@ -339,8 +334,8 @@ class Harness:
                         dataset_name=ds_config.name,
                     )
 
-                    # Refresh Live Dashboard
-                    live.update(renderer.render(state))
+                    # Update Reporter
+                    await self.reporter.update(state)
 
                     # Save Snapshot
                     self.run_manager.save_dashboard_state(state.model_dump_json(indent=2))
@@ -364,7 +359,7 @@ class Harness:
                     agent_state.update_metrics(
                         passed=False, error=True, cost=0.0, latency_ms=0.0, case_id=case.case_id
                     )
-                    live.update(renderer.render(state))
+                    await self.reporter.update(state)
                     self.run_manager.save_dashboard_state(state.model_dump_json(indent=2))
 
                     await self._record_case_outcome(
@@ -377,7 +372,7 @@ class Harness:
                     queue.task_done()
                 if self._circuit_open:
                     state.circuit_open = True
-                    live.update(renderer.render(state))
+                    await self.reporter.update(state)
                     self._drain_queue(queue)
                     break
 

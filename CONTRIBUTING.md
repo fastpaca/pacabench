@@ -1,6 +1,6 @@
-# Contributing to AgentBench
+# Contributing to PacaBench
 
-Thank you for your interest in contributing to AgentBench! We welcome contributions from the community to help make this the standard harness for agentic evaluation.
+Thank you for your interest in contributing to PacaBench! We welcome contributions from the community to help make this the standard harness for agentic evaluation.
 
 ## Getting Started
 
@@ -52,7 +52,7 @@ cd examples/smoke_test && uv run pacabench
 ## Reporting Issues
 
 Please use the GitHub Issue Tracker to report bugs or request features. Include as much detail as possible, such as:
--   AgentBench version
+-   PacaBench version
 -   Configuration file (`pacabench.yaml`)
 -   Steps to reproduce
 -   Logs or error messages
