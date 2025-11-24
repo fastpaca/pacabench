@@ -1,5 +1,4 @@
-from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Protocol
 
 from rich.live import Live
 
@@ -40,25 +39,3 @@ class RichProgressReporter:
     async def stop(self) -> None:
         if self.live:
             self.live.stop()
-
-
-class TextualProgressReporter:
-    """Reporter that pushes updates to a Textual App via callback."""
-
-    def __init__(self, update_callback: Callable[[DashboardState], Any]):
-        self.update_callback = update_callback
-
-    async def start(self, state: DashboardState) -> None:
-        if asyncio.iscoroutinefunction(self.update_callback):
-            await self.update_callback(state)
-        else:
-            self.update_callback(state)
-
-    async def update(self, state: DashboardState) -> None:
-        if asyncio.iscoroutinefunction(self.update_callback):
-            await self.update_callback(state)
-        else:
-            self.update_callback(state)
-
-    async def stop(self) -> None:
-        pass

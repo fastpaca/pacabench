@@ -406,14 +406,6 @@ def retry(
     asyncio.run(harness.run(whitelist_ids=retry_ids))
 
 
-@app.command()
-def tui():
-    """Launch the TUI cockpit."""
-    from pacabench.tui import PacaBenchApp
-    app = PacaBenchApp()
-    app.run()
-
-
 def cli_main():
     app()
 
