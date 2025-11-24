@@ -18,13 +18,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/fastpaca/agentbench/stargazers">
+  <a href="https://github.com/fastpaca/pacabench/stargazers">
     <img src="https://img.shields.io/badge/Give%20a%20Star-Support%20the%20project-orange?style=for-the-badge" alt="Give a Star">
   </a>
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fastpaca/agentbench/feat/oss-prep/docs/images/simple-run.gif" width="800">
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/feat/oss-prep/docs/images/simple-run.gif" width="800">
 </p>
 
 ---
@@ -51,48 +51,48 @@ AgentBench is a harness built for the reality of agentic LLM development. It han
 
 * **It doesn't crash.** Agents run in isolated processes. If one crashes, the harness records the failure and keeps moving.
 * **It remembers where it left off.** State is saved after every single case. If you kill the process or your machine restarts, you resume exactly where you stopped.
-* **It handles the retry loop.** Run the suite, let it finish, then run `agentbench retry` to target failures.
+* **It handles the retry loop.** Run the suite, let it finish, then run `pacabench retry` to target failures.
 * **It measures reality.** A built-in proxy sits between your agent and the LLM provider to track exact latency and token usage. No more guessing or relying on self-reported metrics.
 
-[Documentation](docs/) | [Examples](examples/) | [Issues](https://github.com/fastpaca/agentbench/issues)
+[Documentation](docs/) | [Examples](examples/) | [Issues](https://github.com/fastpaca/pacabench/issues)
 
 ---
 
 ## Quick Start
 
 ```bash
-pip install agentbench
+pip install pacabench
 ```
 
 Initialize a new project:
 
 ```bash
-agentbench init
+pacabench init
 ```
 
 Run your suite:
 
 ```bash
-agentbench run
+pacabench run
 ```
 
 If you see wonky failures, retry the failed cases:
 
 ```bash
-agentbench retry
+pacabench retry
 ```
 
 View the final report:
 
 ```bash
-agentbench analyze
+pacabench analyze
 ```
 
 ---
 
 ## Configuration
 
-Define your entire benchmark in one `agentbench.yaml` file. Configure it once, run it forever.
+Define your entire benchmark in one `pacabench.yaml` file. Configure it once, run it forever.
 
 ```yaml
 name: memory-benchmark
@@ -189,11 +189,11 @@ graph LR
 
 | Command | Description |
 |---------|-------------|
-| `agentbench run` | Execute a benchmark run. |
-| `agentbench retry` | Retry failed cases from a previous run. |
-| `agentbench list-runs` | List previous runs and their status. |
-| `agentbench analyze` | Generate a report for a specific run. |
-| `agentbench init` | Create a new project scaffold. |
+| `pacabench run` | Execute a benchmark run. |
+| `pacabench retry` | Retry failed cases from a previous run. |
+| `pacabench list-runs` | List previous runs and their status. |
+| `pacabench analyze` | Generate a report for a specific run. |
+| `pacabench init` | Create a new project scaffold. |
 
 ---
 

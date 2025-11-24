@@ -2,8 +2,8 @@ import logging
 
 from datasets import load_dataset as hf_load_dataset
 
-from agentbench.datasets.base import BaseDataset
-from agentbench.types import Case
+from pacabench.datasets.base import BaseDataset
+from pacabench.types import Case
 
 logger = logging.getLogger(__name__)
 

@@ -6,8 +6,8 @@ from pathlib import Path
 
 from git import Repo
 
-from agentbench.datasets.base import BaseDataset
-from agentbench.types import Case
+from pacabench.datasets.base import BaseDataset
+from pacabench.types import Case
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class GitDataset(BaseDataset):
         env["AGENTBENCH_DATASET_PATH"] = str(repo_dir)
 
         # Fix: if prepare script path is relative, resolve it relative to the CWD
-        # (where agentbench.yaml is), NOT relative to the repo_dir.
+        # (where pacabench.yaml is), NOT relative to the repo_dir.
         # But wait, subprocess.run(cwd=repo_dir) executes IN the repo dir.
         # If "python scripts/prepare.py" is passed, it looks for it in repo_dir.
         # But the user likely wants to point to a script in THEIR project, OR a script in the repo.

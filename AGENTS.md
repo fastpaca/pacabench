@@ -1,4 +1,4 @@
-# AI Agent Instructions for agentbench
+# AI Agent Instructions for pacabench
 
 > **Target Audience**: AI coding agents (Cursor, Copilot, Aider, etc.)
 
@@ -9,9 +9,9 @@
 Before marking any task complete, you MUST run these commands:
 
 ```bash
-uv run ruff check agentbench/ --fix
-uv run ruff format agentbench/
-uv run ruff check agentbench/
+uv run ruff check pacabench/ --fix
+uv run ruff format pacabench/
+uv run ruff check pacabench/
 ```
 
 **If ruff fails, the task is not complete.** Fix all issues before proceeding.
@@ -24,18 +24,18 @@ uv run ruff check agentbench/
 
 ```bash
 # Code quality
-uv run ruff check agentbench/ --fix  # Fix issues
-uv run ruff format agentbench/       # Format code
-uv run ruff check agentbench/        # Check only
+uv run ruff check pacabench/ --fix  # Fix issues
+uv run ruff format pacabench/       # Format code
+uv run ruff check pacabench/        # Check only
 
 # Run evaluation (MemBench QA baseline)
-uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 10
+uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 10
 
 # Quick smoke test
-uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
+uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
 
 # Run GAIA agentic evaluation
-uv run agentbench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
+uv run pacabench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
 
 # Install dependencies (all extras)
 uv sync --all-extras
@@ -44,7 +44,7 @@ uv sync --all-extras
 ### File Structure
 
 ```
-agentbench/
+pacabench/
 ├── cli.py             # CLI wrapper around library
 ├── pipeline.py        # Main evaluation pipeline orchestration
 ├── proxy.py           # FastAPI LLM proxy (token/latency/cost tracking)
@@ -121,23 +121,23 @@ p50 = _calculate_percentile(values, 0.50)
 
 Datasets own both loading and evaluation strategy:
 
-1. **Create a loader function** (e.g., in `agentbench/datasets/my_dataset.py`):
+1. **Create a loader function** (e.g., in `pacabench/datasets/my_dataset.py`):
    ```python
    def load_my_dataset(limit: int | None = None) -> list[Case]:
        # Load and return Case objects
        return cases
    ```
 
-2. **Create a Dataset subclass** (e.g., `agentbench/datasets/my_dataset.py`):
+2. **Create a Dataset subclass** (e.g., `pacabench/datasets/my_dataset.py`):
    ```python
-   from agentbench.datasets.base import Dataset
-   from agentbench.datasets.qa_dataset import QaDataset  # or create custom
+   from pacabench.datasets.base import Dataset
+   from pacabench.datasets.qa_dataset import QaDataset  # or create custom
    
    # For QA-style datasets, reuse QaDataset:
    my_dataset = QaDataset(name="my_dataset", loader_func=load_my_dataset)
    ```
 
-3. **Register in `agentbench/datasets/__init__.py`**:
+3. **Register in `pacabench/datasets/__init__.py`**:
    ```python
    def get_dataset(dataset: DatasetEnum | str, ...) -> Dataset:
        # Add your dataset to the registry
@@ -159,10 +159,10 @@ Runners can be implemented in two ways:
 For Python users, implement the `Runner` protocol:
 
 ```python
-from agentbench.runners.base import Runner
-from agentbench.stages.case import Case
-from agentbench.stages.runner import RunnerOutput
-from agentbench.context import EvalContext
+from pacabench.runners.base import Runner
+from pacabench.stages.case import Case
+from pacabench.stages.runner import RunnerOutput
+from pacabench.context import EvalContext
 
 class MyRunner:
     async def run_case(self, case: Case, ctx: EvalContext) -> RunnerOutput:
@@ -174,18 +174,18 @@ Use `CommandRunner` for external command execution, or implement custom logic di
 
 ### Modifying Metrics Display
 
-Update `_print_metrics_table()` in `agentbench/cli.py` when adding/removing displayed metrics. Never drop latency rows (avg/p50/p95) or token/cost visibility. Aggregation lives in `agentbench/metrics.py`; extend `CaseResult`/`AggregatedMetrics` first, then plumb fields into the table.
+Update `_print_metrics_table()` in `pacabench/cli.py` when adding/removing displayed metrics. Never drop latency rows (avg/p50/p95) or token/cost visibility. Aggregation lives in `pacabench/metrics.py`; extend `CaseResult`/`AggregatedMetrics` first, then plumb fields into the table.
 
 ## Testing Your Changes
 
 ### Minimal Test
 ```bash
-uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
+uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
 ```
 
 ### GAIA Agentic Test
 ```bash
-uv run agentbench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
+uv run pacabench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
 ```
 
 ### Verify Output
@@ -206,13 +206,13 @@ cat runs/*/metrics.json | jq '.avg_llm_latency_ms, .p50_llm_latency_ms, .p95_llm
 - **Pipeline** (`pipeline.run()`) orchestrates: load dataset → run cases → evaluate → aggregate.
 
 ### Process-Based Runners + Proxy
-- `agentbench.pipeline` spawns `ProxyServer` (FastAPI) to intercept OpenAI traffic.
+- `pacabench.pipeline` spawns `ProxyServer` (FastAPI) to intercept OpenAI traffic.
 - `CommandRunner` executes runner scripts per case using JSON stdin/stdout protocol.
 - Proxy metrics accumulate per case and are flushed after each result (`proxy.metrics.clear_metrics("_current")`).
 
 ### Runner Spec Resolution
-- Built-in shorthand (e.g., `qa/long_context`) → Resolved via `RUNNERS` map in `agentbench/cli.py`.
-- Maps to runner implementations in `agentbench/runners/`.
+- Built-in shorthand (e.g., `qa/long_context`) → Resolved via `RUNNERS` map in `pacabench/cli.py`.
+- Maps to runner implementations in `pacabench/runners/`.
 
 ### Metrics Collection
 - Capture runner duration (`runner_duration_ms`) plus proxy metrics (`llm_latency_ms`, token counts, cost).
@@ -262,9 +262,9 @@ cat runs/*/metrics.json | jq '.avg_llm_latency_ms, .p50_llm_latency_ms, .p95_llm
 
 ### Issue: Ruff failing
 ```bash
-uv run ruff check agentbench/        # Inspect failures
-uv run ruff check agentbench/ --fix  # Auto-fix
-uv run ruff format agentbench/       # Format
+uv run ruff check pacabench/        # Inspect failures
+uv run ruff check pacabench/ --fix  # Auto-fix
+uv run ruff format pacabench/       # Format
 ```
 
 ### Issue: Missing dependencies
@@ -290,10 +290,10 @@ uv sync --all-extras
 ## Workflow
 
 1. Make your code changes
-2. Run `uv run ruff check agentbench/ --fix`
-3. Run `uv run ruff format agentbench/`
-4. Verify `uv run ruff check agentbench/` passes
-5. Test with `uv run agentbench --dataset membench --runner qa/long_context --limit 2`
+2. Run `uv run ruff check pacabench/ --fix`
+3. Run `uv run ruff format pacabench/`
+4. Verify `uv run ruff check pacabench/` passes
+5. Test with `uv run pacabench --dataset membench --runner qa/long_context --limit 2`
 6. Verify latency metrics appear in `runs/*/metrics.json`
 7. Task complete ✅
 

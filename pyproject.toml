@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentbench"
+name = "pacabench"
 version = "0.1.0"
 description = "Process-based benchmark harness for evaluating LLM memory systems and agentic tasks"
 readme = "README.md"
@@ -37,10 +37,11 @@ dependencies = [
     "qdrant-client>=1.15.1",
     "graphiti-core>=0.3.6",
     "zep>=0.0.1",
+    "textual>=6.6.0",
 ]
 
 [project.scripts]
-agentbench = "agentbench.cli:cli_main"
+pacabench = "pacabench.cli:cli_main"
 
 [project.optional-dependencies]
 mem0 = ["mem0ai>=0.1.0"]
@@ -52,5 +53,5 @@ dev = ["ruff>=0.14.4", "pytest>=8.0.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agentbench*"]
+include = ["pacabench*"]
 exclude = ["data*", "runs*", "tests*", "memharness*"]

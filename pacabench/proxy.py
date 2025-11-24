@@ -151,7 +151,7 @@ class ProxyServer:
         async def lifespan(app: FastAPI):
             yield
 
-        self.app = FastAPI(title="AgentBench LLM Proxy", lifespan=lifespan)
+        self.app = FastAPI(title="PacaBench LLM Proxy", lifespan=lifespan)
         self._setup_routes()
 
     def _default_base_for_provider(self, provider: str) -> str:

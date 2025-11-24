@@ -6,11 +6,11 @@ from typing import Annotated, Any
 
 import typer
 
-from agentbench.analysis import print_report
-from agentbench.config import load_config
-from agentbench.context import build_eval_context, resolve_run_directory, resolve_runs_dir_from_cli
-from agentbench.core import Harness
-from agentbench.persistence import RunManager, get_run_summaries
+from pacabench.analysis import print_report
+from pacabench.config import load_config
+from pacabench.context import build_eval_context, resolve_run_directory, resolve_runs_dir_from_cli
+from pacabench.core import Harness
+from pacabench.persistence import RunManager, get_run_summaries
 
 app = typer.Typer()
 
@@ -19,7 +19,7 @@ app = typer.Typer()
 def run(
     config: Annotated[
         Path, typer.Option("--config", "-c", help="Path to configuration file")
-    ] = Path("agentbench.yaml"),
+    ] = Path("pacabench.yaml"),
     limit: Annotated[
         int | None, typer.Option("--limit", "-l", help="Limit number of cases per dataset")
     ] = None,
@@ -93,10 +93,10 @@ def run(
 
 @app.command()
 def init():
-    """Initialize a new AgentBench project."""
-    # Check if agentbench.yaml exists
-    if os.path.exists("agentbench.yaml"):
-        typer.echo("agentbench.yaml already exists.")
+    """Initialize a new PacaBench project."""
+    # Check if pacabench.yaml exists
+    if os.path.exists("pacabench.yaml"):
+        typer.echo("pacabench.yaml already exists.")
         return
 
     # Create dummy config
@@ -130,10 +130,10 @@ datasets:
 output:
   directory: "./runs"
 """
-    with open("agentbench.yaml", "w") as f:
+    with open("pacabench.yaml", "w") as f:
         f.write(content)
 
-    typer.echo("Created agentbench.yaml")
+    typer.echo("Created pacabench.yaml")
 
     # Create dummy agent
     if not os.path.exists("agent.py"):
@@ -187,7 +187,7 @@ if __name__ == "__main__":
 def list_runs_cmd(
     config: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to configuration file")
-    ] = Path("agentbench.yaml"),
+    ] = Path("pacabench.yaml"),
     runs_dir: Annotated[
         Path | None,
         typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
@@ -238,7 +238,7 @@ def analyze(
     ] = None,
     config: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to configuration file")
-    ] = Path("agentbench.yaml"),
+    ] = Path("pacabench.yaml"),
     runs_dir: Annotated[
         Path | None,
         typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
@@ -318,7 +318,7 @@ def retry(
     ] = False,
     config: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to configuration file")
-    ] = Path("agentbench.yaml"),
+    ] = Path("pacabench.yaml"),
     runs_dir: Annotated[
         Path | None,
         typer.Option("--runs-dir", help="Override base runs directory (defaults to config output)"),
@@ -335,7 +335,7 @@ def retry(
         raise typer.Exit(code=1) from None
 
     # Load config from the run
-    config_path = run_dir / "agentbench.yaml"
+    config_path = run_dir / "pacabench.yaml"
     if not config_path.exists():
         typer.echo(f"Config not found in run directory: {config_path}")
         raise typer.Exit(code=1)

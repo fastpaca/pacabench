@@ -7,9 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from agentbench.config import BenchmarkConfig
-from agentbench.context import EvalContext
-from agentbench.types import CaseResult, ErrorType
+from pacabench.config import BenchmarkConfig
+from pacabench.context import EvalContext
+from pacabench.types import CaseResult, ErrorType
 
 
 @dataclass
@@ -72,7 +72,7 @@ class RunManager:
         self.results_path = self.run_dir / "results.jsonl"
         self.errors_path = self.run_dir / "system_errors.jsonl"
         self.metadata_path = self.run_dir / "metadata.json"
-        self.config_path = self.run_dir / "agentbench.yaml"
+        self.config_path = self.run_dir / "pacabench.yaml"
         self._completed_entries: set[tuple[str, str, str]] = set()
         self._case_attempts: dict[tuple[str, str, str], int] = defaultdict(int)
         self._load_completed_entries()

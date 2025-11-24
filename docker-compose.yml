@@ -23,7 +23,7 @@ services:
     volumes:
       - ./neo4j_data:/data
 
-  agentbench:
+  pacabench:
     build: .
     depends_on:
       - qdrant

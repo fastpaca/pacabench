@@ -4,8 +4,8 @@ import time
 from genai_prices import Usage, calc_price
 from openai import AsyncOpenAI
 
-from agentbench.evaluators.base import BaseEvaluator
-from agentbench.types import Case, EvaluationResult, RunnerOutput
+from pacabench.evaluators.base import BaseEvaluator
+from pacabench.types import Case, EvaluationResult, RunnerOutput
 
 
 class LLMJudgeEvaluator(BaseEvaluator):

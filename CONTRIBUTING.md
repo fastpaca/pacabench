@@ -22,13 +22,13 @@ We enforce strict code quality gates using `ruff`. Before submitting a PR, you *
 
 ```bash
 # Fix linting issues
-uv run ruff check agentbench/ --fix
+uv run ruff check pacabench/ --fix
 
 # Format code
-uv run ruff format agentbench/
+uv run ruff format pacabench/
 
 # Verify everything is clean
-uv run ruff check agentbench/
+uv run ruff check pacabench/
 ```
 
 ### Running Tests
@@ -38,7 +38,7 @@ We use `pytest` for testing (if tests are available) and the harness itself for 
 To run a quick smoke test of the harness:
 
 ```bash
-cd examples/smoke_test && uv run agentbench
+cd examples/smoke_test && uv run pacabench
 ```
 
 ## Pull Request Process
@@ -53,7 +53,7 @@ cd examples/smoke_test && uv run agentbench
 
 Please use the GitHub Issue Tracker to report bugs or request features. Include as much detail as possible, such as:
 -   AgentBench version
--   Configuration file (`agentbench.yaml`)
+-   Configuration file (`pacabench.yaml`)
 -   Steps to reproduce
 -   Logs or error messages
 

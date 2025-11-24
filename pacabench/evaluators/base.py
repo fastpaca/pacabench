@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
-from agentbench.config import EvaluatorConfig
-from agentbench.types import Case, EvaluationResult, RunnerOutput
+from pacabench.config import EvaluatorConfig
+from pacabench.types import Case, EvaluationResult, RunnerOutput
 
 
 class BaseEvaluator(ABC):

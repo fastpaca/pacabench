@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
-from agentbench.config import AgentConfig
-from agentbench.types import Case, RunnerOutput
+from pacabench.config import AgentConfig
+from pacabench.types import Case, RunnerOutput
 
 
 class BaseRunner(ABC):

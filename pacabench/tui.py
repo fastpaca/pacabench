@@ -4,7 +4,7 @@ from textual.app import App, ComposeResult
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, ProgressBar, Static
 
-from agentbench.dashboard import DashboardState
+from pacabench.dashboard import DashboardState
 
 
 class DashboardHeader(Static):
@@ -22,7 +22,7 @@ class DashboardHeader(Static):
         self.set_interval(1, self.refresh)
 
 
-class AgentBenchApp(App):
+class PacaBenchApp(App):
     CSS = """
     Screen {
         layout: vertical;

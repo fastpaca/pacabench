@@ -6,15 +6,15 @@ import time
 import portpicker
 from rich.live import Live
 
-from agentbench.config import AgentConfig, DatasetConfig
-from agentbench.context import EvalContext
-from agentbench.dashboard import DashboardRenderer, DashboardState
-from agentbench.datasets import get_dataset
-from agentbench.evaluators import get_evaluator
-from agentbench.persistence import RunManager
-from agentbench.proxy import ProxyServer
-from agentbench.runners.command import CommandRunner
-from agentbench.types import Case, CaseResult, ErrorType, EvaluationResult, RunnerOutput
+from pacabench.config import AgentConfig, DatasetConfig
+from pacabench.context import EvalContext
+from pacabench.dashboard import DashboardRenderer, DashboardState
+from pacabench.datasets import get_dataset
+from pacabench.evaluators import get_evaluator
+from pacabench.persistence import RunManager
+from pacabench.proxy import ProxyServer
+from pacabench.runners.command import CommandRunner
+from pacabench.types import Case, CaseResult, ErrorType, EvaluationResult, RunnerOutput
 
 logger = logging.getLogger(__name__)
 
