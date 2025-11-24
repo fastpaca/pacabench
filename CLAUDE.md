@@ -1,4 +1,4 @@
-# Claude Instructions for agentbench
+# Claude Instructions for pacabench
 
 This document provides guidelines for Claude (and other LLMs) working on the AgentBench codebase.
 
@@ -14,11 +14,11 @@ This document provides guidelines for Claude (and other LLMs) working on the Age
 
 ```bash
 # Auto-fix and format
-uv run ruff check agentbench/ runners/ --fix
-uv run ruff format agentbench/ runners/
+uv run ruff check pacabench/ runners/ --fix
+uv run ruff format pacabench/ runners/
 
 # Verify everything passes
-uv run ruff check agentbench/ runners/ && echo "✅ Ready to commit"
+uv run ruff check pacabench/ runners/ && echo "✅ Ready to commit"
 ```
 
 Never deliver code without running ruff first. GitHub Actions also runs ruff on every PR.
@@ -50,11 +50,11 @@ Never deliver code without running ruff first. GitHub Actions also runs ruff on 
 
 #### Rule 1: All Protocols and Data Models Go in types.py
 
-`types.py` is the foundation - it has NO agentbench imports and defines all core types and protocols.
+`types.py` is the foundation - it has NO pacabench imports and defines all core types and protocols.
 
 **✅ Correct Pattern:**
 ```python
-# types.py - Pure types, no agentbench imports
+# types.py - Pure types, no pacabench imports
 from __future__ import annotations
 from typing import Protocol
 
@@ -121,7 +121,7 @@ RUNNERS = {
 ## Project Structure
 
 ```
-agentbench/
+pacabench/
 ├── cli.py              # Typer CLI, dataset loader, metrics table
 ├── datasets.py         # MemBench, LongMemEval, GAIA loaders
 ├── evaluators.py       # QA / agentic evaluators
@@ -163,8 +163,8 @@ The harness enforces this contract and will surface `runner_result.error` if any
 
 ### Adding a Dataset
 
-1. Implement a loader in `agentbench/datasets.py` that returns `list[Case]`.
-2. Wire it up inside `_load_dataset()` in `agentbench/cli.py` with explicit split handling.
+1. Implement a loader in `pacabench/datasets.py` that returns `list[Case]`.
+2. Wire it up inside `_load_dataset()` in `pacabench/cli.py` with explicit split handling.
 3. Include any metadata needed by evaluators (choices, GAIA files, etc.).
 
 ### Adding a Runner
@@ -177,7 +177,7 @@ The harness enforces this contract and will surface `runner_result.error` if any
 
 ### Updating Metrics or CLI Output
 
-1. Extend `CaseResult`/`AggregatedMetrics` in `agentbench/metrics.py`.
+1. Extend `CaseResult`/`AggregatedMetrics` in `pacabench/metrics.py`.
 2. Persist the new fields in `save_results()`.
 3. Update `_print_metrics_table()` to display them (without removing latency metrics).
 
@@ -185,10 +185,10 @@ The harness enforces this contract and will surface `runner_result.error` if any
 
 ```bash
 # Run QA baseline on a few cases
-uv run agentbench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
+uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
 
 # Run GAIA agentic check
-uv run agentbench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
+uv run pacabench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
 
 # Inspect metrics
 cat runs/*/metrics.json | jq '.accuracy, .p50_llm_latency_ms'
@@ -196,10 +196,10 @@ cat runs/*/metrics.json | jq '.accuracy, .p50_llm_latency_ms'
 
 ## Pre-Commit Checklist
 
-- [ ] `uv run ruff check agentbench/ runners/ --fix`
-- [ ] `uv run ruff format agentbench/ runners/`
-- [ ] `uv run ruff check agentbench/ runners/`
-- [ ] `uv run agentbench --dataset membench --runner qa/long_context --limit 2`
+- [ ] `uv run ruff check pacabench/ runners/ --fix`
+- [ ] `uv run ruff format pacabench/ runners/`
+- [ ] `uv run ruff check pacabench/ runners/`
+- [ ] `uv run pacabench --dataset membench --runner qa/long_context --limit 2`
 - [ ] Verify latency metrics (avg/p50/p95) are non-zero in `runs/*/metrics.json`
 - [ ] Confirm all functions include type hints and no redundant comments were added
 

@@ -16,11 +16,11 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy the rest of the application
-COPY agentbench/ agentbench/
+COPY pacabench/ pacabench/
 
 # Set python path
 ENV PYTHONPATH=/app
 
 # Default entrypoint
-ENTRYPOINT ["uv", "run", "agentbench"]
+ENTRYPOINT ["uv", "run", "pacabench"]
 

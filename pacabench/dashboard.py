@@ -147,7 +147,7 @@ class DashboardRenderer:
             )
 
         return Group(
-            Panel(header_text, title="AgentBench Status", border_style="blue"),
+            Panel(header_text, title="PacaBench Status", border_style="blue"),
             Panel(self.overall_progress, style="none", border_style="none"),
             Panel(table, title="Agents", border_style="none"),
         )

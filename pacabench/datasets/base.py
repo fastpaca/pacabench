@@ -2,9 +2,9 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from agentbench.config import DatasetConfig
-from agentbench.context import EvalContext
-from agentbench.types import Case
+from pacabench.config import DatasetConfig
+from pacabench.context import EvalContext
+from pacabench.types import Case
 
 # Common fields to exclude from metadata to prevent leakage
 _COMMON_EXCLUDE_KEYS = {

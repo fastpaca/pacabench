@@ -23,7 +23,7 @@ jobs:
         run: uv sync
 
       - name: Run ruff linter
-        run: uv run ruff check agentbench/
+        run: uv run ruff check pacabench/
 
       - name: Check code formatting
-        run: uv run ruff format --check agentbench/
+        run: uv run ruff format --check pacabench/

@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agentbench.config import BenchmarkConfig, load_config
+from pacabench.config import BenchmarkConfig, load_config
 
-_RUNS_ENV_VAR = "AGENTBENCH_RUNS_DIR"
+_RUNS_ENV_VAR = "PACABENCH_RUNS_DIR"
 
 
 def _default_runs_dir() -> Path:
@@ -17,7 +17,7 @@ def _default_runs_dir() -> Path:
 
 
 def _default_dataset_cache_dir() -> Path:
-    return Path.home() / ".cache" / "agentbench" / "datasets"
+    return Path.home() / ".cache" / "pacabench" / "datasets"
 
 
 def resolve_runs_dir(config: BenchmarkConfig | None, override: Path | None = None) -> Path:

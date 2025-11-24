@@ -4,8 +4,8 @@ import logging
 import os
 import time
 
-from agentbench.runners.base import BaseRunner
-from agentbench.types import Case, ErrorType, RunnerMetrics, RunnerOutput
+from pacabench.runners.base import BaseRunner
+from pacabench.types import Case, ErrorType, RunnerMetrics, RunnerOutput
 
 logger = logging.getLogger(__name__)
 

@@ -4,8 +4,8 @@ from typing import Any
 
 import tiktoken
 
-from agentbench.evaluators.base import BaseEvaluator
-from agentbench.types import Case, EvaluationResult, RunnerOutput
+from pacabench.evaluators.base import BaseEvaluator
+from pacabench.types import Case, EvaluationResult, RunnerOutput
 
 
 class ExactMatchEvaluator(BaseEvaluator):
@@ -179,8 +179,8 @@ class MultipleChoiceEvaluator(BaseEvaluator):
 
         # Fallbacks for cases without choices or expected letter.
         if self._fallback_mode == "judge":
-            from agentbench.config import EvaluatorConfig
-            from agentbench.evaluators.judge import LLMJudgeEvaluator
+            from pacabench.config import EvaluatorConfig
+            from pacabench.evaluators.judge import LLMJudgeEvaluator
 
             judge = LLMJudgeEvaluator(EvaluatorConfig(type="llm_judge", model=self._judge_model))
             return await judge.evaluate(case, output, proxy_url=proxy_url)

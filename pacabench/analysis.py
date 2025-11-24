@@ -7,8 +7,8 @@ from typing import Literal
 
 from rich.console import Console
 
-from agentbench.dashboard import DashboardRenderer, DashboardState
-from agentbench.types import AggregatedMetrics, CaseResult
+from pacabench.dashboard import DashboardRenderer, DashboardState
+from pacabench.types import AggregatedMetrics, CaseResult
 
 
 def load_results(run_dir: Path) -> list[CaseResult]:
@@ -186,7 +186,7 @@ def _print_json_report(run_id, agents, datasets, grouped, system_errors):
 
 
 def _print_markdown_report(run_id, agents, datasets, grouped, system_errors):
-    print(f"# AgentBench Run Report: {run_id}\n")
+    print(f"# PacaBench Run Report: {run_id}\n")
 
     print("## Leaderboard\n")
     headers = ["Agent"] + sorted(datasets) + ["Total Cost"]

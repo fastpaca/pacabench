@@ -2,8 +2,8 @@ import glob
 import json
 from pathlib import Path
 
-from agentbench.datasets.base import BaseDataset
-from agentbench.types import Case
+from pacabench.datasets.base import BaseDataset
+from pacabench.types import Case
 
 
 class LocalDataset(BaseDataset):

@@ -32,7 +32,7 @@ def main():
         "vector_store": {
             "provider": "qdrant",
             "config": {
-                "collection_name": "agentbench",
+                "collection_name": "pacabench",
                 "host": qdrant_host,
                 "port": 6333,
             },

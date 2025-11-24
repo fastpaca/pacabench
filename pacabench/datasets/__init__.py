@@ -1,9 +1,9 @@
-from agentbench.config import DatasetConfig
-from agentbench.context import EvalContext
-from agentbench.datasets.base import BaseDataset
-from agentbench.datasets.git import GitDataset
-from agentbench.datasets.hf import HuggingFaceDataset
-from agentbench.datasets.local import LocalDataset
+from pacabench.config import DatasetConfig
+from pacabench.context import EvalContext
+from pacabench.datasets.base import BaseDataset
+from pacabench.datasets.git import GitDataset
+from pacabench.datasets.hf import HuggingFaceDataset
+from pacabench.datasets.local import LocalDataset
 
 
 def get_dataset(config: DatasetConfig, ctx: EvalContext) -> BaseDataset:
