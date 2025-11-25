@@ -13,11 +13,7 @@ from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_client import OpenAIClient
 from graphiti_core.nodes import EpisodeType
 from graphiti_core.utils.bulk_utils import RawEpisode
-from graphiti_core.prompts.models import Message as GraphitiMessage
 from openai import OpenAI
-from openai.types.chat import ChatCompletionMessageParam
-from openai import RateLimitError
-from typing import Any
 from pydantic import BaseModel, Field
 
 # Initialize logging
