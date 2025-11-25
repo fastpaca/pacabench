@@ -29,12 +29,17 @@ class RichProgressReporter:
         self.live: Live | None = None
 
     async def start(self, state: DashboardState) -> None:
-        self.live = Live(self.renderer.render(state), refresh_per_second=4)
+        self.live = Live(
+            self.renderer.render(state),
+            refresh_per_second=2,
+            transient=False,
+            vertical_overflow="visible",
+        )
         self.live.start()
 
     async def update(self, state: DashboardState) -> None:
         if self.live:
-            self.live.update(self.renderer.render(state))
+            self.live.update(self.renderer.render(state), refresh=True)
 
     async def stop(self) -> None:
         if self.live:
