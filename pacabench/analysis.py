@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+import orjson
 from rich.console import Console
 
 from pacabench.dashboard import DashboardRenderer, DashboardState
@@ -12,23 +13,46 @@ from pacabench.types import AggregatedMetrics, CaseResult
 
 
 def load_results(run_dir: Path) -> list[CaseResult]:
-    results = []
+    """Load results from a run directory."""
     results_path = run_dir / "results.jsonl"
     if not results_path.exists():
-        return results
+        return []
 
-    # Dedup results: keep only the LAST result for each (agent, dataset, case_id)
-    # Use 'attempt' to tiebreak if available, otherwise strict file order
-    deduped = {}
-    with open(results_path) as f:
+    # Dedup: keep only the LAST result for each (agent, dataset, case_id)
+    deduped: dict[tuple, dict] = {}
+    with open(results_path, "rb") as f:  # Binary mode for orjson
         for line in f:
+            if not line.strip():
+                continue
             try:
-                data = json.loads(line)
-                res = CaseResult(**data)
-                key = (res.agent_name, res.dataset_name, res.case_id)
-                deduped[key] = res
-            except Exception:
+                data = orjson.loads(line)
+                key = (data.get("agent_name"), data.get("dataset_name"), data.get("case_id"))
+                deduped[key] = data
+            except orjson.JSONDecodeError:
                 pass
+
+    # Convert to CaseResult only at the end (much faster than per-line)
+    return [CaseResult(**data) for data in deduped.values()]
+
+
+def load_results_raw(run_dir: Path) -> list[dict]:
+    """Load results as raw dicts (faster, for metrics calculation)."""
+    results_path = run_dir / "results.jsonl"
+    if not results_path.exists():
+        return []
+
+    deduped: dict[tuple, dict] = {}
+    with open(results_path, "rb") as f:  # Binary mode for orjson
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                data = orjson.loads(line)
+                key = (data.get("agent_name"), data.get("dataset_name"), data.get("case_id"))
+                deduped[key] = data
+            except orjson.JSONDecodeError:
+                pass
+
     return list(deduped.values())
 
 
@@ -43,6 +67,58 @@ def _calculate_percentile(data: list[float], percentile: float) -> float:
     if lower == upper:
         return data[int(index)]
     return data[lower] * (upper - index) + data[upper] * (index - lower)
+
+
+def calculate_metrics_fast(results: list[dict]) -> AggregatedMetrics:
+    """Calculate metrics from raw dicts (faster than Pydantic models)."""
+    total = len(results)
+    if total == 0:
+        return AggregatedMetrics()
+
+    passed = sum(1 for r in results if r.get("passed"))
+    accuracy = passed / total
+
+    durations = [r.get("runner_duration_ms", 0) for r in results]
+    p50_dur = _calculate_percentile(durations, 0.50)
+    p95_dur = _calculate_percentile(durations, 0.95)
+
+    latencies = []
+    total_cost = 0.0
+    total_judge_cost = 0.0
+    total_input = 0
+    total_output = 0
+
+    for r in results:
+        metrics = r.get("llm_metrics", {})
+        total_cost += metrics.get("llm_total_cost_usd", 0.0)
+        total_input += metrics.get("llm_input_tokens", 0)
+        total_output += metrics.get("llm_output_tokens", 0)
+        total_judge_cost += r.get("judge_cost_usd") or 0.0
+
+        lats = metrics.get("llm_latency_ms", [])
+        if isinstance(lats, list):
+            latencies.extend(lats)
+        elif isinstance(lats, (int, float)):
+            latencies.append(lats)
+
+    avg_lat = sum(latencies) / len(latencies) if latencies else 0.0
+    p50_lat = _calculate_percentile(latencies, 0.50)
+    p95_lat = _calculate_percentile(latencies, 0.95)
+
+    return AggregatedMetrics(
+        accuracy=accuracy,
+        total_cases=total,
+        failed_cases=total - passed,
+        p50_duration_ms=p50_dur,
+        p95_duration_ms=p95_dur,
+        avg_llm_latency_ms=avg_lat,
+        p50_llm_latency_ms=p50_lat,
+        p95_llm_latency_ms=p95_lat,
+        total_input_tokens=total_input,
+        total_output_tokens=total_output,
+        total_cost_usd=total_cost,
+        total_judge_cost_usd=total_judge_cost,
+    )
 
 
 def calculate_metrics(results: list[CaseResult]) -> AggregatedMetrics:

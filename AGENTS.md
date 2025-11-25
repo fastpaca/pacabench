@@ -28,14 +28,21 @@ uv run ruff check pacabench/ --fix  # Fix issues
 uv run ruff format pacabench/       # Format code
 uv run ruff check pacabench/        # Check only
 
-# Run evaluation (MemBench QA baseline)
-uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 10
+# Run benchmark (quick test)
+uv run pacabench run --limit 10
 
-# Quick smoke test
-uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
+# Check results
+uv run pacabench              # Show latest run
+uv run pacabench show         # List all runs
+uv run pacabench show <run>   # Show specific run
+uv run pacabench show <run> --cases     # Show case results
+uv run pacabench show <run> --failures  # Show failures only
 
-# Run GAIA agentic evaluation
-uv run pacabench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
+# Retry failures
+uv run pacabench retry <run>
+
+# Export results
+uv run pacabench export <run>
 
 # Install dependencies (all extras)
 uv sync --all-extras
@@ -180,21 +187,20 @@ Update `_print_metrics_table()` in `pacabench/cli.py` when adding/removing displ
 
 ### Minimal Test
 ```bash
-uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
-```
-
-### GAIA Agentic Test
-```bash
-uv run pacabench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
+cd examples/membench_qa_test
+uv run pacabench run --limit 2 --agents long-context-baseline
 ```
 
 ### Verify Output
 ```bash
-# Check metrics structure
-cat runs/*/metrics.json | jq .
+# Check latest run
+uv run pacabench
 
-# Verify latency metrics are non-zero (in milliseconds)
-cat runs/*/metrics.json | jq '.avg_llm_latency_ms, .p50_llm_latency_ms, .p95_llm_latency_ms'
+# View cases
+uv run pacabench show <run-id> --cases
+
+# Export and inspect
+uv run pacabench export <run-id> | jq .
 ```
 
 ## Architecture Patterns
@@ -293,8 +299,8 @@ uv sync --all-extras
 2. Run `uv run ruff check pacabench/ --fix`
 3. Run `uv run ruff format pacabench/`
 4. Verify `uv run ruff check pacabench/` passes
-5. Test with `uv run pacabench --dataset membench --runner qa/long_context --limit 2`
-6. Verify latency metrics appear in `runs/*/metrics.json`
+5. Test in examples folder: `cd examples/membench_qa_test && uv run pacabench run --limit 2`
+6. Verify results: `uv run pacabench show <run-id> --cases`
 7. Task complete ✅
 
 ---

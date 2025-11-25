@@ -51,7 +51,7 @@ PacaBench is a harness built for the reality of agentic LLM development. It hand
 
 * **It doesn't crash.** Agents run in isolated processes. If one crashes, the harness records the failure and keeps moving.
 * **It remembers where it left off.** State is saved after every single case. If you kill the process or your machine restarts, you resume exactly where you stopped.
-* **It handles the retry loop.** Run the suite, let it finish, then run `pacabench retry` to target failures.
+* **It handles the retry loop.** Run the suite, let it finish, then retry failures with a single command.
 * **It measures reality.** A built-in proxy sits between your agent and the LLM provider to track exact latency and token usage. No more guessing or relying on self-reported metrics.
 
 [Documentation](docs/) | [Examples](examples/) | [Issues](https://github.com/fastpaca/pacabench/issues)
@@ -70,23 +70,63 @@ Initialize a new project:
 pacabench init
 ```
 
-Run your suite:
+Run a quick test:
 
 ```bash
-pacabench run
+pacabench run --limit 10
 ```
 
-If you see wonky failures, retry the failed cases:
+Check results:
 
 ```bash
-pacabench retry
+pacabench
 ```
 
-View the final report:
+See all runs:
 
 ```bash
-pacabench analyze
+pacabench show
 ```
+
+Drill into a specific run:
+
+```bash
+pacabench show <run-id>
+pacabench show <run-id> --cases
+pacabench show <run-id> --failures
+```
+
+Retry failures:
+
+```bash
+pacabench retry <run-id>
+```
+
+Export for analysis:
+
+```bash
+pacabench export <run-id> > results.json
+```
+
+---
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `pacabench` | Show latest run summary |
+| `pacabench show` | List all runs |
+| `pacabench show <run>` | Show run details |
+| `pacabench show <run> --cases` | Show individual case results |
+| `pacabench show <run> --failures` | Show only failed cases |
+| `pacabench run` | Start a benchmark run |
+| `pacabench run --limit N` | Run with limited cases (for testing) |
+| `pacabench retry <run>` | Retry system errors from a run |
+| `pacabench retry <run> --all` | Retry all failures (including wrong answers) |
+| `pacabench export <run>` | Export results to JSON |
+| `pacabench init` | Create a new project |
+
+Partial run IDs work - just type enough to uniquely match (e.g., `pacabench show 120358`).
 
 ---
 
@@ -149,7 +189,7 @@ Because I was sick of my own benchmarks blowing up. I tried running serious agen
 * Runs would fail at 60% or 20% because of one bad response.
 * I ended up with script spaghetti just to get through a single dataset.
 * Re-running failures meant copy/pasting JSON blobs and praying nothing broke.
-* I didn’t want a heavyweight enterprise system like Arize. I wanted something that just works.
+* I didn't want a heavyweight enterprise system like Arize. I wanted something that just works.
 * I wanted a tool I could configure once, leave overnight, then run and re-run locally without thinking.
 
 Benchmarking agents became a game of whack-a-mole: 
@@ -182,18 +222,6 @@ graph LR
 2.  **Proxy**: Intercepts API calls to provide ground-truth metrics (`OPENAI_BASE_URL` injection).
 3.  **Runners**: Worker processes that ensure a bad agent doesn't kill the benchmark.
 4.  **Evaluator**: Flexible scoring (LLM judges, regex, F1, exact match, etc).
-
----
-
-## CLI Reference
-
-| Command | Description |
-|---------|-------------|
-| `pacabench run` | Execute a benchmark run. |
-| `pacabench retry` | Retry failed cases from a previous run. |
-| `pacabench list-runs` | List previous runs and their status. |
-| `pacabench analyze` | Generate a report for a specific run. |
-| `pacabench init` | Create a new project scaffold. |
 
 ---
 

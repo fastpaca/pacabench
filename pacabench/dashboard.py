@@ -2,9 +2,9 @@ import time
 
 from pydantic import BaseModel, Field, PrivateAttr
 from rich.console import Group
-from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
+from rich.text import Text
 
 
 class AgentDatasetState(BaseModel):
@@ -147,7 +147,9 @@ class DashboardRenderer:
             )
 
         return Group(
-            Panel(header_text, title="PacaBench Status", border_style="blue"),
-            Panel(self.overall_progress, style="none", border_style="none"),
-            Panel(table, title="Agents", border_style="none"),
+            Text.from_markup(header_text),
+            Text(),
+            self.overall_progress,
+            Text(),
+            table,
         )
