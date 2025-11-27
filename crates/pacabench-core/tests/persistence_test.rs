@@ -1,0 +1,70 @@
+//! Tests for the persistence module.
+
+use pacabench_core::config::load_config;
+use pacabench_core::persistence::{
+    compute_config_fingerprint, iso_timestamp_now, ErrorEntry, RunStore,
+};
+use pacabench_core::types::{CaseResult, ErrorType};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use tempfile::tempdir;
+
+#[test]
+fn fingerprint_is_stable() {
+    let cfg_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("examples/membench_qa_test/pacabench.yaml");
+    let cfg = load_config(cfg_path).expect("config");
+    let fp1 = compute_config_fingerprint(&cfg).unwrap();
+    let fp2 = compute_config_fingerprint(&cfg).unwrap();
+    assert_eq!(fp1, fp2);
+}
+
+#[test]
+fn run_store_roundtrip_results_and_errors() {
+    let dir = tempdir().unwrap();
+    let store = RunStore::new(dir.path()).unwrap();
+
+    let result = CaseResult {
+        case_id: "1".into(),
+        dataset_name: "ds".into(),
+        agent_name: "agent".into(),
+        passed: true,
+        output: Some("ok".into()),
+        error: None,
+        error_type: ErrorType::None,
+        runner_duration_ms: 10.0,
+        llm_metrics: HashMap::new(),
+        attempt: 1,
+        timestamp: Some(iso_timestamp_now()),
+        f1_score: None,
+        f1_passed: None,
+        judge_passed: None,
+        judge_reason: None,
+        judge_metrics: HashMap::new(),
+        judge_cost_usd: None,
+        extra: HashMap::new(),
+    };
+
+    store.append_result(&result).unwrap();
+
+    let error_entry = ErrorEntry {
+        timestamp: iso_timestamp_now(),
+        error_type: ErrorType::SystemFailure,
+        agent_name: Some("agent".into()),
+        dataset_name: Some("ds".into()),
+        case_id: Some("1".into()),
+        error: Some("boom".into()),
+    };
+
+    store.append_error(&error_entry).unwrap();
+
+    let loaded_results = store.load_results().unwrap();
+    assert_eq!(loaded_results.len(), 1);
+    assert_eq!(loaded_results[0].output.as_deref(), Some("ok"));
+
+    let loaded_errors = store.load_errors().unwrap();
+    assert_eq!(loaded_errors.len(), 1);
+    assert_eq!(loaded_errors[0].error.as_deref(), Some("boom"));
+}

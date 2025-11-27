@@ -1,0 +1,15 @@
+[package]
+name = "pacabench-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI wrapper for PacaBench (Rust rewrite)"
+license = "Apache-2.0"
+
+[dependencies]
+pacabench-core = { path = "../pacabench-core" }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tokio = { version = "1.41", features = ["rt-multi-thread"] }
