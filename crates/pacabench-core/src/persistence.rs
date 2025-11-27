@@ -99,6 +99,20 @@ pub struct ErrorEntry {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RunSummary {
+    pub run_id: String,
+    pub status: String,
+    pub start_time: Option<String>,
+    pub completed_time: Option<String>,
+    pub completed_cases: u64,
+    pub total_cases: u64,
+    pub progress: Option<f64>,
+    pub datasets: Vec<String>,
+    pub agents: Vec<String>,
+    pub total_cost_usd: Option<f64>,
+}
+
 #[derive(Debug)]
 pub struct RunStore {
     run_dir: PathBuf,
@@ -249,4 +263,84 @@ fn canonical_json_string(value: &Value) -> String {
 pub fn generate_run_id(config_name: &str) -> String {
     let ts = iso_timestamp_now().replace([':', '-'], "");
     format!("{config_name}-{ts}")
+}
+
+/// Return run summaries from a runs directory, sorted by start time descending.
+pub fn list_run_summaries(runs_dir: &Path) -> Result<Vec<RunSummary>> {
+    if !runs_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut summaries = Vec::new();
+    for entry in fs::read_dir(runs_dir)? {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let store = RunStore::new(&path)?;
+        if let Some(meta) = store.read_metadata()? {
+            let progress = if meta.total_cases > 0 {
+                Some(meta.completed_cases as f64 / meta.total_cases as f64)
+            } else {
+                None
+            };
+            let datasets = meta
+                .extras
+                .get("datasets")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let agents = meta
+                .extras
+                .get("agents")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let total_cost_usd = path
+                .join("status.json")
+                .exists()
+                .then(|| fs::read_to_string(path.join("status.json")).ok())
+                .flatten()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.get("total_cost").and_then(|c| c.as_f64()));
+
+            summaries.push(RunSummary {
+                run_id: path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                status: meta.status,
+                start_time: meta.start_time,
+                completed_time: meta.completed_time,
+                completed_cases: meta.completed_cases,
+                total_cases: meta.total_cases,
+                progress,
+                datasets,
+                agents,
+                total_cost_usd,
+            });
+        }
+    }
+
+    summaries.sort_by(|a, b| {
+        let a_ts = parse_iso(&a.start_time).unwrap_or_else(|| chrono::Utc::now());
+        let b_ts = parse_iso(&b.start_time).unwrap_or_else(|| chrono::Utc::now());
+        b_ts.cmp(&a_ts)
+    });
+    Ok(summaries)
+}
+
+fn parse_iso(ts: &Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+    ts.as_ref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
 }

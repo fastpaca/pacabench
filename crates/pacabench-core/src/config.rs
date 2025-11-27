@@ -11,6 +11,8 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
     #[error("failed to parse config: {0}")]
     Yaml(#[from] serde_yaml::Error),
+    #[error("invalid config: {0}")]
+    Invalid(String),
 }
 
 fn default_proxy_enabled() -> bool {
@@ -177,6 +179,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BenchmarkConfig, ConfigErro
     let contents = fs::read_to_string(path)?;
     let interpolated = interpolate_env_vars(&contents);
     let cfg: BenchmarkConfig = serde_yaml::from_str(&interpolated)?;
+    validate_config(&cfg)?;
     Ok(cfg)
 }
 
@@ -199,4 +202,38 @@ pub fn interpolate_env_vars(input: &str) -> String {
         }
     })
     .to_string()
+}
+
+/// Validate required fields and basic invariants.
+pub fn validate_config(cfg: &BenchmarkConfig) -> Result<(), ConfigError> {
+    if cfg.agents.is_empty() {
+        return Err(ConfigError::Invalid(
+            "at least one agent is required".into(),
+        ));
+    }
+    if cfg.datasets.is_empty() {
+        return Err(ConfigError::Invalid(
+            "at least one dataset is required".into(),
+        ));
+    }
+    if cfg
+        .agents
+        .iter()
+        .any(|a| a.name.trim().is_empty() || a.command.trim().is_empty())
+    {
+        return Err(ConfigError::Invalid(
+            "agents must have non-empty name and command".into(),
+        ));
+    }
+    if cfg
+        .datasets
+        .iter()
+        .any(|d| d.name.trim().is_empty() || d.source.trim().is_empty())
+    {
+        return Err(ConfigError::Invalid(
+            "datasets must have non-empty name and source".into(),
+        ));
+    }
+
+    Ok(())
 }

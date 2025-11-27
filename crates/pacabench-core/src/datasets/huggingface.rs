@@ -2,10 +2,12 @@ use super::{prepare_case, DatasetContext, DatasetLoader};
 use crate::config::DatasetConfig;
 use crate::types::Case;
 use anyhow::{anyhow, Result};
+use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Minimal Hugging Face dataset loader.
 ///
@@ -30,19 +32,62 @@ impl HuggingFaceDataset {
             .to_string()
     }
 
-    fn download(&self) -> Result<PathBuf> {
-        // Best-effort JSONL fetch using hf-hub style layout: assume repo has jsonl files.
-        // To avoid additional dependencies, we rely on `git clone` under the hood.
-        let repo_url = format!("https://huggingface.co/{}.git", self.repo_id());
-        let cache_dir = self.ctx.cache_dir.join("hf");
-        std::fs::create_dir_all(&cache_dir)?;
-        let repo_dir = cache_dir.join(self.repo_id().rsplit('/').next().unwrap_or("dataset"));
-        if repo_dir.join(".git").exists() {
-            return Ok(repo_dir);
+    fn resolve_local_repo(&self) -> Option<PathBuf> {
+        let id = self.repo_id();
+        let path = PathBuf::from(&id);
+        if path.exists() {
+            return Some(path);
         }
-        git2::Repository::clone(&repo_url, &repo_dir)
-            .map_err(|e| anyhow!("failed to clone HF dataset: {e}"))?;
-        Ok(repo_dir)
+        let relative = self.ctx.root_dir.join(&id);
+        if relative.exists() {
+            return Some(relative);
+        }
+        None
+    }
+
+    fn download(&self) -> Result<PathBuf> {
+        if let Some(local) = self.resolve_local_repo() {
+            return Ok(local);
+        }
+
+        let repo_id = self.repo_id();
+        let cache_dir = self
+            .ctx
+            .cache_dir
+            .join("hf")
+            .join(&repo_id.replace('/', "_"));
+        std::fs::create_dir_all(&cache_dir)?;
+
+        let split = self.config.split.clone().unwrap_or_else(|| "train".into());
+        let target_file = cache_dir.join(format!("{split}.jsonl"));
+        if target_file.exists() {
+            return Ok(cache_dir);
+        }
+
+        let token = std::env::var("HF_TOKEN")
+            .ok()
+            .or_else(|| std::env::var("HUGGINGFACE_TOKEN").ok());
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| anyhow!("failed to build client: {e}"))?;
+
+        // Try to resolve huggingface dataset file via raw URL
+        let url = format!("https://huggingface.co/datasets/{repo_id}/resolve/main/{split}.jsonl");
+        let mut req = client.get(url);
+        if let Some(t) = token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().map_err(|e| anyhow!("download failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "failed to download dataset {repo_id} split {split}: http {}",
+                resp.status()
+            ));
+        }
+        let bytes = resp.bytes().map_err(|e| anyhow!("read body: {e}"))?;
+        std::fs::write(&target_file, bytes)?;
+        Ok(cache_dir)
     }
 }
 

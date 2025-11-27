@@ -141,3 +141,51 @@ fn retry_tracks_passed_vs_failed_cases() {
     assert_eq!(rm2.completed_count(), 2);
     assert_eq!(rm2.passed_count(), 1);
 }
+
+#[test]
+fn metadata_includes_config_extras_and_timestamps() {
+    let mut cfg = minimal_config();
+    cfg.agents.push(pacabench_core::config::AgentConfig {
+        name: "agent".into(),
+        command: "echo hi".into(),
+        setup: None,
+        teardown: None,
+        env: Default::default(),
+    });
+    cfg.datasets.push(pacabench_core::config::DatasetConfig {
+        name: "ds".into(),
+        source: "data.jsonl".into(),
+        split: None,
+        prepare: None,
+        input_map: Default::default(),
+        evaluator: None,
+    });
+
+    let runs_dir = tempdir().unwrap();
+    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false).unwrap();
+    rm.set_total_cases(1).unwrap();
+    rm.initialize_metadata().unwrap();
+
+    let store =
+        pacabench_core::persistence::RunStore::new(runs_dir.path().join(&rm.run_id)).unwrap();
+    let meta = store.read_metadata().unwrap().unwrap();
+    assert!(meta.start_time.is_some());
+    assert_eq!(
+        meta.extras
+            .get("agents")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len()),
+        Some(1)
+    );
+    assert_eq!(
+        meta.extras
+            .get("datasets")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len()),
+        Some(1)
+    );
+
+    rm.mark_completed(false).unwrap();
+    let meta_done = store.read_metadata().unwrap().unwrap();
+    assert!(meta_done.completed_time.is_some());
+}

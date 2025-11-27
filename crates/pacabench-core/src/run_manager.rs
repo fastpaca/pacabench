@@ -4,6 +4,7 @@ use crate::config::BenchmarkConfig;
 use crate::persistence::{compute_config_fingerprint, iso_timestamp_now, RunMetadata, RunStore};
 use crate::types::{CaseResult, ErrorType};
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,11 @@ pub struct RunManager {
     pub run_id: String,
     pub resuming: bool,
     config_fingerprint: String,
+    config_name: String,
+    config_version: String,
+    config_description: Option<String>,
+    agent_names: Vec<String>,
+    dataset_names: Vec<String>,
     completed_entries: HashSet<(String, String, String)>,
     passed_entries: HashSet<(String, String, String)>,
     case_attempts: HashMap<(String, String, String), u32>,
@@ -40,6 +46,9 @@ impl RunManager {
         let mut completed_entries = HashSet::new();
         let mut passed_entries = HashSet::new();
         let mut case_attempts = HashMap::new();
+
+        let agent_names = config.agents.iter().map(|a| a.name.clone()).collect();
+        let dataset_names = config.datasets.iter().map(|d| d.name.clone()).collect();
 
         if let Some(meta) = store.read_metadata()? {
             if meta.config_fingerprint != fingerprint && !force_new {
@@ -71,6 +80,11 @@ impl RunManager {
             run_id,
             resuming,
             config_fingerprint: fingerprint,
+            config_name: config.name.clone(),
+            config_version: config.version.clone(),
+            config_description: config.description.clone(),
+            agent_names,
+            dataset_names,
             completed_entries,
             passed_entries,
             case_attempts,
@@ -80,17 +94,19 @@ impl RunManager {
     }
 
     pub fn initialize_metadata(&self) -> Result<()> {
-        let meta = RunMetadata {
-            run_id: self.run_id.clone(),
-            status: "running".to_string(),
-            config_fingerprint: self.config_fingerprint.clone(),
-            total_cases: self.total_cases,
-            completed_cases: self.completed_entries.len() as u64,
-            start_time: Some(iso_timestamp_now()),
-            completed_time: None,
-            system_error_count: self.system_error_count,
-            extras: Default::default(),
-        };
+        let mut meta = self
+            .store
+            .read_metadata()?
+            .unwrap_or_else(|| self.default_metadata("running"));
+        meta.status = "running".to_string();
+        meta.total_cases = self.total_cases;
+        meta.completed_cases = self.completed_entries.len() as u64;
+        meta.system_error_count = self.system_error_count;
+        if meta.start_time.is_none() {
+            meta.start_time = Some(iso_timestamp_now());
+        }
+        meta.config_fingerprint = self.config_fingerprint.clone();
+        self.merge_extras(&mut meta);
         self.store.write_metadata(&meta)
     }
 
@@ -100,17 +116,22 @@ impl RunManager {
     }
 
     pub fn append_result(&mut self, result: &CaseResult) -> Result<()> {
-        self.store.append_result(result)?;
+        let mut to_write = result.clone();
+        if to_write.timestamp.is_none() {
+            to_write.timestamp = Some(iso_timestamp_now());
+        }
+
+        self.store.append_result(&to_write)?;
         let key = (
-            result.agent_name.clone(),
-            result.dataset_name.clone(),
-            result.case_id.clone(),
+            to_write.agent_name.clone(),
+            to_write.dataset_name.clone(),
+            to_write.case_id.clone(),
         );
         self.completed_entries.insert(key.clone());
-        if result.passed {
+        if to_write.passed {
             self.passed_entries.insert(key.clone());
         }
-        self.case_attempts.insert(key, result.attempt.max(1));
+        self.case_attempts.insert(key, to_write.attempt.max(1));
         self.update_metadata_status("running")
     }
 
@@ -150,22 +171,74 @@ impl RunManager {
     }
 
     fn update_metadata_status(&self, status: &str) -> Result<()> {
-        let meta = RunMetadata {
+        let mut meta = self
+            .store
+            .read_metadata()?
+            .unwrap_or_else(|| self.default_metadata(status));
+        meta.status = status.to_string();
+        meta.config_fingerprint = self.config_fingerprint.clone();
+        meta.total_cases = self.total_cases;
+        meta.completed_cases = self.completed_entries.len() as u64;
+        meta.system_error_count = self.system_error_count;
+        if meta.start_time.is_none() {
+            meta.start_time = Some(iso_timestamp_now());
+        }
+        if status != "running" {
+            meta.completed_time = Some(iso_timestamp_now());
+        }
+        self.merge_extras(&mut meta);
+        self.store.write_metadata(&meta)
+    }
+
+    fn merge_extras(&self, meta: &mut RunMetadata) {
+        meta.extras.insert(
+            "config_name".into(),
+            Value::String(self.config_name.clone()),
+        );
+        meta.extras.insert(
+            "config_version".into(),
+            Value::String(self.config_version.clone()),
+        );
+        if let Some(desc) = &self.config_description {
+            meta.extras
+                .insert("config_description".into(), Value::String(desc.clone()));
+        }
+        meta.extras.insert(
+            "agents".into(),
+            Value::Array(
+                self.agent_names
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+        meta.extras.insert(
+            "datasets".into(),
+            Value::Array(
+                self.dataset_names
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
+    }
+
+    fn default_metadata(&self, status: &str) -> RunMetadata {
+        let mut meta = RunMetadata {
             run_id: self.run_id.clone(),
             status: status.to_string(),
             config_fingerprint: self.config_fingerprint.clone(),
             total_cases: self.total_cases,
             completed_cases: self.completed_entries.len() as u64,
-            start_time: None,
-            completed_time: if status == "running" {
-                None
-            } else {
-                Some(iso_timestamp_now())
-            },
+            start_time: Some(iso_timestamp_now()),
+            completed_time: None,
             system_error_count: self.system_error_count,
             extras: Default::default(),
         };
-        self.store.write_metadata(&meta)
+        self.merge_extras(&mut meta);
+        meta
     }
 }
 

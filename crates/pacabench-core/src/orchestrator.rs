@@ -12,6 +12,7 @@ use crate::types::{Case, CaseResult, ErrorType, RunnerOutput};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -208,6 +209,12 @@ impl Orchestrator {
         let semaphore = Arc::new(Semaphore::new(self.config.config.concurrency));
         let timeout_secs = self.config.config.timeout_seconds;
         let max_retries = self.config.config.max_retries;
+        let recycle_interval = self.config.config.worker_recycle_interval;
+        let recycle_counts = Arc::new(
+            (0..self.config.agents.len())
+                .map(|_| AtomicUsize::new(0))
+                .collect::<Vec<_>>(),
+        );
 
         let mut handles = Vec::new();
 
@@ -225,6 +232,8 @@ impl Orchestrator {
                 .evaluator
                 .as_ref()
                 .map(|e| e.r#type.clone());
+            let recycle_counts = recycle_counts.clone();
+            let recycle_interval = recycle_interval;
 
             let handle = tokio::spawn(async move {
                 let _permit = permit;
@@ -251,7 +260,7 @@ impl Orchestrator {
                     };
 
                     let start = Instant::now();
-                    let out = {
+                    let out: Result<RunnerOutput> = {
                         let mut runner_guard = runner.lock().await;
                         timeout(
                             Duration::from_secs_f64(timeout_secs),
@@ -262,6 +271,7 @@ impl Orchestrator {
                         .and_then(|res| res)
                     };
 
+                    let mut completed_attempt = false;
                     match out {
                         Ok(mut ro) => {
                             if ro.duration_ms == 0.0 {
@@ -298,17 +308,27 @@ impl Orchestrator {
                                 let _ = rm_guard.append_result(&result);
                             }
 
-                            if passed || ro.error.is_none() {
-                                circuit_breaker.record_success();
-                                return;
-                            } else {
+                            if matches!(
+                                result.error_type,
+                                ErrorType::SystemFailure | ErrorType::FatalError
+                            ) {
                                 circuit_breaker.record_failure();
-                                if retry < max_retries {
-                                    tokio::time::sleep(Duration::from_millis(
-                                        100 * (retry as u64 + 1),
-                                    ))
+                            } else {
+                                circuit_breaker.record_success();
+                            }
+
+                            if passed
+                                || matches!(
+                                    result.error_type,
+                                    ErrorType::SystemFailure | ErrorType::FatalError
+                                )
+                            {
+                                completed_attempt = true;
+                            } else if retry < max_retries {
+                                tokio::time::sleep(Duration::from_millis(100 * (retry as u64 + 1)))
                                     .await;
-                                }
+                            } else {
+                                completed_attempt = true;
                             }
                         }
                         Err(err) => {
@@ -329,6 +349,21 @@ impl Orchestrator {
                                     .await;
                             }
                         }
+                    }
+
+                    if recycle_interval > 0 {
+                        let count =
+                            recycle_counts[item.agent_idx].fetch_add(1, Ordering::SeqCst) + 1;
+                        if count >= recycle_interval {
+                            recycle_counts[item.agent_idx].store(0, Ordering::SeqCst);
+                            let mut runner_guard = runner.lock().await;
+                            let _ = runner_guard.stop().await;
+                            let _ = runner_guard.start().await;
+                        }
+                    }
+
+                    if completed_attempt {
+                        return;
                     }
                 }
             });

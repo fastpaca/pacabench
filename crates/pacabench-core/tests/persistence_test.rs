@@ -2,7 +2,8 @@
 
 use pacabench_core::config::load_config;
 use pacabench_core::persistence::{
-    compute_config_fingerprint, iso_timestamp_now, ErrorEntry, RunStore,
+    compute_config_fingerprint, iso_timestamp_now, list_run_summaries, ErrorEntry, RunMetadata,
+    RunStore,
 };
 use pacabench_core::types::{CaseResult, ErrorType};
 use std::collections::HashMap;
@@ -67,4 +68,43 @@ fn run_store_roundtrip_results_and_errors() {
     let loaded_errors = store.load_errors().unwrap();
     assert_eq!(loaded_errors.len(), 1);
     assert_eq!(loaded_errors[0].error.as_deref(), Some("boom"));
+}
+
+#[test]
+fn list_run_summaries_includes_progress() {
+    let dir = tempdir().unwrap();
+    let store1 = RunStore::new(dir.path().join("run-a")).unwrap();
+    let meta1 = RunMetadata {
+        run_id: "run-a".into(),
+        status: "completed".into(),
+        config_fingerprint: "fp".into(),
+        total_cases: 10,
+        completed_cases: 10,
+        start_time: Some("2024-01-01T00:00:00Z".into()),
+        completed_time: Some("2024-01-01T00:10:00Z".into()),
+        system_error_count: 0,
+        extras: Default::default(),
+    };
+    store1.write_metadata(&meta1).unwrap();
+
+    let store2 = RunStore::new(dir.path().join("run-b")).unwrap();
+    let meta2 = RunMetadata {
+        run_id: "run-b".into(),
+        status: "running".into(),
+        config_fingerprint: "fp".into(),
+        total_cases: 8,
+        completed_cases: 4,
+        start_time: Some("2024-02-01T00:00:00Z".into()),
+        completed_time: None,
+        system_error_count: 1,
+        extras: Default::default(),
+    };
+    store2.write_metadata(&meta2).unwrap();
+
+    let summaries = list_run_summaries(dir.path()).unwrap();
+    assert_eq!(summaries.len(), 2);
+    // run-b has newer start_time so should come first
+    assert_eq!(summaries[0].run_id, "run-b");
+    assert_eq!(summaries[0].progress, Some(0.5));
+    assert_eq!(summaries[1].completed_cases, 10);
 }

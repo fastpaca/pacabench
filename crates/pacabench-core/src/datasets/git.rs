@@ -84,6 +84,7 @@ impl DatasetLoader for GitDataset {
             .get("expected")
             .map(String::as_str)
             .unwrap_or("expected");
+        let split = self.config.split.clone();
 
         let mut files = Vec::new();
         for entry in globwalk::GlobWalkerBuilder::from_patterns(&repo_dir, &["**/*.jsonl"])
@@ -92,6 +93,26 @@ impl DatasetLoader for GitDataset {
         {
             if entry.path().is_file() {
                 files.push(entry.path().to_path_buf());
+            }
+        }
+
+        if let Some(s) = split {
+            let filtered: Vec<PathBuf> = files
+                .iter()
+                .filter(|p| {
+                    p.file_stem()
+                        .and_then(|f| f.to_str())
+                        .map(|stem| stem == s)
+                        .unwrap_or(false)
+                        || p.file_name()
+                            .and_then(|f| f.to_str())
+                            .map(|name| name.contains(&s))
+                            .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                files = filtered;
             }
         }
 
