@@ -14,6 +14,7 @@ pub struct RunManager {
     pub resuming: bool,
     config_fingerprint: String,
     completed_entries: HashSet<(String, String, String)>,
+    passed_entries: HashSet<(String, String, String)>,
     case_attempts: HashMap<(String, String, String), u32>,
     pub total_cases: u64,
     pub system_error_count: u64,
@@ -37,6 +38,7 @@ impl RunManager {
         let mut total_cases = 0;
         let mut system_error_count = 0;
         let mut completed_entries = HashSet::new();
+        let mut passed_entries = HashSet::new();
         let mut case_attempts = HashMap::new();
 
         if let Some(meta) = store.read_metadata()? {
@@ -57,6 +59,9 @@ impl RunManager {
                     r.case_id.clone(),
                 );
                 completed_entries.insert(key.clone());
+                if r.passed {
+                    passed_entries.insert(key.clone());
+                }
                 case_attempts.insert(key, r.attempt);
             }
         }
@@ -67,6 +72,7 @@ impl RunManager {
             resuming,
             config_fingerprint: fingerprint,
             completed_entries,
+            passed_entries,
             case_attempts,
             total_cases,
             system_error_count,
@@ -101,6 +107,9 @@ impl RunManager {
             result.case_id.clone(),
         );
         self.completed_entries.insert(key.clone());
+        if result.passed {
+            self.passed_entries.insert(key.clone());
+        }
         self.case_attempts.insert(key, result.attempt.max(1));
         self.update_metadata_status("running")
     }
@@ -120,6 +129,15 @@ impl RunManager {
 
     pub fn completed_count(&self) -> usize {
         self.completed_entries.len()
+    }
+
+    pub fn passed_count(&self) -> usize {
+        self.passed_entries.len()
+    }
+
+    pub fn is_passed(&self, agent: &str, dataset: &str, case_id: &str) -> bool {
+        let key = (agent.to_string(), dataset.to_string(), case_id.to_string());
+        self.passed_entries.contains(&key)
     }
 
     pub fn get_next_attempt(&self, agent: &str, dataset: &str, case_id: &str) -> u32 {

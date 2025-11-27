@@ -175,7 +175,8 @@ output:
                 agg.p95_duration_ms
             );
             println!(
-                "LLM latency avg={:.0}ms p50={:.0}ms p95={:.0}ms tokens in={} out={} cost=${:.4}",
+                "LLM calls={} latency avg={:.0}ms p50={:.0}ms p95={:.0}ms tokens in={} out={} cost=${:.4}",
+                agg.total_llm_calls,
                 agg.avg_llm_latency_ms,
                 agg.p50_llm_latency_ms,
                 agg.p95_llm_latency_ms,
@@ -183,6 +184,57 @@ output:
                 agg.total_output_tokens,
                 agg.total_cost_usd
             );
+            if agg.total_judge_cost_usd > 0.0 {
+                println!("Judge cost=${:.4}", agg.total_judge_cost_usd);
+            }
+
+            // Show per-agent breakdown
+            let mut by_agent: std::collections::HashMap<&str, (usize, usize)> =
+                std::collections::HashMap::new();
+            for r in &results {
+                let entry = by_agent.entry(&r.agent_name).or_insert((0, 0));
+                entry.0 += 1;
+                if r.passed {
+                    entry.1 += 1;
+                }
+            }
+            if by_agent.len() > 1 {
+                println!("\nBy Agent:");
+                let mut agents: Vec<_> = by_agent.iter().collect();
+                agents.sort_by_key(|(name, _)| *name);
+                for (name, (total, passed)) in agents {
+                    let acc = if *total > 0 {
+                        (*passed as f64 / *total as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!("  {}: {}/{} ({:.1}%)", name, passed, total, acc);
+                }
+            }
+
+            // Show per-dataset breakdown
+            let mut by_dataset: std::collections::HashMap<&str, (usize, usize)> =
+                std::collections::HashMap::new();
+            for r in &results {
+                let entry = by_dataset.entry(&r.dataset_name).or_insert((0, 0));
+                entry.0 += 1;
+                if r.passed {
+                    entry.1 += 1;
+                }
+            }
+            if by_dataset.len() > 1 {
+                println!("\nBy Dataset:");
+                let mut datasets: Vec<_> = by_dataset.iter().collect();
+                datasets.sort_by_key(|(name, _)| *name);
+                for (name, (total, passed)) in datasets {
+                    let acc = if *total > 0 {
+                        (*passed as f64 / *total as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!("  {}: {}/{} ({:.1}%)", name, passed, total, acc);
+                }
+            }
 
             // Show failure summary if any
             let failed: Vec<_> = results.iter().filter(|r| !r.passed).collect();
@@ -270,6 +322,7 @@ output:
                         "- **Duration (p50/p95)**: {:.0}ms / {:.0}ms\n",
                         agg.p50_duration_ms, agg.p95_duration_ms
                     ));
+                    md.push_str(&format!("- **LLM Calls**: {}\n", agg.total_llm_calls));
                     md.push_str(&format!(
                         "- **LLM Latency (avg/p50/p95)**: {:.0}ms / {:.0}ms / {:.0}ms\n",
                         agg.avg_llm_latency_ms, agg.p50_llm_latency_ms, agg.p95_llm_latency_ms

@@ -1,6 +1,8 @@
 //! Tests for the evaluators module.
 
-use pacabench_core::evaluators::{Evaluator, ExactMatchEvaluator, F1Evaluator, MultipleChoiceEvaluator};
+use pacabench_core::evaluators::{
+    Evaluator, ExactMatchEvaluator, F1Evaluator, MultipleChoiceEvaluator,
+};
 use pacabench_core::types::{Case, ErrorType, RunnerOutput};
 use std::collections::HashMap;
 
