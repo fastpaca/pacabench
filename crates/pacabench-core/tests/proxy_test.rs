@@ -1,6 +1,7 @@
 //! Tests for the proxy module.
 
 use pacabench_core::proxy::{ProxyConfig, ProxyServer};
+use reqwest::Client;
 
 #[tokio::test]
 async fn proxy_starts_and_provides_stub_without_upstream() {
@@ -89,5 +90,57 @@ async fn proxy_url_should_include_v1_prefix() {
         .unwrap();
     assert!(resp.status().is_success());
 
+    proxy.stop().await;
+}
+
+#[tokio::test]
+async fn proxy_healthcheck() {
+    let proxy = ProxyServer::start(ProxyConfig {
+        port: 0,
+        upstream_base_url: None,
+        api_key: None,
+    })
+    .await
+    .unwrap();
+
+    let resp = Client::new()
+        .get(format!("http://{}/health", proxy.addr))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    proxy.stop().await;
+}
+
+#[tokio::test]
+async fn proxy_streaming_stub_records_metric() {
+    let proxy = ProxyServer::start(ProxyConfig {
+        port: 0,
+        upstream_base_url: None,
+        api_key: None,
+    })
+    .await
+    .unwrap();
+
+    let resp = Client::new()
+        .post(format!("http://{}/v1/chat/completions", proxy.addr))
+        .json(&serde_json::json!({
+            "model": "stream-model",
+            "messages": [],
+            "stream": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("data:"),
+        "streaming response should contain data lines"
+    );
+
+    let metrics = proxy.metrics.snapshot_and_clear().await;
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].model.as_deref(), Some("stream-model"));
     proxy.stop().await;
 }

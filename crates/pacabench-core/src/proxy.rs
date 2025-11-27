@@ -3,9 +3,9 @@
 
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
-    routing::post,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
     Json, Router,
 };
 use reqwest::Client;
@@ -15,6 +15,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
 use tracing::info;
 
 #[derive(Clone, Debug)]
@@ -81,6 +83,7 @@ impl ProxyServer {
             .route("/v1/chat/completions", post(handle_chat))
             .route("/v1/responses", post(handle_responses))
             .route("/v1/embeddings", post(handle_embeddings))
+            .route("/health", get(|| async { "ok" }))
             .with_state(state.clone());
 
         let metrics = state.metrics.clone();
@@ -130,9 +133,13 @@ async fn forward_or_stub(
     _headers: HeaderMap,
     body: Value,
     path: &str,
-) -> impl IntoResponse {
+) -> Response {
     let start = std::time::Instant::now();
     let model = body.get("model").and_then(|v| v.as_str()).map(String::from);
+    let wants_stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if let Some(base) = &state.upstream_base {
         let url = format!("{base}{path}");
@@ -143,6 +150,11 @@ async fn forward_or_stub(
         match req.send().await {
             Ok(resp) => {
                 let status = resp.status();
+
+                if wants_stream {
+                    return stream_response(resp, state.metrics.clone(), model, start, status);
+                }
+
                 let json = resp
                     .json::<Value>()
                     .await
@@ -164,18 +176,23 @@ async fn forward_or_stub(
                         model: response_model,
                     })
                     .await;
-                return (status, Json(json));
+                return (status, Json(json)).into_response();
             }
             Err(err) => {
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(serde_json::json!({ "error": err.to_string() })),
-                );
+                )
+                    .into_response();
             }
         }
     }
 
     let latency_ms = start.elapsed().as_millis() as f64;
+    if wants_stream {
+        return stub_stream(latency_ms, model, state.metrics.clone());
+    }
+
     state
         .metrics
         .record(MetricEntry {
@@ -200,5 +217,105 @@ async fn forward_or_stub(
             "total_tokens": 0
         }
     });
-    (StatusCode::OK, Json(response))
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+fn stub_stream(latency_ms: f64, model: Option<String>, metrics: MetricsCollector) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(4);
+    let m_for_record = model.clone();
+    tokio::spawn(async move {
+        let first = format!(
+            "data: {{\"model\":\"{}\",\"choices\":[{{\"delta\":{{\"content\":\"stub\"}}}}]}}\n\n",
+            model.clone().unwrap_or_else(|| "stub-model".into())
+        );
+        let _ = tx.send(Ok(axum::body::Bytes::from(first))).await;
+        let _ = tx
+            .send(Ok(axum::body::Bytes::from_static(b"data: [DONE]\n\n")))
+            .await;
+        metrics
+            .record(MetricEntry {
+                latency_ms,
+                usage: serde_json::json!({
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "prompt_tokens_details": {"cached_tokens": 0}
+                }),
+                status: StatusCode::OK,
+                model: m_for_record,
+            })
+            .await;
+    });
+    let stream = ReceiverStream::new(rx);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap()
+}
+
+fn stream_response(
+    resp: reqwest::Response,
+    metrics: MetricsCollector,
+    initial_model: Option<String>,
+    start: std::time::Instant,
+    status: StatusCode,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(16);
+    tokio::spawn(async move {
+        let mut stream = resp.bytes_stream();
+        let mut last_usage: Option<Value> = None;
+        let mut last_model = initial_model;
+
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    if let Ok(text) = std::str::from_utf8(&bytes) {
+                        for line in text.lines() {
+                            let line = line.trim_start();
+                            if let Some(data) = line.strip_prefix("data:") {
+                                let data = data.trim();
+                                if data == "[DONE]" {
+                                    continue;
+                                }
+                                if let Ok(json) = serde_json::from_str::<Value>(data) {
+                                    if let Some(m) = json.get("model").and_then(|v| v.as_str()) {
+                                        last_model = Some(m.to_string());
+                                    }
+                                    if let Some(u) = json.get("usage") {
+                                        last_usage = Some(u.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let _ = tx.send(Ok(axum::body::Bytes::from(bytes))).await;
+                }
+                Err(_) => break,
+            }
+        }
+
+        let latency_ms = start.elapsed().as_millis() as f64;
+        metrics
+            .record(MetricEntry {
+                latency_ms,
+                usage: last_usage.unwrap_or_else(|| serde_json::json!({})),
+                status,
+                model: last_model,
+            })
+            .await;
+    });
+
+    let stream = ReceiverStream::new(rx);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap()
 }

@@ -25,6 +25,7 @@ impl LocalDataset {
 impl DatasetLoader for LocalDataset {
     fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
         let source = &self.config.source;
+        let split = self.config.split.clone();
         let input_key = self
             .config
             .input_map
@@ -68,6 +69,26 @@ impl DatasetLoader for LocalDataset {
                 }
             } else {
                 files.push(p);
+            }
+        }
+
+        if let Some(s) = split {
+            let filtered: Vec<PathBuf> = files
+                .iter()
+                .filter(|p| {
+                    p.file_stem()
+                        .and_then(|f| f.to_str())
+                        .map(|stem| stem == s)
+                        .unwrap_or(false)
+                        || p.file_name()
+                            .and_then(|f| f.to_str())
+                            .map(|name| name.contains(&s))
+                            .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                files = filtered;
             }
         }
 

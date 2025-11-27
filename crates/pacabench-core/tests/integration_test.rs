@@ -408,3 +408,97 @@ for line in sys.stdin:
     );
     assert_eq!(result["output"].as_str(), Some("test"));
 }
+
+#[tokio::test]
+async fn test_runner_recycle_interval_restarts_process() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let cache = root.join("cache");
+    let runs = root.join("runs");
+    let data_dir = root.join("data");
+    fs::create_dir_all(&cache).unwrap();
+    fs::create_dir_all(&runs).unwrap();
+    fs::create_dir_all(&data_dir).unwrap();
+
+    // Agent emits its PID so we can detect restarts.
+    let agent_script = root.join("agent_pid.py");
+    fs::write(
+        &agent_script,
+        r#"
+import sys, json, os
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    _ = json.loads(line)
+    out = {"output": str(os.getpid()), "error": None}
+    print(json.dumps(out))
+    sys.stdout.flush()
+"#,
+    )
+    .unwrap();
+
+    // Two cases to force recycle after first.
+    fs::write(
+        data_dir.join("cases.jsonl"),
+        r#"{"case_id": "1", "input": "a", "expected": "a"}
+{"case_id": "2", "input": "b", "expected": "b"}"#,
+    )
+    .unwrap();
+
+    let cfg = BenchmarkConfig {
+        name: "recycle-test".into(),
+        description: None,
+        version: "0.1.0".into(),
+        author: None,
+        config: GlobalConfig {
+            concurrency: 1,
+            timeout_seconds: 30.0,
+            max_retries: 0,
+            proxy: ProxyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            worker_recycle_interval: 1,
+            ..Default::default()
+        },
+        agents: vec![AgentConfig {
+            name: "pid-agent".into(),
+            command: format!("python {}", agent_script.display()),
+            setup: None,
+            teardown: None,
+            env: Default::default(),
+        }],
+        datasets: vec![DatasetConfig {
+            name: "ds".into(),
+            source: data_dir.to_string_lossy().to_string(),
+            split: None,
+            prepare: None,
+            input_map: Default::default(),
+            evaluator: None,
+        }],
+        output: OutputConfig {
+            directory: runs.to_string_lossy().to_string(),
+        },
+    };
+
+    let orch = Orchestrator::new(cfg, root.clone(), cache, runs.clone());
+    orch.run(Some("recycle-run".into()), None, false)
+        .await
+        .unwrap();
+
+    let store = RunStore::new(runs.join("recycle-run")).unwrap();
+    let results = store.load_results().unwrap();
+    assert_eq!(results.len(), 2);
+
+    let pid1 = results
+        .iter()
+        .find(|r| r.case_id == "1")
+        .and_then(|r| r.output.clone())
+        .unwrap();
+    let pid2 = results
+        .iter()
+        .find(|r| r.case_id == "2")
+        .and_then(|r| r.output.clone())
+        .unwrap();
+    assert_ne!(pid1, pid2, "runner should have been recycled between cases");
+}
