@@ -96,3 +96,48 @@ fn fingerprint_mismatch_errors() {
     .unwrap_err();
     assert!(format!("{err}").contains("different config fingerprint"));
 }
+
+#[test]
+fn retry_tracks_passed_vs_failed_cases() {
+    let cfg = minimal_config();
+    let runs_dir = tempdir().unwrap();
+
+    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false).unwrap();
+    rm.set_total_cases(3).unwrap();
+    rm.initialize_metadata().unwrap();
+
+    // Add a passed case
+    let mut passed = sample_result(1);
+    passed.case_id = "passed_case".into();
+    passed.passed = true;
+    rm.append_result(&passed).unwrap();
+
+    // Add a failed case
+    let mut failed = sample_result(1);
+    failed.case_id = "failed_case".into();
+    failed.passed = false;
+    failed.error = Some("test error".into());
+    rm.append_result(&failed).unwrap();
+
+    assert!(rm.is_passed("agent", "ds", "passed_case"));
+    assert!(!rm.is_passed("agent", "ds", "failed_case"));
+    assert!(!rm.is_passed("agent", "ds", "never_run"));
+
+    assert_eq!(rm.completed_count(), 2);
+    assert_eq!(rm.passed_count(), 1);
+
+    // Resume and verify state is restored
+    let rm2 = RunManager::new(
+        &cfg,
+        runs_dir.path().to_path_buf(),
+        Some(rm.run_id.clone()),
+        false,
+    )
+    .unwrap();
+
+    assert!(rm2.resuming);
+    assert!(rm2.is_passed("agent", "ds", "passed_case"));
+    assert!(!rm2.is_passed("agent", "ds", "failed_case"));
+    assert_eq!(rm2.completed_count(), 2);
+    assert_eq!(rm2.passed_count(), 1);
+}

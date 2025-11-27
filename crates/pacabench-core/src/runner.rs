@@ -11,6 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tracing::warn;
 
 pub struct CommandRunner {
     config: AgentConfig,
@@ -92,10 +93,13 @@ impl CommandRunner {
             .ok_or_else(|| anyhow!("child missing stderr"))?;
 
         let stderr_reader = BufReader::new(stderr);
+        let agent_name = self.config.name.clone();
         let stderr_task = tokio::spawn(async move {
             let mut lines = stderr_reader.lines();
-            while let Ok(Some(_line)) = lines.next_line().await {
-                // For now, ignore stderr content; could route to logs.
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    warn!(agent = %agent_name, "[stderr] {}", line);
+                }
             }
         });
 
@@ -117,6 +121,19 @@ impl CommandRunner {
         self.child = None;
         self.stdin = None;
         self.stdout = None;
+
+        // Run teardown if provided
+        if let Some(teardown) = &self.config.teardown {
+            let mut teardown_cmd = Command::new("sh");
+            teardown_cmd.arg("-c").arg(teardown);
+            if let Some(dir) = &self.work_dir {
+                teardown_cmd.current_dir(dir);
+            }
+            let status = teardown_cmd.status().await?;
+            if !status.success() {
+                warn!(agent = %self.config.name, "teardown command failed: {}", status);
+            }
+        }
         Ok(())
     }
 

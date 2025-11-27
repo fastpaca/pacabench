@@ -74,6 +74,8 @@ pub struct EvaluationResult {
     #[serde(default)]
     pub evaluator_latency_ms: f64,
     #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
     pub metrics: JsonMap,
 }
 
@@ -137,6 +139,8 @@ pub struct AggregatedMetrics {
     pub p50_llm_latency_ms: f64,
     #[serde(default)]
     pub p95_llm_latency_ms: f64,
+    #[serde(default)]
+    pub total_llm_calls: u64,
     #[serde(default)]
     pub total_input_tokens: u64,
     #[serde(default)]

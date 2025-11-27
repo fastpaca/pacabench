@@ -1,6 +1,7 @@
 //! Simple evaluator implementations (exact match, F1, multiple choice, LLM judge).
 
 use crate::config::EvaluatorConfig;
+use crate::pricing::calculate_cost;
 use crate::types::{Case, EvaluationResult, RunnerOutput};
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
@@ -23,6 +24,7 @@ impl Evaluator for ExactMatchEvaluator {
                 score: 0.0,
                 reason: Some("No output or error".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -33,6 +35,7 @@ impl Evaluator for ExactMatchEvaluator {
                 score: 1.0,
                 reason: Some("No expected output provided".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -43,6 +46,7 @@ impl Evaluator for ExactMatchEvaluator {
             score: if passed { 1.0 } else { 0.0 },
             reason: Some(if passed { "Exact match" } else { "Mismatch" }.into()),
             evaluator_latency_ms: 0.0,
+            cost_usd: None,
             metrics: HashMap::new(),
         }
     }
@@ -70,6 +74,7 @@ impl Evaluator for F1Evaluator {
                 score: 0.0,
                 reason: Some("No output or error".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -80,6 +85,7 @@ impl Evaluator for F1Evaluator {
                 score: 1.0,
                 reason: Some("No expected output provided".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -95,6 +101,7 @@ impl Evaluator for F1Evaluator {
                 score: 1.0,
                 reason: Some("Empty reference".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -117,6 +124,7 @@ impl Evaluator for F1Evaluator {
             score: f1,
             reason: Some(format!("F1 Score: {f1:.2}")),
             evaluator_latency_ms: 0.0,
+            cost_usd: None,
             metrics: HashMap::new(),
         }
     }
@@ -136,6 +144,7 @@ impl Evaluator for MultipleChoiceEvaluator {
                 score: 0.0,
                 reason: Some("No output or error".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -146,6 +155,7 @@ impl Evaluator for MultipleChoiceEvaluator {
                 score: 1.0,
                 reason: Some("No expected output provided".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -188,6 +198,7 @@ impl Evaluator for MultipleChoiceEvaluator {
             score: if passed { 1.0 } else { 0.0 },
             reason: Some(format!("pred={pred_letter}, expected={expected_letter}")),
             evaluator_latency_ms: 0.0,
+            cost_usd: None,
             metrics: HashMap::new(),
         }
     }
@@ -221,6 +232,7 @@ impl LlmJudgeEvaluator {
                 score: 0.0,
                 reason: Some("No output or error".into()),
                 evaluator_latency_ms: 0.0,
+                cost_usd: None,
                 metrics: HashMap::new(),
             };
         }
@@ -232,6 +244,7 @@ impl LlmJudgeEvaluator {
                     score: 0.0,
                     reason: Some("Missing OPENAI_API_KEY".into()),
                     evaluator_latency_ms: 0.0,
+                    cost_usd: None,
                     metrics: HashMap::new(),
                 };
             }
@@ -291,11 +304,28 @@ impl LlmJudgeEvaluator {
                     .into_iter()
                     .collect::<HashMap<_, _>>();
 
+                // Calculate cost from usage tokens
+                let input_tokens = usage
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let output_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cached_tokens = usage
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cost = calculate_cost(&self.model, input_tokens, output_tokens, cached_tokens);
+
                 EvaluationResult {
                     passed,
                     score: if passed { 1.0 } else { 0.0 },
                     reason: Some(content),
                     evaluator_latency_ms: latency,
+                    cost_usd: if cost > 0.0 { Some(cost) } else { None },
                     metrics,
                 }
             }
@@ -304,6 +334,7 @@ impl LlmJudgeEvaluator {
                 score: 0.0,
                 reason: Some(format!("Judge error: {e}")),
                 evaluator_latency_ms: start.elapsed().as_millis() as f64,
+                cost_usd: None,
                 metrics: HashMap::new(),
             },
         }

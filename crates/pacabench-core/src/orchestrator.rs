@@ -113,13 +113,11 @@ impl Orchestrator {
             for (agent_idx, agent) in self.config.agents.iter().enumerate() {
                 for (dataset_idx, (ds, cases)) in datasets.iter().enumerate() {
                     for case in cases {
-                        // Skip if already completed (for resume)
-                        if rm_guard.resuming {
-                            let attempt =
-                                rm_guard.get_attempt_count(&agent.name, &ds.name, &case.case_id);
-                            if attempt > 0 {
-                                continue;
-                            }
+                        // Skip only if case already passed (for resume/retry)
+                        if rm_guard.resuming
+                            && rm_guard.is_passed(&agent.name, &ds.name, &case.case_id)
+                        {
+                            continue;
                         }
                         work_items.push(WorkItem {
                             agent_idx,
@@ -438,7 +436,7 @@ fn case_result_from_output(
         },
         judge_reason: eval.and_then(|e| e.reason.clone()),
         judge_metrics: eval.map(|e| e.metrics.clone()).unwrap_or_default(),
-        judge_cost_usd: None,
+        judge_cost_usd: eval.and_then(|e| e.cost_usd),
         extra: HashMap::new(),
     }
 }
@@ -449,6 +447,7 @@ fn merge_proxy_entries(entries: &[MetricEntry]) -> HashMap<String, serde_json::V
     let mut output_tokens: u64 = 0;
     let mut cached_tokens: u64 = 0;
     let mut total_cost: f64 = 0.0;
+    let call_count = entries.len() as u64;
 
     for e in entries {
         latencies.push(e.latency_ms);
@@ -481,6 +480,7 @@ fn merge_proxy_entries(entries: &[MetricEntry]) -> HashMap<String, serde_json::V
     }
 
     let mut out = HashMap::new();
+    out.insert("llm_call_count".into(), serde_json::Value::from(call_count));
     out.insert(
         "llm_latency_ms".into(),
         serde_json::Value::Array(latencies.into_iter().map(serde_json::Value::from).collect()),

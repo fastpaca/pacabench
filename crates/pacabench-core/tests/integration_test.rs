@@ -400,8 +400,7 @@ for line in sys.stdin:
     assert_eq!(run_dirs.len(), 1);
     let first_run = run_dirs[0].as_ref().unwrap().path();
     let results = fs::read_to_string(first_run.join("results.jsonl")).unwrap();
-    let result: serde_json::Value =
-        serde_json::from_str(results.lines().next().unwrap()).unwrap();
+    let result: serde_json::Value = serde_json::from_str(results.lines().next().unwrap()).unwrap();
     assert!(
         result["error"].is_null(),
         "should have no error: {:?}",
