@@ -4,9 +4,11 @@ use crate::config::EvaluatorConfig;
 use crate::pricing::calculate_cost;
 use crate::types::{Case, EvaluationResult, RunnerOutput};
 use anyhow::{anyhow, Result};
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Arc;
+use tiktoken_rs::{cl100k_base, get_bpe_from_model};
 use tokio::runtime::Handle;
 
 pub trait Evaluator: Send + Sync {
@@ -64,6 +66,35 @@ impl F1Evaluator {
     pub fn new(threshold: f64) -> Self {
         Self { threshold }
     }
+
+    fn tokenize(&self, text: &str) -> HashSet<String> {
+        let cleaned = text.trim().to_lowercase();
+        if cleaned.is_empty() {
+            return HashSet::new();
+        }
+
+        if let Ok(bpe) = cl100k_base() {
+            return bpe
+                .encode_with_special_tokens(&cleaned)
+                .into_iter()
+                .map(|t| t.to_string())
+                .collect();
+        }
+
+        if let Ok(bpe) = get_bpe_from_model("gpt2") {
+            return bpe
+                .encode_with_special_tokens(&cleaned)
+                .into_iter()
+                .map(|t| t.to_string())
+                .collect();
+        }
+
+        cleaned
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
 }
 
 impl Evaluator for F1Evaluator {
@@ -90,10 +121,10 @@ impl Evaluator for F1Evaluator {
             };
         }
         let pred_text = output.output.as_deref().unwrap_or_default().to_lowercase();
-        let pred_tokens: HashSet<_> = pred_text.split_whitespace().collect();
+        let pred_tokens = self.tokenize(&pred_text);
 
         let expected_lower = expected.to_lowercase();
-        let ref_tokens: HashSet<_> = expected_lower.split_whitespace().collect();
+        let ref_tokens = self.tokenize(&expected_lower);
 
         if ref_tokens.is_empty() {
             return EvaluationResult {
@@ -134,7 +165,67 @@ impl Evaluator for F1Evaluator {
     }
 }
 
-pub struct MultipleChoiceEvaluator;
+enum MultipleChoiceFallback {
+    F1,
+    Judge,
+    None,
+}
+
+pub struct MultipleChoiceEvaluator {
+    fallback: MultipleChoiceFallback,
+    judge_model: String,
+    f1_threshold: f64,
+}
+
+impl MultipleChoiceEvaluator {
+    pub fn new(cfg: &EvaluatorConfig) -> Self {
+        let fallback_str = cfg
+            .extra_config
+            .get("fallback")
+            .and_then(|v| v.as_str())
+            .unwrap_or("f1");
+        let fallback = match fallback_str {
+            "judge" => MultipleChoiceFallback::Judge,
+            "none" => MultipleChoiceFallback::None,
+            _ => MultipleChoiceFallback::F1,
+        };
+        let f1_threshold = cfg
+            .extra_config
+            .get("threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5);
+        let judge_model = cfg.model.clone().unwrap_or_else(|| "gpt-4o-mini".into());
+        Self {
+            fallback,
+            judge_model,
+            f1_threshold,
+        }
+    }
+
+    fn extract_choice_letter(&self, text: &str, valid: &HashSet<char>) -> Option<char> {
+        let letters = Regex::new(r"[A-Za-z]").unwrap();
+        for cap in letters.find_iter(text) {
+            let c = cap
+                .as_str()
+                .chars()
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            if valid.contains(&c) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn clean_text(&self, text: &str) -> String {
+        let letters = Regex::new(r"[^a-z0-9]+").unwrap();
+        letters
+            .replace_all(&text.to_lowercase(), " ")
+            .trim()
+            .to_string()
+    }
+}
 
 impl Evaluator for MultipleChoiceEvaluator {
     fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
@@ -178,28 +269,67 @@ impl Evaluator for MultipleChoiceEvaluator {
             }
         }
 
-        let pred_letter = output
-            .output
-            .as_deref()
-            .unwrap_or_default()
-            .chars()
-            .find(|c| c.is_ascii_alphabetic())
-            .unwrap_or_default()
-            .to_ascii_uppercase();
+        let pred_letter = self
+            .extract_choice_letter(output.output.as_deref().unwrap_or_default(), &valid_letters);
 
-        let passed = if valid_letters.is_empty() {
-            pred_letter == expected_letter
-        } else {
-            valid_letters.contains(&pred_letter) && pred_letter == expected_letter
-        };
+        if !valid_letters.is_empty() && pred_letter.is_some() {
+            let letter = pred_letter.unwrap();
+            let passed = letter == expected_letter;
+            return EvaluationResult {
+                passed,
+                score: if passed { 1.0 } else { 0.0 },
+                reason: Some(format!("pred={letter}, expected={expected_letter}")),
+                evaluator_latency_ms: 0.0,
+                cost_usd: None,
+                metrics: HashMap::new(),
+            };
+        }
 
-        EvaluationResult {
-            passed,
-            score: if passed { 1.0 } else { 0.0 },
-            reason: Some(format!("pred={pred_letter}, expected={expected_letter}")),
-            evaluator_latency_ms: 0.0,
-            cost_usd: None,
-            metrics: HashMap::new(),
+        if !valid_letters.is_empty() {
+            // Try to match cleaned choice values
+            let cleaned_output = self.clean_text(output.output.as_deref().unwrap_or_default());
+            for (k, v) in case
+                .metadata
+                .get("choices")
+                .and_then(|c| c.as_object())
+                .into_iter()
+                .flatten()
+            {
+                let key_letter = k.chars().next().unwrap_or_default().to_ascii_uppercase();
+                let cleaned_val = self.clean_text(v.as_str().unwrap_or_default());
+                if !cleaned_val.is_empty() && cleaned_val == cleaned_output {
+                    let passed = key_letter == expected_letter;
+                    return EvaluationResult {
+                        passed,
+                        score: if passed { 1.0 } else { 0.0 },
+                        reason: Some(format!(
+                            "matched_choice_value={key_letter}, expected={expected_letter}"
+                        )),
+                        evaluator_latency_ms: 0.0,
+                        cost_usd: None,
+                        metrics: HashMap::new(),
+                    };
+                }
+            }
+        }
+
+        match self.fallback {
+            MultipleChoiceFallback::F1 => {
+                let f1 = F1Evaluator::new(self.f1_threshold);
+                f1.evaluate(case, output)
+            }
+            MultipleChoiceFallback::Judge => {
+                let judge = LlmJudgeEvaluator::new(self.judge_model.clone(), None);
+                judge.evaluate(case, output)
+            }
+            MultipleChoiceFallback::None => EvaluationResult {
+                passed: false,
+                score: 0.0,
+                reason: Some("No valid choice extracted".into()),
+                evaluator_latency_ms: 0.0,
+                cost_usd: None,
+                metrics: HashMap::new(),
+            },
         }
     }
 
@@ -217,6 +347,9 @@ pub struct LlmJudgeEvaluator {
 
 impl LlmJudgeEvaluator {
     pub fn new(model: String, base_url: Option<String>) -> Self {
+        let base_url = base_url
+            .or_else(|| env::var("JUDGE_BASE_URL").ok())
+            .or_else(|| env::var("OPENAI_BASE_URL").ok());
         Self {
             model,
             base_url,
@@ -297,14 +430,6 @@ impl LlmJudgeEvaluator {
                 let passed = content.starts_with("YES");
 
                 let usage = json.get("usage").cloned().unwrap_or_default();
-                let metrics = usage
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect::<HashMap<_, _>>();
-
-                // Calculate cost from usage tokens
                 let input_tokens = usage
                     .get("prompt_tokens")
                     .and_then(|v| v.as_u64())
@@ -320,12 +445,34 @@ impl LlmJudgeEvaluator {
                     .unwrap_or(0);
                 let cost = calculate_cost(&self.model, input_tokens, output_tokens, cached_tokens);
 
+                let mut metrics = HashMap::new();
+                metrics.insert("input_tokens".into(), serde_json::json!(input_tokens));
+                metrics.insert("output_tokens".into(), serde_json::json!(output_tokens));
+                metrics.insert(
+                    "total_tokens".into(),
+                    serde_json::json!(input_tokens + output_tokens),
+                );
+                metrics.insert("latency_ms".into(), serde_json::json!(latency));
+                metrics.insert(
+                    "prompt_tokens_details".into(),
+                    usage
+                        .get("prompt_tokens_details")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({ "cached_tokens": 0 })),
+                );
+                if cost > 0.0 {
+                    metrics.insert("cost_usd".into(), serde_json::json!(cost));
+                }
+
+                // Calculate cost from usage tokens
+                let cost_usd = if cost > 0.0 { Some(cost) } else { None };
+
                 EvaluationResult {
                     passed,
                     score: if passed { 1.0 } else { 0.0 },
                     reason: Some(content),
                     evaluator_latency_ms: latency,
-                    cost_usd: if cost > 0.0 { Some(cost) } else { None },
+                    cost_usd,
                     metrics,
                 }
             }
@@ -373,10 +520,14 @@ pub fn get_evaluator(cfg: &EvaluatorConfig) -> Result<Arc<dyn Evaluator>> {
                 .unwrap_or(0.5);
             Ok(Arc::new(F1Evaluator::new(threshold)))
         }
-        "multiple_choice" => Ok(Arc::new(MultipleChoiceEvaluator)),
+        "multiple_choice" => Ok(Arc::new(MultipleChoiceEvaluator::new(cfg))),
         "llm_judge" => {
             let model = cfg.model.clone().unwrap_or_else(|| "gpt-4o-mini".into());
-            let base_url = env::var("OPENAI_BASE_URL").ok();
+            let base_url = cfg
+                .extra_config
+                .get("base_url")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             Ok(Arc::new(LlmJudgeEvaluator::new(model, base_url)))
         }
         other => Err(anyhow!("unsupported evaluator type: {other}")),

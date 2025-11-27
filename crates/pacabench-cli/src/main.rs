@@ -5,7 +5,13 @@ use clap::{Parser, Subcommand};
 use pacabench_core::config::load_config;
 use pacabench_core::metrics::aggregate_results;
 use pacabench_core::orchestrator::Orchestrator;
-use pacabench_core::persistence::{default_dataset_cache_dir, resolve_runs_dir, RunStore};
+use pacabench_core::persistence::{
+    default_dataset_cache_dir, list_run_summaries, resolve_runs_dir, ErrorEntry, RunMetadata,
+    RunStore, RunSummary,
+};
+use pacabench_core::types::{CaseResult, ErrorType};
+use serde_json::json;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -44,9 +50,18 @@ enum Command {
     Show {
         /// Run ID (supports partial match).
         #[arg()]
-        run_id: String,
+        run_id: Option<String>,
         #[arg(long)]
         runs_dir: Option<String>,
+        /// Show individual case rows.
+        #[arg(long)]
+        cases: bool,
+        /// Show only failures in the case list.
+        #[arg(long)]
+        failures: bool,
+        /// Limit number of cases shown.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 
     /// Retry failed cases from a previous run.
@@ -156,101 +171,33 @@ output:
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(orch.run(run_id, limit, force_new))?;
         }
-        Some(Command::Show { run_id, runs_dir }) => {
+        Some(Command::Show {
+            run_id,
+            runs_dir,
+            cases,
+            failures,
+            limit,
+        }) => {
             let runs_dir = resolve_runs_dir(
                 Some(&config),
                 runs_dir.map(PathBuf::from),
                 Some(&config_path),
             );
-            let resolved_id = resolve_run_id(&runs_dir, &run_id)?;
+            if run_id.is_none() {
+                let runs = list_run_summaries(&runs_dir)?;
+                print_run_list(&runs, limit);
+                return Ok(());
+            }
+
+            let partial = run_id.as_ref().expect("guarded above");
+            let resolved_id = resolve_run_id(&runs_dir, partial)?;
             let store = RunStore::new(runs_dir.join(&resolved_id))?;
             let results = store.load_results()?;
-            let agg = aggregate_results(&results);
-            println!(
-                "Run {}: cases={}, accuracy={:.1}%, p50_dur_ms={:.0}, p95_dur_ms={:.0}",
-                resolved_id,
-                agg.total_cases,
-                agg.accuracy * 100.0,
-                agg.p50_duration_ms,
-                agg.p95_duration_ms
-            );
-            println!(
-                "LLM calls={} latency avg={:.0}ms p50={:.0}ms p95={:.0}ms tokens in={} out={} cost=${:.4}",
-                agg.total_llm_calls,
-                agg.avg_llm_latency_ms,
-                agg.p50_llm_latency_ms,
-                agg.p95_llm_latency_ms,
-                agg.total_input_tokens,
-                agg.total_output_tokens,
-                agg.total_cost_usd
-            );
-            if agg.total_judge_cost_usd > 0.0 {
-                println!("Judge cost=${:.4}", agg.total_judge_cost_usd);
-            }
-
-            // Show per-agent breakdown
-            let mut by_agent: std::collections::HashMap<&str, (usize, usize)> =
-                std::collections::HashMap::new();
-            for r in &results {
-                let entry = by_agent.entry(&r.agent_name).or_insert((0, 0));
-                entry.0 += 1;
-                if r.passed {
-                    entry.1 += 1;
-                }
-            }
-            if by_agent.len() > 1 {
-                println!("\nBy Agent:");
-                let mut agents: Vec<_> = by_agent.iter().collect();
-                agents.sort_by_key(|(name, _)| *name);
-                for (name, (total, passed)) in agents {
-                    let acc = if *total > 0 {
-                        (*passed as f64 / *total as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-                    println!("  {}: {}/{} ({:.1}%)", name, passed, total, acc);
-                }
-            }
-
-            // Show per-dataset breakdown
-            let mut by_dataset: std::collections::HashMap<&str, (usize, usize)> =
-                std::collections::HashMap::new();
-            for r in &results {
-                let entry = by_dataset.entry(&r.dataset_name).or_insert((0, 0));
-                entry.0 += 1;
-                if r.passed {
-                    entry.1 += 1;
-                }
-            }
-            if by_dataset.len() > 1 {
-                println!("\nBy Dataset:");
-                let mut datasets: Vec<_> = by_dataset.iter().collect();
-                datasets.sort_by_key(|(name, _)| *name);
-                for (name, (total, passed)) in datasets {
-                    let acc = if *total > 0 {
-                        (*passed as f64 / *total as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-                    println!("  {}: {}/{} ({:.1}%)", name, passed, total, acc);
-                }
-            }
-
-            // Show failure summary if any
-            let failed: Vec<_> = results.iter().filter(|r| !r.passed).collect();
-            if !failed.is_empty() {
-                println!("\nFailed cases ({}):", failed.len());
-                for f in failed.iter().take(10) {
-                    println!(
-                        "  - {}/{}: {}",
-                        f.dataset_name,
-                        f.case_id,
-                        f.error.as_deref().unwrap_or("evaluation failed")
-                    );
-                }
-                if failed.len() > 10 {
-                    println!("  ... and {} more", failed.len() - 10);
-                }
+            let errors = store.load_errors()?;
+            let metadata = store.read_metadata()?;
+            print_run_details(&resolved_id, metadata, &results, &errors);
+            if cases {
+                print_cases(&resolved_id, &results, &errors, failures, limit);
             }
         }
         Some(Command::Retry {
@@ -300,57 +247,18 @@ output:
             let resolved_id = resolve_run_id(&runs_dir, &run_id)?;
             let store = RunStore::new(runs_dir.join(&resolved_id))?;
             let results = store.load_results()?;
-            let agg = aggregate_results(&results);
+            let errors = store.load_errors()?;
+            let metadata = store.read_metadata()?;
 
             let content = match format.as_str() {
-                "json" => {
-                    let export = serde_json::json!({
-                        "run_id": resolved_id,
-                        "metrics": agg,
-                        "results": results,
-                    });
-                    serde_json::to_string_pretty(&export)?
-                }
+                "json" => serde_json::to_string_pretty(&build_export_json(
+                    &resolved_id,
+                    metadata.as_ref(),
+                    &results,
+                    &errors,
+                ))?,
                 "markdown" | "md" => {
-                    let mut md = String::new();
-                    md.push_str(&format!("# Run: {resolved_id}\n\n"));
-                    md.push_str("## Summary\n\n");
-                    md.push_str(&format!("- **Total Cases**: {}\n", agg.total_cases));
-                    md.push_str(&format!("- **Accuracy**: {:.1}%\n", agg.accuracy * 100.0));
-                    md.push_str(&format!("- **Failed Cases**: {}\n", agg.failed_cases));
-                    md.push_str(&format!(
-                        "- **Duration (p50/p95)**: {:.0}ms / {:.0}ms\n",
-                        agg.p50_duration_ms, agg.p95_duration_ms
-                    ));
-                    md.push_str(&format!("- **LLM Calls**: {}\n", agg.total_llm_calls));
-                    md.push_str(&format!(
-                        "- **LLM Latency (avg/p50/p95)**: {:.0}ms / {:.0}ms / {:.0}ms\n",
-                        agg.avg_llm_latency_ms, agg.p50_llm_latency_ms, agg.p95_llm_latency_ms
-                    ));
-                    md.push_str(&format!(
-                        "- **Tokens (in/out)**: {} / {}\n",
-                        agg.total_input_tokens, agg.total_output_tokens
-                    ));
-                    md.push_str(&format!("- **Cost**: ${:.4}\n", agg.total_cost_usd));
-
-                    let failed: Vec<_> = results.iter().filter(|r| !r.passed).collect();
-                    if !failed.is_empty() {
-                        md.push_str("\n## Failed Cases\n\n");
-                        md.push_str("| Dataset | Case ID | Error |\n");
-                        md.push_str("|---------|---------|-------|\n");
-                        for f in &failed {
-                            let err = f
-                                .error
-                                .as_deref()
-                                .unwrap_or("evaluation failed")
-                                .replace('|', "\\|");
-                            md.push_str(&format!(
-                                "| {} | {} | {} |\n",
-                                f.dataset_name, f.case_id, err
-                            ));
-                        }
-                    }
-                    md
+                    build_export_markdown(&resolved_id, metadata.as_ref(), &results, &errors)
                 }
                 _ => return Err(anyhow!("unsupported format: {format}")),
             };
@@ -378,31 +286,388 @@ output:
     Ok(())
 }
 
-/// Resolve a partial run ID to a full run ID by finding matching directories.
-fn resolve_run_id(runs_dir: &PathBuf, partial: &str) -> Result<String> {
-    // If exact match exists, use it
-    if runs_dir.join(partial).exists() {
-        return Ok(partial.to_string());
+fn print_run_list(runs: &[RunSummary], limit: usize) {
+    if runs.is_empty() {
+        println!("No runs found.");
+        return;
     }
 
-    // Find directories that start with the partial ID
-    let entries: Vec<_> = fs::read_dir(runs_dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter(|e| e.file_name().to_string_lossy().starts_with(partial))
+    println!("Runs (showing up to {limit}):");
+    println!(
+        "{:<28} {:<10} {:>14} {:>10} {:>10}",
+        "run_id", "status", "cases", "progress", "cost"
+    );
+
+    for r in runs.iter().take(limit.min(runs.len())) {
+        let progress = r
+            .progress
+            .map(|p| format!("{:.0}%", p * 100.0))
+            .unwrap_or_else(|| "-".into());
+        let cases = if r.total_cases > 0 {
+            format!("{}/{}", r.completed_cases, r.total_cases)
+        } else {
+            "-".into()
+        };
+        let cost = r
+            .total_cost_usd
+            .map(|c| format!("${:.3}", c))
+            .unwrap_or_else(|| "-".into());
+
+        println!(
+            "{:<28} {:<10} {:>14} {:>10} {:>10}",
+            r.run_id, r.status, cases, progress, cost
+        );
+    }
+
+    if runs.len() > limit {
+        println!("... and {} more", runs.len() - limit);
+    }
+}
+
+fn print_run_details(
+    run_id: &str,
+    metadata: Option<RunMetadata>,
+    results: &[CaseResult],
+    errors: &[ErrorEntry],
+) {
+    let status = metadata
+        .as_ref()
+        .map(|m| m.status.as_str())
+        .unwrap_or("unknown");
+    let total_cases = metadata
+        .as_ref()
+        .map(|m| m.total_cases)
+        .unwrap_or(results.len() as u64);
+    let completed_cases = metadata
+        .as_ref()
+        .map(|m| m.completed_cases)
+        .unwrap_or(results.len() as u64);
+
+    println!(
+        "Run {run_id} [{status}] cases {completed}/{total}",
+        completed = completed_cases,
+        total = total_cases
+    );
+
+    if results.is_empty() {
+        println!("No results yet.");
+        return;
+    }
+
+    let agg = aggregate_results(results);
+    println!(
+        "Accuracy {acc:.1}% | Precision {prec:.1}% | Failed {failed}",
+        acc = agg.accuracy * 100.0,
+        prec = agg.precision * 100.0,
+        failed = agg.failed_cases
+    );
+    println!(
+        "Duration p50={:.0}ms p95={:.0}ms | LLM latency avg/p50/p95 = {:.0}/{:.0}/{:.0} ms",
+        agg.p50_duration_ms,
+        agg.p95_duration_ms,
+        agg.avg_llm_latency_ms,
+        agg.p50_llm_latency_ms,
+        agg.p95_llm_latency_ms
+    );
+    println!(
+        "Tokens in/out: {}/{} | LLM calls {} | Cost ${:.4} (judge ${:.4})",
+        agg.total_input_tokens,
+        agg.total_output_tokens,
+        agg.total_llm_calls,
+        agg.total_cost_usd,
+        agg.total_judge_cost_usd
+    );
+    if !errors.is_empty() {
+        println!("System errors: {}", errors.len());
+    }
+
+    let mut grouped: BTreeMap<(String, String), Vec<CaseResult>> = BTreeMap::new();
+    for r in results {
+        grouped
+            .entry((r.agent_name.clone(), r.dataset_name.clone()))
+            .or_default()
+            .push(r.clone());
+    }
+
+    if !grouped.is_empty() {
+        println!("\nBy Agent/Dataset:");
+        for ((agent, dataset), group) in grouped {
+            let metrics = aggregate_results(&group);
+            let passed = group.iter().filter(|r| r.passed).count();
+            let total = group.len();
+            let cost = metrics.total_cost_usd + metrics.total_judge_cost_usd;
+            println!(
+                "  {agent} on {dataset}: {passed}/{total} ({acc:.1}%) p50={p50:.0}ms cost=${cost:.4}",
+                acc = metrics.accuracy * 100.0,
+                p50 = metrics.p50_duration_ms,
+                cost = cost
+            );
+        }
+    }
+
+    let failures = collect_failures(results, errors);
+    if !failures.is_empty() {
+        println!("\nFailures (showing up to 10):");
+        for line in failures.iter().take(10) {
+            println!("  - {line}");
+        }
+        if failures.len() > 10 {
+            println!("  ... and {} more", failures.len() - 10);
+        }
+    }
+}
+
+fn print_cases(
+    run_id: &str,
+    results: &[CaseResult],
+    errors: &[ErrorEntry],
+    failures_only: bool,
+    limit: usize,
+) {
+    println!("\nCases for {run_id}:");
+    let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
+
+    for r in results {
+        let status = if matches!(
+            r.error_type,
+            ErrorType::SystemFailure | ErrorType::FatalError
+        ) {
+            "error"
+        } else if r.passed {
+            "pass"
+        } else {
+            "fail"
+        };
+        if failures_only && status == "pass" {
+            continue;
+        }
+        let summary = r
+            .output
+            .clone()
+            .or_else(|| r.error.clone())
+            .unwrap_or_else(|| "-".into());
+        rows.push((
+            r.case_id.clone(),
+            r.agent_name.clone(),
+            r.dataset_name.clone(),
+            status.to_string(),
+            summary,
+        ));
+    }
+
+    for e in errors {
+        let status = match e.error_type {
+            ErrorType::FatalError => "fatal",
+            _ => "error",
+        };
+        let case_id = e.case_id.clone().unwrap_or_else(|| "-".into());
+        let agent = e.agent_name.clone().unwrap_or_else(|| "-".into());
+        let dataset = e.dataset_name.clone().unwrap_or_else(|| "-".into());
+        let summary = e.error.clone().unwrap_or_else(|| "unknown error".into());
+        rows.push((case_id, agent, dataset, status.into(), summary));
+    }
+
+    if rows.is_empty() {
+        println!("No cases recorded.");
+        return;
+    }
+
+    rows.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
+
+    println!(
+        "{:<12} {:<16} {:<16} {:<8} {}",
+        "case_id", "agent", "dataset", "status", "output/error"
+    );
+    let total = rows.len();
+    for (case_id, agent, dataset, status, summary) in rows.into_iter().take(limit) {
+        let truncated = if summary.len() > 80 {
+            format!("{}...", &summary[..77])
+        } else {
+            summary
+        };
+        println!(
+            "{:<12} {:<16} {:<16} {:<8} {}",
+            case_id, agent, dataset, status, truncated
+        );
+    }
+
+    if total > limit {
+        println!("... showing {limit} of {total}");
+    }
+}
+
+fn collect_failures(results: &[CaseResult], errors: &[ErrorEntry]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for r in results {
+        if r.passed {
+            continue;
+        }
+        let reason = r
+            .error
+            .clone()
+            .or_else(|| r.judge_reason.clone())
+            .unwrap_or_else(|| "failed evaluation".into());
+        failures.push(format!(
+            "{}/{} {}: {}",
+            r.dataset_name, r.case_id, r.agent_name, reason
+        ));
+    }
+    for e in errors {
+        let cid = e.case_id.clone().unwrap_or_else(|| "-".into());
+        let ds = e.dataset_name.clone().unwrap_or_else(|| "-".into());
+        let agent = e.agent_name.clone().unwrap_or_else(|| "-".into());
+        let reason = e.error.clone().unwrap_or_else(|| "system error".into());
+        failures.push(format!("{ds}/{cid} {agent}: {reason}"));
+    }
+    failures
+}
+
+fn build_export_json(
+    run_id: &str,
+    metadata: Option<&RunMetadata>,
+    results: &[CaseResult],
+    errors: &[ErrorEntry],
+) -> serde_json::Value {
+    let mut agents_map = serde_json::Map::new();
+    let mut agent_names: Vec<String> = results.iter().map(|r| r.agent_name.clone()).collect();
+    agent_names.sort();
+    agent_names.dedup();
+
+    for agent in agent_names {
+        let agent_results: Vec<CaseResult> = results
+            .iter()
+            .filter(|r| r.agent_name == agent)
+            .cloned()
+            .collect();
+        let metrics = aggregate_results(&agent_results);
+        let res_entries: Vec<serde_json::Value> = agent_results.iter().map(|r| json!(r)).collect();
+        agents_map.insert(
+            agent.clone(),
+            json!({
+                "metrics": metrics,
+                "results": res_entries,
+            }),
+        );
+    }
+
+    json!({
+        "run_id": run_id,
+        "status": metadata.map(|m| m.status.clone()).unwrap_or_else(|| "unknown".into()),
+        "start_time": metadata.and_then(|m| m.start_time.clone()),
+        "completed_time": metadata.and_then(|m| m.completed_time.clone()),
+        "total_cases": metadata.map(|m| m.total_cases).unwrap_or(results.len() as u64),
+        "completed_cases": metadata.map(|m| m.completed_cases).unwrap_or(results.len() as u64),
+        "agents": agents_map,
+        "system_errors": errors,
+    })
+}
+
+fn build_export_markdown(
+    run_id: &str,
+    metadata: Option<&RunMetadata>,
+    results: &[CaseResult],
+    errors: &[ErrorEntry],
+) -> String {
+    let mut md = String::new();
+    let agg = aggregate_results(results);
+    md.push_str(&format!("# Run: {run_id}\n\n"));
+    md.push_str("## Summary\n\n");
+    md.push_str(&format!(
+        "- **Status**: {}\n",
+        metadata.map(|m| m.status.as_str()).unwrap_or("unknown")
+    ));
+    md.push_str(&format!(
+        "- **Cases**: {} / {}\n",
+        metadata
+            .map(|m| m.completed_cases)
+            .unwrap_or(results.len() as u64),
+        metadata
+            .map(|m| m.total_cases)
+            .unwrap_or(results.len() as u64)
+    ));
+    md.push_str(&format!("- **Accuracy**: {:.1}%\n", agg.accuracy * 100.0));
+    md.push_str(&format!("- **Precision**: {:.1}%\n", agg.precision * 100.0));
+    md.push_str(&format!(
+        "- **Duration (p50/p95)**: {:.0}ms / {:.0}ms\n",
+        agg.p50_duration_ms, agg.p95_duration_ms
+    ));
+    md.push_str(&format!(
+        "- **LLM Latency (avg/p50/p95)**: {:.0}ms / {:.0}ms / {:.0}ms\n",
+        agg.avg_llm_latency_ms, agg.p50_llm_latency_ms, agg.p95_llm_latency_ms
+    ));
+    md.push_str(&format!(
+        "- **Tokens (in/out)**: {} / {}\n",
+        agg.total_input_tokens, agg.total_output_tokens
+    ));
+    md.push_str(&format!(
+        "- **Cost**: ${:.4} (judge ${:.4})\n",
+        agg.total_cost_usd, agg.total_judge_cost_usd
+    ));
+
+    let mut grouped: BTreeMap<(String, String), Vec<CaseResult>> = BTreeMap::new();
+    for r in results {
+        grouped
+            .entry((r.agent_name.clone(), r.dataset_name.clone()))
+            .or_default()
+            .push(r.clone());
+    }
+
+    if !grouped.is_empty() {
+        md.push_str("\n## Agent/Dataset\n\n");
+        md.push_str("| Agent | Dataset | Passed/Total | Accuracy | Cost |\n");
+        md.push_str("|-------|---------|--------------|----------|------|\n");
+        for ((agent, dataset), group) in grouped {
+            let metrics = aggregate_results(&group);
+            let passed = group.iter().filter(|r| r.passed).count();
+            let total = group.len();
+            let cost = metrics.total_cost_usd + metrics.total_judge_cost_usd;
+            md.push_str(&format!(
+                "| {} | {} | {}/{} | {:.1}% | ${:.4} |\n",
+                agent,
+                dataset,
+                passed,
+                total,
+                metrics.accuracy * 100.0,
+                cost
+            ));
+        }
+    }
+
+    let failures = collect_failures(results, errors);
+    if !failures.is_empty() {
+        md.push_str("\n## Failures\n\n");
+        for line in failures {
+            md.push_str(&format!("- {line}\n"));
+        }
+    }
+
+    md
+}
+
+/// Resolve a partial run ID to a full run ID by finding matching directories.
+fn resolve_run_id(runs_dir: &PathBuf, partial: &str) -> Result<String> {
+    let summaries = list_run_summaries(runs_dir)?;
+    if summaries.is_empty() {
+        return Err(anyhow!("no runs found in {}", runs_dir.display()));
+    }
+
+    if let Some(exact) = summaries.iter().find(|s| s.run_id == partial) {
+        return Ok(exact.run_id.clone());
+    }
+
+    let matches: Vec<&RunSummary> = summaries
+        .iter()
+        .filter(|s| s.run_id.starts_with(partial) || s.run_id.contains(partial))
         .collect();
 
-    match entries.len() {
+    match matches.len() {
         0 => Err(anyhow!("no run found matching '{partial}'")),
-        1 => Ok(entries[0].file_name().to_string_lossy().to_string()),
+        1 => Ok(matches[0].run_id.clone()),
         _ => {
-            let matches: Vec<_> = entries
-                .iter()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect();
+            let options: Vec<_> = matches.iter().map(|s| s.run_id.clone()).collect();
             Err(anyhow!(
                 "ambiguous run ID '{partial}', matches: {}",
-                matches.join(", ")
+                options.join(", ")
             ))
         }
     }
