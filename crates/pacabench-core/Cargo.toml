@@ -1,0 +1,32 @@
+[package]
+name = "pacabench-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core library for PacaBench (Rust rewrite)"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+globwalk = "0.9"
+git2 = "0.19"
+once_cell = "1.20"
+regex = "1.11"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "1.0"
+ tokio = { version = "1.41", features = ["process", "io-util", "macros", "sync", "time", "rt-multi-thread", "signal"] }
+ axum = { version = "0.7", features = ["macros", "json", "tokio"] }
+ tower = "0.4"
+ hyper-util = { version = "0.1", features = ["server", "http1"] }
+ hyper = { version = "1", features = ["http1", "server"] }
+ http = "1"
+ tracing = "0.1"
+ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+ serde_qs = "0.12"
+ reqwest = { version = "0.12", features = ["json", "gzip", "stream", "blocking"] }
+
+[dev-dependencies]
+tempfile = "3.12"
