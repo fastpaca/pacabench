@@ -10,7 +10,10 @@ use figment::{
     Figment,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -225,65 +228,139 @@ impl Default for OutputConfig {
 }
 
 // ============================================================================
-// BENCHMARK CONFIG
+// CONFIG
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkConfig {
+/// The main configuration for a benchmark.
+///
+/// Load from a file with `Config::from_file()`, or construct programmatically
+/// with `Config::new()` for tests.
+#[derive(Debug, Clone, Serialize)]
+pub struct Config {
+    // YAML fields (included in fingerprint)
     pub name: String,
-    #[serde(default)]
     pub description: Option<String>,
-    #[serde(default = "default_version")]
     pub version: String,
-    #[serde(default)]
     pub author: Option<String>,
-    #[serde(default)]
-    pub config: GlobalConfig,
-    #[serde(default)]
+    pub global: GlobalConfig,
     pub agents: Vec<AgentConfig>,
-    #[serde(default)]
     pub datasets: Vec<DatasetConfig>,
-    #[serde(default)]
     pub output: OutputConfig,
+
+    // Resolved paths (excluded from fingerprint)
+    #[serde(skip)]
+    pub root_dir: PathBuf,
+    #[serde(skip)]
+    pub cache_dir: PathBuf,
+    #[serde(skip)]
+    pub runs_dir: PathBuf,
+    #[serde(skip)]
+    pub config_path: Option<PathBuf>,
 }
 
-impl BenchmarkConfig {
-    pub fn cache_dir(&self) -> std::path::PathBuf {
-        let path = &self.config.cache_directory;
-        if path.starts_with("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                return std::path::PathBuf::from(home).join(&path[2..]);
-            }
-        }
-        std::path::PathBuf::from(path)
-    }
-}
-
-// ============================================================================
-// RUNTIME OVERRIDES
-// ============================================================================
-
+/// Runtime overrides for config values.
 #[derive(Debug, Clone, Default)]
 pub struct ConfigOverrides {
     pub concurrency: Option<usize>,
     pub timeout_seconds: Option<f64>,
     pub max_retries: Option<usize>,
     pub runs_dir: Option<String>,
+    pub cache_dir: Option<String>,
+}
+
+impl Config {
+    /// Load config from a file with optional overrides.
+    pub fn from_file(
+        path: impl AsRef<Path>,
+        overrides: ConfigOverrides,
+    ) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let raw = load_raw_config(path, &overrides)?;
+
+        let root_dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let runs_dir = overrides
+            .runs_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| resolve_path(&raw.output.directory, &root_dir));
+
+        let cache_dir = overrides
+            .cache_dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| expand_tilde(&raw.config.cache_directory));
+
+        Ok(Self {
+            name: raw.name,
+            description: raw.description,
+            version: raw.version,
+            author: raw.author,
+            global: raw.config,
+            agents: raw.agents,
+            datasets: raw.datasets,
+            output: raw.output,
+            root_dir,
+            cache_dir,
+            runs_dir,
+            config_path: Some(path.to_path_buf()),
+        })
+    }
+
+    /// Create a config programmatically (for tests).
+    pub fn new(
+        name: impl Into<String>,
+        agents: Vec<AgentConfig>,
+        datasets: Vec<DatasetConfig>,
+        root_dir: PathBuf,
+        runs_dir: PathBuf,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            version: default_version(),
+            author: None,
+            global: GlobalConfig::default(),
+            agents,
+            datasets,
+            output: OutputConfig::default(),
+            root_dir: root_dir.clone(),
+            cache_dir: root_dir.join("cache"),
+            runs_dir,
+            config_path: None,
+        }
+    }
 }
 
 // ============================================================================
-// LOADING
+// INTERNAL: Raw YAML model
 // ============================================================================
 
-pub fn load_config(path: impl AsRef<Path>) -> Result<BenchmarkConfig, ConfigError> {
-    load_config_with_overrides(path, ConfigOverrides::default())
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RawConfig {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default = "default_version")]
+    version: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    config: GlobalConfig,
+    #[serde(default)]
+    agents: Vec<AgentConfig>,
+    #[serde(default)]
+    datasets: Vec<DatasetConfig>,
+    #[serde(default)]
+    output: OutputConfig,
 }
 
-pub fn load_config_with_overrides(
-    path: impl AsRef<Path>,
-    overrides: ConfigOverrides,
-) -> Result<BenchmarkConfig, ConfigError> {
-    let mut cfg: BenchmarkConfig = Figment::new()
+fn load_raw_config(path: &Path, overrides: &ConfigOverrides) -> Result<RawConfig, ConfigError> {
+    let mut cfg: RawConfig = Figment::new()
         .merge(Yaml::file(path))
         .merge(Env::prefixed("PACABENCH_").split("__"))
         .extract()?;
@@ -297,17 +374,19 @@ pub fn load_config_with_overrides(
     if let Some(r) = overrides.max_retries {
         cfg.config.max_retries = r;
     }
-    if let Some(dir) = overrides.runs_dir {
-        cfg.output.directory = dir;
+    if let Some(dir) = &overrides.runs_dir {
+        cfg.output.directory = dir.clone();
     }
 
-    validate_config(&cfg)?;
+    validate_raw_config(&cfg)?;
     Ok(cfg)
 }
 
-fn validate_config(cfg: &BenchmarkConfig) -> Result<(), ConfigError> {
+fn validate_raw_config(cfg: &RawConfig) -> Result<(), ConfigError> {
     if cfg.agents.is_empty() {
-        return Err(ConfigError::Invalid("at least one agent is required".into()));
+        return Err(ConfigError::Invalid(
+            "at least one agent is required".into(),
+        ));
     }
     if cfg.datasets.is_empty() {
         return Err(ConfigError::Invalid(
@@ -335,6 +414,24 @@ fn validate_config(cfg: &BenchmarkConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn resolve_path(path: &str, base: &Path) -> PathBuf {
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        p
+    } else {
+        base.join(p)
+    }
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,9 +452,18 @@ mod tests {
             timeout_seconds: None,
             max_retries: Some(5),
             runs_dir: Some("./custom_runs".to_string()),
+            cache_dir: None,
         };
         assert_eq!(overrides.concurrency, Some(8));
         assert!(overrides.timeout_seconds.is_none());
         assert_eq!(overrides.max_retries, Some(5));
+    }
+
+    #[test]
+    fn test_expand_tilde() {
+        std::env::set_var("HOME", "/home/test");
+        assert_eq!(expand_tilde("~/foo"), PathBuf::from("/home/test/foo"));
+        assert_eq!(expand_tilde("/absolute"), PathBuf::from("/absolute"));
+        assert_eq!(expand_tilde("relative"), PathBuf::from("relative"));
     }
 }

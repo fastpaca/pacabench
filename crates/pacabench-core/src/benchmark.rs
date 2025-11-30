@@ -1,18 +1,10 @@
 //! Benchmark - the main entry point for running benchmarks.
-//!
-//! Benchmark owns the state machine and orchestrates the entire run:
-//! - Loading datasets
-//! - Managing the worker pool
-//! - Handling retries
-//! - Persisting results
-//! - Emitting events
 
-use crate::config::BenchmarkConfig;
+use crate::config::Config;
 use crate::datasets::{get_dataset_loader, DatasetContext};
 use crate::metrics::aggregate_results;
 use crate::persistence::{
-    compute_config_fingerprint, generate_run_id, iso_timestamp_now, resolve_runs_dir, RunMetadata,
-    RunStore,
+    compute_config_fingerprint, generate_run_id, iso_timestamp_now, RunMetadata, RunStore,
 };
 use crate::protocol::{Command, Event, WorkItem};
 use crate::retry::RetryPolicy;
@@ -21,7 +13,6 @@ use crate::types::{AggregatedMetrics, Case, RunStatus};
 use crate::worker::WorkerPool;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
@@ -36,41 +27,24 @@ pub struct RunResult {
 
 /// The main benchmark runner.
 pub struct Benchmark {
-    config: BenchmarkConfig,
-    root_dir: PathBuf,
-    cache_dir: PathBuf,
-    runs_dir: PathBuf,
-    config_path: Option<PathBuf>,
+    config: Config,
     event_tx: broadcast::Sender<Event>,
     cmd_tx: mpsc::UnboundedSender<Command>,
     cmd_rx: Option<mpsc::UnboundedReceiver<Command>>,
 }
 
 impl Benchmark {
-    pub fn new(
-        config: BenchmarkConfig,
-        root_dir: PathBuf,
-        cache_dir: PathBuf,
-        runs_dir: PathBuf,
-    ) -> Self {
+    /// Create a new benchmark from a config.
+    pub fn new(config: Config) -> Self {
         let (event_tx, _) = broadcast::channel(1024);
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
         Self {
             config,
-            root_dir,
-            cache_dir,
-            runs_dir,
-            config_path: None,
             event_tx,
             cmd_tx,
             cmd_rx: Some(cmd_rx),
         }
-    }
-
-    pub fn with_config_path(mut self, path: PathBuf) -> Self {
-        self.config_path = Some(path);
-        self
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -91,14 +65,15 @@ impl Benchmark {
 
         // Phase 1: Initialize
         let run_id = run_id.unwrap_or_else(|| generate_run_id(&self.config.name));
-        let run_dir = self.runs_dir.join(&run_id);
+        let run_dir = self.config.runs_dir.join(&run_id);
         std::fs::create_dir_all(&run_dir)?;
         let store = RunStore::new(&run_dir)?;
 
         // Phase 2: Load datasets
         let datasets = self.load_datasets(limit)?;
         let agent_names: Vec<String> = self.config.agents.iter().map(|a| a.name.clone()).collect();
-        let dataset_names: Vec<String> = self.config.datasets.iter().map(|d| d.name.clone()).collect();
+        let dataset_names: Vec<String> =
+            self.config.datasets.iter().map(|d| d.name.clone()).collect();
 
         // Build work items
         let mut work_items = Vec::new();
@@ -115,10 +90,7 @@ impl Benchmark {
         }
 
         // Initialize state
-        let retry_policy = RetryPolicy::new(
-            self.config.config.max_retries as u32,
-            100,
-        );
+        let retry_policy = RetryPolicy::new(self.config.global.max_retries as u32, 100);
         let mut state = RunState::new(run_id.clone(), work_items, retry_policy.max_retries);
 
         // Check for resume
@@ -126,7 +98,10 @@ impl Benchmark {
             if !meta.status.is_terminal() {
                 let existing = store.load_results()?;
                 state.resume_from(existing);
-                info!("Resuming run with {} completed cases", state.completed_cases());
+                info!(
+                    "Resuming run with {} completed cases",
+                    state.completed_cases()
+                );
             }
         }
 
@@ -145,7 +120,7 @@ impl Benchmark {
         store.write_metadata(&metadata)?;
 
         // Copy config file
-        if let Some(src) = &self.config_path {
+        if let Some(src) = &self.config.config_path {
             if src.exists() {
                 let dest = run_dir.join("pacabench.yaml");
                 if !dest.exists() {
@@ -172,11 +147,10 @@ impl Benchmark {
         // Phase 3: Execute
         state.transition(RunStatus::Running);
 
-        let concurrency = self.config.config.concurrency.max(1);
+        let concurrency = self.config.global.concurrency.max(1);
         let mut pool = WorkerPool::start(
             concurrency,
             &self.config,
-            self.root_dir.clone(),
             self.event_tx.clone(),
         )
         .await?;
@@ -190,7 +164,6 @@ impl Benchmark {
         // Process results
         while pending_count > 0 && !aborted {
             tokio::select! {
-                // Handle commands
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {
                         Command::Stop { reason } => {
@@ -204,11 +177,9 @@ impl Benchmark {
                     }
                 }
 
-                // Handle results from workers
                 Some(result) = pool.recv() => {
                     let key = result.item.key();
 
-                    // Emit completion event
                     self.emit(Event::CaseCompleted {
                         run_id: run_id.clone(),
                         case_id: result.item.case_id.clone(),
@@ -222,11 +193,9 @@ impl Benchmark {
                         output_tokens: result.llm_metrics.output_tokens,
                     });
 
-                    // Update state
                     let needs_retry = state.mark_completed(key.clone(), result.to_case_result(iso_timestamp_now()));
 
                     if needs_retry {
-                        // Schedule retry with backoff
                         let backoff = retry_policy.backoff_duration(result.item.attempt);
                         tokio::time::sleep(backoff).await;
 
@@ -236,12 +205,10 @@ impl Benchmark {
                     } else {
                         pending_count = state.pending_count();
 
-                        // Persist result
                         if let Some(case_result) = state.results().iter().find(|r| r.key() == key) {
                             store.append_result(case_result)?;
                         }
 
-                        // Update metadata
                         metadata.completed_cases = state.completed_cases();
                         if result.error_type.is_error() {
                             metadata.system_error_count += 1;
@@ -254,10 +221,7 @@ impl Benchmark {
             }
         }
 
-        // Shutdown
         pool.shutdown().await;
-
-        // Phase 4: Finalize
         self.finalize_run(state, metadata, store, aborted).await
     }
 
@@ -265,8 +229,8 @@ impl Benchmark {
         let mut out = Vec::new();
         for ds in &self.config.datasets {
             let ctx = DatasetContext {
-                root_dir: self.root_dir.clone(),
-                cache_dir: self.cache_dir.clone(),
+                root_dir: self.config.root_dir.clone(),
+                cache_dir: self.config.cache_dir.clone(),
             };
             let loader = get_dataset_loader(ds.clone(), ctx).map_err(|e| anyhow!(e))?;
             let cases = loader.load(limit)?;
@@ -324,26 +288,13 @@ impl Benchmark {
 fn aggregate_by_agent(results: &[crate::types::CaseResult]) -> HashMap<String, AggregatedMetrics> {
     let mut grouped: HashMap<String, Vec<crate::types::CaseResult>> = HashMap::new();
     for r in results {
-        grouped.entry(r.agent_name.clone()).or_default().push(r.clone());
+        grouped
+            .entry(r.agent_name.clone())
+            .or_default()
+            .push(r.clone());
     }
     grouped
         .into_iter()
         .map(|(k, v)| (k, aggregate_results(&v)))
         .collect()
-}
-
-/// Create a benchmark from a config file path.
-pub fn from_config_file(config_path: &std::path::Path) -> Result<Benchmark> {
-    let config = crate::config::load_config(config_path)?;
-
-    let root_dir = config_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let runs_dir = resolve_runs_dir(&config, None, Some(config_path));
-    let cache_dir = config.cache_dir();
-
-    Ok(Benchmark::new(config, root_dir, cache_dir, runs_dir).with_config_path(config_path.to_path_buf()))
 }

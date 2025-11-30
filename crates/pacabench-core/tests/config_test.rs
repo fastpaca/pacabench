@@ -1,6 +1,6 @@
 //! Tests for the config module.
 
-use pacabench_core::config::load_config;
+use pacabench_core::config::{Config, ConfigOverrides};
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -18,7 +18,7 @@ datasets: []
     )
     .unwrap();
 
-    let err = load_config(file.path()).unwrap_err();
+    let err = Config::from_file(file.path(), ConfigOverrides::default()).unwrap_err();
     assert!(format!("{err}").contains("at least one agent"));
 }
 
@@ -39,8 +39,8 @@ datasets:
     )
     .unwrap();
 
-    let cfg = load_config(file.path()).unwrap();
-    assert_eq!(cfg.config.concurrency, 4);
-    assert!(cfg.config.proxy.enabled);
+    let cfg = Config::from_file(file.path(), ConfigOverrides::default()).unwrap();
+    assert_eq!(cfg.global.concurrency, 4);
+    assert!(cfg.global.proxy.enabled);
     assert_eq!(cfg.output.directory, "./runs");
 }

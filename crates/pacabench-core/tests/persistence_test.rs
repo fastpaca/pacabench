@@ -1,6 +1,6 @@
 //! Tests for the persistence module.
 
-use pacabench_core::config::load_config;
+use pacabench_core::config::{Config, ConfigOverrides};
 use pacabench_core::persistence::{
     compute_config_fingerprint, iso_timestamp_now, list_run_summaries, ErrorEntry, RunMetadata,
     RunStore,
@@ -15,7 +15,7 @@ fn fingerprint_is_stable() {
         .join("..")
         .join("..")
         .join("examples/membench_qa_test/pacabench.yaml");
-    let cfg = load_config(cfg_path).expect("config");
+    let cfg = Config::from_file(cfg_path, ConfigOverrides::default()).expect("config");
     let fp1 = compute_config_fingerprint(&cfg).unwrap();
     let fp2 = compute_config_fingerprint(&cfg).unwrap();
     assert_eq!(fp1, fp2);
@@ -101,7 +101,6 @@ fn list_run_summaries_includes_progress() {
 
     let summaries = list_run_summaries(dir.path()).unwrap();
     assert_eq!(summaries.len(), 2);
-    // run-b has newer start_time so should come first
     assert_eq!(summaries[0].run_id, "run-b");
     assert!((summaries[0].progress - 0.5).abs() < 0.01);
     assert_eq!(summaries[1].completed_cases, 10);

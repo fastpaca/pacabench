@@ -5,14 +5,11 @@ mod progress;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use pacabench_core::config::{load_config_with_overrides, ConfigOverrides};
+use pacabench_core::config::ConfigOverrides;
 use pacabench_core::metrics::aggregate_results;
-use pacabench_core::persistence::{
-    list_run_summaries, resolve_runs_dir, ErrorEntry, RunMetadata, RunStore, RunSummary,
-};
-use pacabench_core::Benchmark;
-use pacabench_core::CaseResult;
+use pacabench_core::persistence::{list_run_summaries, ErrorEntry, RunMetadata, RunStore, RunSummary};
 use pacabench_core::types::ErrorType;
+use pacabench_core::{Benchmark, CaseResult, Config};
 use pricing::calculate_cost_from_metrics;
 use progress::ProgressDisplay;
 use serde_json::json;
@@ -148,10 +145,11 @@ output:
         return Ok(());
     }
 
-    // Build CLI overrides based on command
+    // Build overrides based on command
     let overrides = match &cli.command {
         Some(Command::Run {
             runs_dir,
+            cache_dir,
             concurrency,
             timeout,
             ..
@@ -160,17 +158,13 @@ output:
             timeout_seconds: *timeout,
             max_retries: None,
             runs_dir: runs_dir.clone(),
+            cache_dir: cache_dir.clone(),
         },
         _ => ConfigOverrides::default(),
     };
 
-    let config = load_config_with_overrides(&config_path, overrides)?;
-
-    let root_dir = config_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    // Load config
+    let mut config = Config::from_file(&config_path, overrides)?;
 
     match cli.command {
         Some(Command::ShowConfig) => {
@@ -186,25 +180,15 @@ output:
         Some(Command::Run {
             limit,
             run_id,
-            runs_dir,
-            cache_dir,
-            force_new: _,
             agents,
             ..
         }) => {
-            let runs_dir = resolve_runs_dir(
-                &config,
-                runs_dir.map(PathBuf::from),
-                Some(&config_path),
-            );
-            let cache_dir = cache_dir.map(PathBuf::from).unwrap_or_else(|| config.cache_dir());
-
             // Filter agents if specified
-            let mut config = config;
             if let Some(agents_filter) = agents {
                 let filter_set: std::collections::HashSet<&str> =
                     agents_filter.split(',').map(|s| s.trim()).collect();
-                let available: Vec<String> = config.agents.iter().map(|a| a.name.clone()).collect();
+                let available: Vec<String> =
+                    config.agents.iter().map(|a| a.name.clone()).collect();
                 config
                     .agents
                     .retain(|a| filter_set.contains(a.name.as_str()));
@@ -227,9 +211,7 @@ output:
                 );
             }
 
-            let bench = Benchmark::new(config, root_dir, cache_dir, runs_dir)
-                .with_config_path(config_path.clone());
-
+            let bench = Benchmark::new(config);
             let events = bench.subscribe();
 
             let rt = tokio::runtime::Runtime::new()?;
@@ -251,11 +233,7 @@ output:
             failures,
             limit,
         }) => {
-            let runs_dir = resolve_runs_dir(
-                &config,
-                runs_dir.map(PathBuf::from),
-                Some(&config_path),
-            );
+            let runs_dir = runs_dir.map(PathBuf::from).unwrap_or(config.runs_dir);
             if run_id.is_none() {
                 let runs = list_run_summaries(&runs_dir)?;
                 print_run_list(&runs, limit);
@@ -278,15 +256,13 @@ output:
             runs_dir,
             limit,
         }) => {
-            let runs_dir = resolve_runs_dir(
-                &config,
-                runs_dir.map(PathBuf::from),
-                Some(&config_path),
-            );
-            let resolved_id = resolve_run_id(&runs_dir, &run_id)?;
+            if let Some(dir) = runs_dir {
+                config.runs_dir = PathBuf::from(dir);
+            }
 
-            // Load existing results and find failed cases
-            let store = RunStore::new(runs_dir.join(&resolved_id))?;
+            let resolved_id = resolve_run_id(&config.runs_dir, &run_id)?;
+
+            let store = RunStore::new(config.runs_dir.join(&resolved_id))?;
             let results = store.load_results()?;
             let failed_count = results.iter().filter(|r| !r.passed).count();
 
@@ -300,10 +276,7 @@ output:
                 failed_count
             );
 
-            let cache_dir = config.cache_dir();
-            let bench = Benchmark::new(config, root_dir, cache_dir, runs_dir)
-                .with_config_path(config_path.clone());
-
+            let bench = Benchmark::new(config);
             let events = bench.subscribe();
 
             let rt = tokio::runtime::Runtime::new()?;
@@ -321,11 +294,7 @@ output:
             output,
             runs_dir,
         }) => {
-            let runs_dir = resolve_runs_dir(
-                &config,
-                runs_dir.map(PathBuf::from),
-                Some(&config_path),
-            );
+            let runs_dir = runs_dir.map(PathBuf::from).unwrap_or(config.runs_dir);
             let resolved_id = resolve_run_id(&runs_dir, &run_id)?;
             let store = RunStore::new(runs_dir.join(&resolved_id))?;
             let results = store.load_results()?;
@@ -501,7 +470,6 @@ fn print_run_details(
                 "  {agent} on {dataset}: {passed}/{total} ({acc:.1}%) p50={p50:.0}ms cost=${cost:.4}",
                 acc = metrics.accuracy * 100.0,
                 p50 = metrics.p50_duration_ms,
-                cost = cost
             );
         }
     }
@@ -675,7 +643,9 @@ fn build_export_markdown(
     md.push_str("## Summary\n\n");
     md.push_str(&format!(
         "- **Status**: {}\n",
-        metadata.map(|m| format!("{:?}", m.status).to_lowercase()).unwrap_or_else(|| "unknown".to_string())
+        metadata
+            .map(|m| format!("{:?}", m.status).to_lowercase())
+            .unwrap_or_else(|| "unknown".to_string())
     ));
     md.push_str(&format!(
         "- **Cases**: {} / {}\n",
@@ -777,7 +747,6 @@ fn build_export_markdown(
     md
 }
 
-/// Resolve a partial run ID to a full run ID by finding matching directories.
 fn resolve_run_id(runs_dir: &std::path::Path, partial: &str) -> Result<String> {
     let summaries = list_run_summaries(runs_dir)?;
     if summaries.is_empty() {

@@ -2,7 +2,7 @@
 //!
 //! Workers pop from a shared async_channel, process cases, and send results back.
 
-use crate::config::{AgentConfig, BenchmarkConfig};
+use crate::config::{AgentConfig, Config};
 use crate::evaluators::{get_evaluator, Evaluator};
 use crate::protocol::{Event, WorkItem, WorkResult};
 use crate::proxy::{ProxyConfig, ProxyServer};
@@ -33,15 +33,12 @@ pub struct WorkerPool {
 impl WorkerPool {
     pub async fn start(
         concurrency: usize,
-        config: &BenchmarkConfig,
-        root_dir: PathBuf,
+        config: &Config,
         event_tx: broadcast::Sender<Event>,
     ) -> Result<Self> {
-        // Unbounded work queue - just shove all items in
         let (work_tx, work_rx) = async_channel::unbounded();
         let (result_tx, result_rx) = mpsc::unbounded_channel();
 
-        // Build evaluators once, share across workers
         let evaluators: Vec<(String, Arc<dyn Evaluator>)> = config
             .datasets
             .iter()
@@ -63,10 +60,10 @@ impl WorkerPool {
             let worker_cfg = WorkerConfig {
                 id: i as u64,
                 agent,
-                proxy_enabled: config.config.proxy.enabled,
-                proxy_base_url: config.config.proxy.base_url.clone(),
-                timeout_seconds: config.config.timeout_seconds,
-                root_dir: root_dir.clone(),
+                proxy_enabled: config.global.proxy.enabled,
+                proxy_base_url: config.global.proxy.base_url.clone(),
+                timeout_seconds: config.global.timeout_seconds,
+                root_dir: config.root_dir.clone(),
             };
 
             let handle = spawn_worker(

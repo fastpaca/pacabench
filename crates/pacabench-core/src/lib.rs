@@ -3,14 +3,17 @@
 //! # Quick Start
 //!
 //! ```ignore
-//! use pacabench_core::{Benchmark, Event, Command};
+//! use pacabench_core::{Benchmark, Config, Event};
+//! use pacabench_core::config::ConfigOverrides;
 //!
-//! let bench = Benchmark::from_config_file("pacabench.yaml")?;
+//! // Load from config file
+//! let config = Config::from_file("pacabench.yaml", ConfigOverrides::default())?;
+//! let bench = Benchmark::new(config);
 //!
 //! // Subscribe to events
 //! let events = bench.subscribe();
 //! tokio::spawn(async move {
-//!     while let Some(event) = events.recv().await {
+//!     while let Ok(event) = events.recv() {
 //!         match event {
 //!             Event::CaseCompleted { passed, .. } => println!("Case: {}", if passed { "✓" } else { "✗" }),
 //!             Event::RunCompleted { metrics, .. } => println!("Done: {:.1}% accuracy", metrics.accuracy * 100.0),
@@ -19,52 +22,44 @@
 //!     }
 //! });
 //!
-//! // Run or control
+//! // Run
 //! let result = bench.run(None, None).await?;
-//! // bench.send(Command::Stop { reason: "user cancelled".into() });
 //! ```
 //!
 //! # Public API
 //!
-//! - [`Benchmark`] - Main entry point for running benchmarks
-//! - [`Event`] - Events emitted during execution (subscribe to observe)
+//! - [`Config`] - Configuration (load with `Config::from_file()`)
+//! - [`Benchmark`] - Main entry point (`Benchmark::new(config)`)
+//! - [`Event`] - Events emitted during execution
 //! - [`Command`] - Commands to control execution (stop, abort)
-//! - [`Config`](config::BenchmarkConfig) - Configuration
 //! - [`RunResult`](benchmark::RunResult) - Result of a benchmark run
 
-// Public API - the primary interface
+// Public API
 pub mod benchmark;
-pub use benchmark::{from_config_file, Benchmark, RunResult};
+pub use benchmark::{Benchmark, RunResult};
 
-// Protocol - events and commands (public)
+pub mod config;
+pub use config::Config;
+
 pub mod protocol;
 pub use protocol::{Command, Event};
 
-// Configuration (public)
-pub mod config;
-
-// Types (public)
 pub mod types;
 pub use types::{
     AggregatedMetrics, Case, CaseKey, CaseResult, ErrorType, EvaluationResult, JudgeMetrics,
     LlmMetrics, RunStatus, RunnerOutput,
 };
 
-// Error types (public)
 pub mod error;
-
-// Persistence (public for CLI)
+pub mod metrics;
 pub mod persistence;
 
-// Metrics aggregation (public for CLI)
-pub mod metrics;
-
-// Internal modules - used by Benchmark but not part of primary API
+// Internal modules
 pub(crate) mod retry;
 pub(crate) mod state;
 pub(crate) mod worker;
 
-// Supporting modules - available but not primary
+// Supporting modules
 pub mod datasets;
 pub mod evaluators;
 pub mod proxy;
