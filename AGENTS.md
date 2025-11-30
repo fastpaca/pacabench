@@ -1,308 +1,169 @@
-# AI Agent Instructions for pacabench
+# AI Agent Instructions for PacaBench (Rust Workspace)
 
 > **Target Audience**: AI coding agents (Cursor, Copilot, Aider, etc.)
 
-## Critical: Code Quality Gates
+This repository is the **Rust rewrite** of PacaBench. These guidelines define how agents should work in this workspace, with a strong bias toward **type-first design**, **explicit error handling**, and **simple, composable code**.
 
-### Run Ruff on EVERY Change
-
-Before marking any task complete, you MUST run these commands:
-
-```bash
-uv run ruff check pacabench/ --fix
-uv run ruff format pacabench/
-uv run ruff check pacabench/
-```
-
-**If ruff fails, the task is not complete.** Fix all issues before proceeding.
-
-**CI/CD**: GitHub Actions will automatically run ruff on PRs.
-
-## Quick Reference
-
-### Project Commands
-
-```bash
-# Code quality
-uv run ruff check pacabench/ --fix  # Fix issues
-uv run ruff format pacabench/       # Format code
-uv run ruff check pacabench/        # Check only
-
-# Run benchmark (quick test)
-uv run pacabench run --limit 10
-
-# Check results
-uv run pacabench              # Show latest run
-uv run pacabench show         # List all runs
-uv run pacabench show <run>   # Show specific run
-uv run pacabench show <run> --cases     # Show case results
-uv run pacabench show <run> --failures  # Show failures only
-
-# Retry failures
-uv run pacabench retry <run>
-
-# Export results
-uv run pacabench export <run>
-
-# Install dependencies (all extras)
-uv sync --all-extras
-```
-
-### File Structure
-
-```
-pacabench/
-├── cli.py             # CLI wrapper around library
-├── pipeline.py        # Main evaluation pipeline orchestration
-├── proxy.py           # FastAPI LLM proxy (token/latency/cost tracking)
-├── metrics.py         # AggregatedMetrics and aggregation logic
-├── results.py         # Results container and JSON serialization
-├── types.py           # Shared type definitions (Case, Runner, etc.)
-├── datasets/          # Dataset abstractions and loaders
-│   ├── base.py        # Abstract Dataset class
-│   ├── membench.py    # MemBench loader
-│   ├── longmemeval.py # LongMemEval loader
-│   └── gaia.py        # GAIA loader
-└── runners/           # Runner implementations
-    ├── qa_long_context.py
-    ├── qa_mem0.py
-    ├── agentic_long_context.py
-    └── agentic_mem0.py
-```
-
-## Code Style Rules (Enforced by Ruff)
-
-### 1. Type Hints Required
-```python
-# ✅ Good
-def compute_metrics(cases: list[CaseResult]) -> dict[str, float]:
-    return {"p50": 0.5}
-
-# ❌ Bad - missing type hints
-def compute_metrics(cases):
-    return {"p50": 0.5}
-```
-
-### 2. No Redundant Comments
-```python
-# ❌ Bad - comment just restates code
-# Load dataset
-cases = load_membench(limit=limit)
-
-# ✅ Good - no comment needed, code is self-explanatory
-cases = load_membench(limit=limit)
-```
-
-### 3. Extract Magic Numbers
-```python
-# ❌ Bad
-timeout = 300.0
-
-# ✅ Good
-_REQUEST_TIMEOUT_SECONDS = 300.0
-timeout = _REQUEST_TIMEOUT_SECONDS
-```
-
-### 4. Direct Attribute Access
-```python
-# ❌ Bad - unnecessary getattr for known fields
-duration = getattr(result, "runner_duration_ms", 0)
-
-# ✅ Good - direct access, will fail fast if field missing
-duration = result.runner_duration_ms
-```
-
-### 5. No Pointless Abstraction
-```python
-# ❌ Bad - dictionary lookup to get a number back
-PERCENTILES = {"p50": 0.50}
-p50 = _calculate_percentile(values, PERCENTILES["p50"])
-
-# ✅ Good - just use the number
-p50 = _calculate_percentile(values, 0.50)
-```
-
-## Common Modifications
-
-### Adding a Dataset
-
-Datasets own both loading and evaluation strategy:
-
-1. **Create a loader function** (e.g., in `pacabench/datasets/my_dataset.py`):
-   ```python
-   def load_my_dataset(limit: int | None = None) -> list[Case]:
-       # Load and return Case objects
-       return cases
-   ```
-
-2. **Create a Dataset subclass** (e.g., `pacabench/datasets/my_dataset.py`):
-   ```python
-   from pacabench.datasets.base import Dataset
-   from pacabench.datasets.qa_dataset import QaDataset  # or create custom
-   
-   # For QA-style datasets, reuse QaDataset:
-   my_dataset = QaDataset(name="my_dataset", loader_func=load_my_dataset)
-   ```
-
-3. **Register in `pacabench/datasets/__init__.py`**:
-   ```python
-   def get_dataset(dataset: DatasetEnum | str, ...) -> Dataset:
-       # Add your dataset to the registry
-   ```
-
-The Dataset's `evaluate_case()` method defines how correctness is judged. QA datasets use F1 + LLM judge; GAIA uses LLM-as-judge only.
-
-### Adding or Updating Runners
-
-Runners can be implemented in two ways:
-
-#### 1. External Command Runners
-
-*Not currently implemented in CLI, but architecture supports it.*
-
-
-#### 2. Python Library Runners
-
-For Python users, implement the `Runner` protocol:
-
-```python
-from pacabench.runners.base import Runner
-from pacabench.stages.case import Case
-from pacabench.stages.runner import RunnerOutput
-from pacabench.context import EvalContext
-
-class MyRunner:
-    async def run_case(self, case: Case, ctx: EvalContext) -> RunnerOutput:
-        # Your implementation
-        return RunnerOutput(result="...", error=None, duration_ms=123.0)
-```
-
-Use `CommandRunner` for external command execution, or implement custom logic directly.
-
-### Modifying Metrics Display
-
-Update `_print_metrics_table()` in `pacabench/cli.py` when adding/removing displayed metrics. Never drop latency rows (avg/p50/p95) or token/cost visibility. Aggregation lives in `pacabench/metrics.py`; extend `CaseResult`/`AggregatedMetrics` first, then plumb fields into the table.
-
-## Testing Your Changes
-
-### Minimal Test
-```bash
-cd examples/membench_qa_test
-uv run pacabench run --limit 2 --agents long-context-baseline
-```
-
-### Verify Output
-```bash
-# Check latest run
-uv run pacabench
-
-# View cases
-uv run pacabench show <run-id> --cases
-
-# Export and inspect
-uv run pacabench export <run-id> | jq .
-```
-
-## Architecture Patterns
-
-### Library-First Design
-- **Core models** (`Case`, `RunnerOutput`, `EvaluationOutput`, `CaseResult`, `AggregatedMetrics`) are Pydantic BaseModel subclasses for validation and serialization.
-- **Datasets** own loading (`load_cases()`) and evaluation (`evaluate_case()`).
-- **Runners** implement the `Runner` protocol; `CommandRunner` handles external processes.
-- **Pipeline** (`pipeline.run()`) orchestrates: load dataset → run cases → evaluate → aggregate.
-
-### Process-Based Runners + Proxy
-- `pacabench.pipeline` spawns `ProxyServer` (FastAPI) to intercept OpenAI traffic.
-- `CommandRunner` executes runner scripts per case using JSON stdin/stdout protocol.
-- Proxy metrics accumulate per case and are flushed after each result (`proxy.metrics.clear_metrics("_current")`).
-
-### Runner Spec Resolution
-- Built-in shorthand (e.g., `qa/long_context`) → Resolved via `RUNNERS` map in `pacabench/cli.py`.
-- Maps to runner implementations in `pacabench/runners/`.
-
-### Metrics Collection
-- Capture runner duration (`runner_duration_ms`) plus proxy metrics (`llm_latency_ms`, token counts, cost).
-- `CaseResult` stores evaluator outcomes (`f1_score`, `judge_passed`) so `aggregate_results()` can derive accuracy, precision, percentiles, and judge token totals.
-
-### Results Schema
-
-**results.jsonl** (per-case):
-```json
-{
-  "case_id": "string",
-  "passed": true,
-  "output": "model output",
-  "error": null,
-  "runner_duration_ms": 1234.0,
-  "llm_metrics": {"llm_call_count": 2, "llm_latency_ms": [530.0, 410.0]},
-  "f1_score": 0.84,
-  "f1_passed": true,
-  "judge_passed": true,
-  "judge_metrics": {"input_tokens": 750, "output_tokens": 120}
-}
-```
-
-**metrics.json** (aggregated):
-```json
-{
-  "accuracy": 0.85,
-  "precision": 0.82,
-  "total_cases": 100,
-  "p50_duration_s": 1.2,
-  "p95_duration_s": 2.1,
-  "avg_llm_latency_ms": 550.0,
-  "p50_llm_latency_ms": 510.0,
-  "p95_llm_latency_ms": 760.0,
-  "total_input_tokens": 500000,
-  "total_output_tokens": 52000,
-  "total_cost_usd": 12.34,
-  "total_judge_input_tokens": 8500
-}
-```
-
-## Debugging
-
-### Issue: Latency shows 0.0 ms
-- Ensure runners call the proxy URL (`OPENAI_BASE_URL`) for every OpenAI request.
-- Check that `proxy.metrics.get_metrics("_current")` is used when building the `CaseResult`.
-
-### Issue: Ruff failing
-```bash
-uv run ruff check pacabench/        # Inspect failures
-uv run ruff check pacabench/ --fix  # Auto-fix
-uv run ruff format pacabench/       # Format
-```
-
-### Issue: Missing dependencies
-```bash
-uv sync --all-extras
-```
-
-## Performance Notes
-
-- Default proxy port: 8000 (keep free or update `ProxyServer`/runner env).
-- HTTP concurrency + timeouts inherit from the OpenAI Python client; adjust `ProxyServer` initialization if stricter limits or retries are required.
-- Runner subprocess duration drives duration metrics—long tool chains will inflate `runner_duration_ms`, so keep expensive work minimal.
-- One proxy per evaluation run; avoid spawning additional agents inside runners unless required.
-
-## Non-Negotiables
-
-1. 🚨 **ALWAYS** run ruff before completing tasks
-2. 🚨 **NEVER** remove latency metrics from CLI or JSON outputs
-3. 🚨 **NEVER** add redundant comments
-4. 🚨 **NEVER** skip type hints
-5. 🚨 **NEVER** commit code that doesn't pass `ruff check`
-
-## Workflow
-
-1. Make your code changes
-2. Run `uv run ruff check pacabench/ --fix`
-3. Run `uv run ruff format pacabench/`
-4. Verify `uv run ruff check pacabench/` passes
-5. Test in examples folder: `cd examples/membench_qa_test && uv run pacabench run --limit 2`
-6. Verify results: `uv run pacabench show <run-id> --cases`
-7. Task complete ✅
+See `CLAUDE.md` for a more detailed style and architecture guide.
 
 ---
 
-**Remember**: PacaBench prioritizes simplicity, explicit control of runners, and accurate performance data. When in doubt, keep abstractions thin and ensure every LLM call flows through the proxy for auditable metrics.
+## Critical: Code Quality Gates
+
+Before marking any **Rust-related task** complete, you MUST run:
+
+```bash
+# Format all Rust code
+cargo fmt --all
+
+# Lint with clippy (no warnings allowed)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Run the full test suite
+cargo test --workspace
+```
+
+- If `clippy` or `cargo test` fails, the task is **not complete**. Fix all issues first.
+- CI (GitHub Actions) also runs `fmt`, `clippy`, and tests; keep the workspace clean locally.
+
+For **docs-only** or configuration-only edits (e.g., `README.md`, `AGENTS.md`, `examples/*.yaml`), running `fmt/clippy/test` is recommended but not strictly required.
+
+---
+
+## Quick Reference
+
+### Workspace Layout
+
+```text
+Cargo.toml               # Workspace root
+crates/
+  pacabench-core/        # Core benchmarking library
+  pacabench-cli/         # CLI binary (pacabench)
+examples/
+  membench_qa_test/      # Example pacabench.yaml for quick QA runs
+  smoke_test/            # Minimal smoke test config
+runs/                    # (Created at runtime) benchmark outputs
+```
+
+### Core Commands
+
+```bash
+# Build everything
+cargo build --workspace
+
+# Run CLI help
+cargo run -p pacabench-cli -- --help
+
+# Quick smoke run using default pacabench.yaml in CWD
+cargo run -p pacabench-cli -- run --limit 10
+
+# Use an example config
+cargo run -p pacabench-cli -- \
+  --config examples/membench_qa_test/pacabench.yaml \
+  run --limit 2
+
+# Show runs
+cargo run -p pacabench-cli -- show
+
+# Retry failures from a run
+cargo run -p pacabench-cli -- retry <run-id>
+
+# Export results as JSON
+cargo run -p pacabench-cli -- export <run-id> --format json
+```
+
+---
+
+## Rust Code Style Rules (High-Level)
+
+These rules are enforced socially and via `clippy` where possible. See `CLAUDE.md` for deeper rationale and examples.
+
+### 1. Type-First Design
+
+- Model domain concepts as **structs, enums, and newtypes** (e.g., `RunId(String)`, `CaseKey`, `NonEmpty<String>`).
+- Avoid **stringly-typed** or bool-flag APIs for domain concepts.
+- Use rich standard types (`Duration`, `PathBuf`, `NonZeroU*`, `Url`) instead of raw primitives where appropriate.
+- Prefer borrowing (`&str`, `&[u8]`, `Cow<'a, str>`) over unnecessary allocation and cloning.
+
+### 2. Failures as Data, Not Panics
+
+- Use `Result<T, E>` and `Option<T>` for all fallible/optional operations; propagate errors with `?`.
+- Library and core code should **not** use `unwrap`, `expect`, or `panic!` on recoverable failures.
+- Allow `unwrap`/`expect` only in:
+  - Tests and benchmarks.
+  - Truly unreachable states with a clear, documented invariant (and even then prefer `unreachable!()`).
+- Failures are **OK** as long as they are represented explicitly and pushed upstream in a `Result`.
+
+### 3. Defaults: Allowed but Extremely Deliberate
+
+- Using `Default` is fine, but only when the semantics are **obvious and safe** for every field.
+- For domain/config types:
+  - Prefer explicit constructors or builders (e.g., `Config::from_file(...)`, `ConfigOverrides::default()` with clear semantics).
+  - Avoid `..Default::default()` when some fields are **required** for correctness.
+- Never hide business-critical settings (timeouts, limits, feature flags) in implicit defaults.
+
+### 4. Simplicity, Not Premature Generalisation
+
+- Avoid generic abstractions, traits, or type gymnastics until there are **at least two real use-cases**.
+- Prefer straightforward functions and concrete types over “framework-style” layers.
+- Refactor duplication only when the new abstraction is:
+  - Simple,
+  - Clearly named, and
+  - Local to the domain where it’s used.
+
+### 5. Concurrency and Locks
+
+- Prefer **clear ownership** and **message passing** over shared mutable state.
+- Avoid reaching for `Mutex`/`RwLock`/`parking_lot` as a default. If you feel the need to add a lock, first:
+  - Ask if you can pass owned data into tasks instead of sharing.
+  - Consider a single owner task with channels for requests/responses.
+  - Consider restructuring the concurrency model (e.g., workers + queue).
+- Locks are allowed but should be **rare, narrow in scope, and well-justified**.
+- In async code, never block on sync I/O; use async I/O or `spawn_blocking` for heavy work.
+
+### 6. Error Handling and Logging
+
+- Define dedicated error types per domain (`ConfigError`, `PersistenceError`, etc.), implemented with `thiserror` or manual enums.
+- Use typed errors inside `pacabench-core`; use `anyhow` primarily at the CLI/binary boundary for flexible reporting.
+- Add context when crossing layers (e.g., `"loading run metadata"`, `"parsing pacabench.yaml"`).
+- Avoid “log and swallow” patterns. Either:
+  - Handle the error fully and return a valid result, or
+  - Return an error upstream.
+
+---
+
+## Architecture Notes (Rust Rewrite)
+
+- **Library-first design**:
+  - `pacabench-core` exposes `Config`, `Benchmark`, `Event`, `Command`, `CaseResult`, and aggregated metrics.
+  - `pacabench-cli` is a **thin wrapper** that:
+    - Parses CLI options (via `clap`),
+    - Loads configuration,
+    - Calls into `Benchmark`,
+    - Renders progress and metrics.
+
+- **Proxy and metrics**:
+  - All LLM traffic should flow through the proxy implemented in `pacabench-core::proxy`.
+  - Metrics (`AggregatedMetrics`) must continue to include:
+    - Duration percentiles (p50/p95),
+    - LLM latency (avg/p50/p95),
+    - Token counts (input/output/judge/cached),
+    - Attempt counts and failure counts.
+
+- **Results and persistence**:
+  - Per-case and aggregated results are persisted via `pacabench-core::persistence`.
+  - CLI commands (`show`, `retry`, `export`) must keep these formats stable or evolve them in a backwards-compatible way.
+
+---
+
+## Non-Negotiables
+
+1. **Always** run `cargo fmt`, `cargo clippy` (with `-D warnings`), and `cargo test` before merging Rust code changes.
+2. **Never** remove latency, token, or cost metrics from CLI or JSON/Markdown outputs.
+3. **Never** introduce `unwrap`/`expect`/`panic!` in production paths; use `Result`/`Option` and propagate errors.
+4. **Never** add unnecessary abstraction layers or premature generalisation; keep code as simple as the domain allows.
+5. **Avoid** new locks (`Mutex`/`RwLock`/`parking_lot` types) unless the design has been considered and documented; prefer ownership and channels.
+6. **Always** model important domain concepts as types, not loose strings or integers.
+
+Follow these rules, and use `CLAUDE.md` for deeper Rust-specific gotchas, anti-patterns, and examples when in doubt.
+

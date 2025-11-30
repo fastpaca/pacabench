@@ -1,224 +1,217 @@
-# Claude Instructions for pacabench
+# Claude Instructions for PacaBench (Rust Workspace)
 
-This document provides guidelines for Claude (and other LLMs) working on the PacaBench codebase.
+This document provides **Rust-specific** guidance for Claude (and other LLMs) working on the PacaBench codebase.
 
-## Project Overview
+The goals:
+- Prefer **type-first, explicit design** over clever abstractions.
+- Make failures **visible and explicit** (via `Result`), not hidden panics.
+- Keep concurrency **simple and well-structured**, avoiding unnecessary locks.
 
-**PacaBench** is a process-based benchmark harness for evaluating LLM memory systems and agentic workflows. It runs runners as standalone subprocesses, proxies all OpenAI API calls to track latency/tokens/cost, and aggregates precision + pass/fail metrics for QA and GAIA-style tasks.
+`AGENTS.md` covers process and commands; this file focuses on **style, patterns, and anti-patterns**.
 
-## Code Quality Standards
+---
 
-### Always Run Ruff
+## Quality Tooling (Always Run for Rust Changes)
 
-**CRITICAL**: Before completing any code changes, ALWAYS run ruff to ensure code quality:
-
-```bash
-# Auto-fix and format
-uv run ruff check pacabench/ runners/ --fix
-uv run ruff format pacabench/ runners/
-
-# Verify everything passes
-uv run ruff check pacabench/ runners/ && echo "✅ Ready to commit"
-```
-
-Never deliver code without running ruff first. GitHub Actions also runs ruff on every PR.
-
-### Code Style Guidelines
-
-1. **No redundant comments** – the code should be self-explanatory.
-   - ❌ `# Load dataset` followed by `cases = load_membench()`
-   - ✅ Explain *why* when a comment is required, e.g., `# Split once to reuse eval/val across runs`
-
-2. **No unnecessary abstractions** – prefer direct, explicit code paths.
-   - ❌ `PERCENTILES = {"p50": 0.50}`
-   - ✅ `np.percentile(durations, 50)`
-
-3. **No magic numbers** – extract constants and name them clearly.
-   - ❌ `proxy = ProxyServer(port=9000)`
-   - ✅ `_PROXY_PORT = 8000`
-
-4. **Direct attribute access** – do not use `getattr`/`dict.get` for required fields.
-   - ❌ `duration = getattr(result, "runner_duration_ms", 0)`
-   - ✅ `duration = result.runner_duration_ms`
-
-5. **Type hints everywhere** – every function must specify parameter and return types.
-   - ✅ `def aggregate_results(results: list[CaseResult]) -> AggregatedMetrics:`
-
-### Circular Dependency Prevention
-
-**CRITICAL**: Never use `if TYPE_CHECKING:` guards – this is a code smell indicating poor architecture. Always fix circular dependencies architecturally.
-
-#### Rule 1: All Protocols and Data Models Go in types.py
-
-`types.py` is the foundation - it has NO pacabench imports and defines all core types and protocols.
-
-**✅ Correct Pattern:**
-```python
-# types.py - Pure types, no pacabench imports
-from __future__ import annotations
-from typing import Protocol
-
-class RunnerContext(BaseModel):
-    """Lightweight context for runner execution - only runtime config."""
-    model: str
-    proxy_port: int
-    openai_api_key: str
-    embedding_model: str | None
-
-class Runner(Protocol):
-    """Protocol for runners that execute test cases."""
-    async def run_case(self, case: Case, ctx: RunnerContext) -> RunnerOutput:
-        ...
-```
-
-**Why This Works:**
-1. Runner Protocol references `RunnerContext` - both defined in `types.py`
-2. No circular dependencies because `types.py` is self-contained
-3. Pipeline can import both `Runner` and `RunnerContext` from `types.py`
-4. Clean dependency hierarchy: `types.py` → everything else
-
-#### Rule 2: Don't Use "Context" as a Dumping Ground
-
-**❌ BAD - God Object Anti-Pattern:**
-```python
-class EvalContext(BaseModel):
-    dataset: Dataset      # ← Already a parameter
-    runner: Runner        # ← Already a parameter
-    results: Results      # ← Already created locally
-    model: str            # ← Already a parameter
-    proxy: ProxyServer    # ← Already created locally
-    # ... 10 more fields
-```
-
-This is just parameter passing with extra steps. Pass parameters directly!
-
-**✅ GOOD - Direct Parameter Passing:**
-```python
-async def run_case(
-    case: Case,
-    runner: Runner,
-    runner_ctx: RunnerContext,  # ← Only what runners need
-    dataset: Dataset,
-    proxy: ProxyServer,
-    judge_model: str,
-    judge_client: AsyncOpenAI,
-) -> CaseResult:
-    ...
-```
-
-**Adding New Runners:**
-
-New runners are registered in `cli.py`'s `RUNNERS` dict:
-```python
-RUNNERS = {
-    "qa/long_context": LongContextRunner(),
-    "qa/mem0": Mem0Runner(),
-    "agentic/long_context": LongContextAgenticRunner(),
-    "agentic/mem0": Mem0AgenticRunner(),
-}
-```
-
-## Project Structure
-
-```
-pacabench/
-├── cli.py              # Typer CLI, dataset loader, metrics table
-├── datasets.py         # MemBench, LongMemEval, GAIA loaders
-├── evaluators.py       # QA / agentic evaluators
-├── proxy.py            # FastAPI proxy tracking latency/tokens/cost
-├── runner.py           # Subprocess runner for QA/agentic scripts
-├── metrics.py          # CaseResult + AggregatedMetrics helpers
-└── runners/
-    ├── qa/
-    └── agentic/
-```
-
-## Key Architectural Patterns
-
-### 1. Proxy-Orchestrated Evaluations
-```python
-proxy = ProxyServer(port=8000, openai_api_key=openai_api_key)
-proxy.start()
-llm_metrics = proxy.metrics.get_metrics("_current")
-proxy.metrics.clear_metrics("_current")
-```
-All runners must hit the proxy (via `OPENAI_BASE_URL=http://localhost:8000/v1`) so metrics are complete.
-
-### 2. Runner Protocol
-```python
-# stdin -> Case JSON
-case = json.loads(sys.stdin.read())
-
-# stdout <- {"result": str | None, "error": str | None}
-print(json.dumps({"result": answer, "error": None}))
-```
-The harness enforces this contract and will surface `runner_result.error` if anything fails.
-
-### 3. Metrics Aggregation
-- Build `CaseResult` instances with runner duration, proxy stats, and evaluator outputs (`f1_score`, `judge_passed`).
-- `aggregate_results()` computes accuracy, precision, duration percentiles, LLM latency percentiles, and cost.
-- `_print_metrics_table()` surfaces the aggregated view—never remove latency/token/cost rows.
-
-## Common Tasks
-
-### Adding a Dataset
-
-1. Implement a loader in `pacabench/datasets.py` that returns `list[Case]`.
-2. Wire it up inside `_load_dataset()` in `pacabench/cli.py` with explicit split handling.
-3. Include any metadata needed by evaluators (choices, GAIA files, etc.).
-
-### Adding a Runner
-
-1. Create `runners/qa/new_runner.py` or `runners/agentic/new_runner.py`.
-2. Read `MODEL`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL` from the environment.
-3. Send all OpenAI calls through `OpenAI(base_url=os.getenv("OPENAI_BASE_URL"))`.
-4. Respect stdin/stdout protocol and return structured JSON.
-5. Update docs/tests to mention the new runner.
-
-### Updating Metrics or CLI Output
-
-1. Extend `CaseResult`/`AggregatedMetrics` in `pacabench/metrics.py`.
-2. Persist the new fields in `save_results()`.
-3. Update `_print_metrics_table()` to display them (without removing latency metrics).
-
-## Testing Changes
+For any task that touches Rust code, you MUST ensure the workspace is clean:
 
 ```bash
-# Run QA baseline on a few cases
-uv run pacabench --dataset membench --runner qa/long_context --model gpt-4o-mini --limit 2
-
-# Run GAIA agentic check
-uv run pacabench --dataset gaia --runner agentic/mem0 --model gpt-4o --limit 2 --split level1
-
-# Inspect metrics
-cat runs/*/metrics.json | jq '.accuracy, .p50_llm_latency_ms'
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
 ```
 
-## Pre-Commit Checklist
+- Do not consider a Rust task “done” until `fmt`, `clippy`, and tests pass.
+- For docs-only edits, running them is recommended but not mandatory.
 
-- [ ] `uv run ruff check pacabench/ runners/ --fix`
-- [ ] `uv run ruff format pacabench/ runners/`
-- [ ] `uv run ruff check pacabench/ runners/`
-- [ ] `uv run pacabench --dataset membench --runner qa/long_context --limit 2`
-- [ ] Verify latency metrics (avg/p50/p95) are non-zero in `runs/*/metrics.json`
-- [ ] Confirm all functions include type hints and no redundant comments were added
+---
 
-## Performance Considerations
+## Design Philosophy
 
-1. **Proxy lifecycle** – one proxy per evaluation. Ensure `.start()`/`.stop()` remain symmetric.
-2. **Port usage** – default is 8000; runners must respect `OPENAI_BASE_URL`.
-3. **Runner duration** – `runner_duration_ms` includes every tool call. Keep heavy work minimal or parallelize.
-4. **LLM token accounting** – `MetricsCollector` relies on OpenAI usage objects. Use official clients, not raw HTTP.
+1. **Type-first modeling** – encode domain concepts (runs, agents, datasets, metrics) as well-typed structs/enums/newtypes.
+2. **Failures as data** – represent every failure as a `Result<T, E>` or `Option<T>`, never as a hidden panic.
+3. **Simplicity over abstraction** – avoid generic traits and frameworks until there are multiple real use-cases.
+4. **Minimal, deliberate concurrency** – prefer clear ownership and message-passing; locks are a last resort.
+5. **Defaults are explicit** – using `Default` is fine, but only when the semantics are obvious and carefully designed.
 
-## Don't Break These Rules
+---
 
-1. ❌ Never commit without running ruff.
-2. ❌ Never remove latency/token/cost metrics from output.
-3. ❌ Never bypass the proxy with direct OpenAI calls.
-4. ❌ Never add pointless abstraction layers.
-5. ✅ Always keep type hints and direct attribute access.
-6. ✅ Always test changes with actual evaluation runs (at least a two-case smoke test).
+## Rust Rules: Do / Don’t
 
-## Questions?
+### Types and Modeling
 
-Prefer **simplicity** over cleverness, **explicit** code over implicit magic, and keep performance observable by routing everything through the proxy.
+**Do:**
+- Introduce newtypes and enums for domain concepts:
+  - `RunId(String)`, `DatasetName(String)`, `AgentName(String)`.
+  - `enum RunStatus { Pending, Running, Completed, Failed }`.
+- Use richer types from std/third-party crates:
+  - `std::time::Duration`, `std::path::PathBuf`, `std::num::NonZeroU64`.
+  - `serde_json::Value` only at boundaries where the shape is truly dynamic.
+- Prefer borrowing (`&str`, `&[u8]`, `Cow<'a, str>`) over unnecessary `String`/`Vec<u8>` ownership.
+
+**Don’t:**
+- Don’t use “stringly typed” identifiers, states, or enums (`String`/`&str` with magic values).
+- Don’t pass around `bool` flags where an enum would make intent clear.
+- Don’t expose invariants as comments; enforce them in constructors and types.
+
+---
+
+### Error Handling and `Result`
+
+**Do:**
+- Use `Result<T, E>` everywhere an operation can fail.
+- Define focused error enums per domain (e.g., `ConfigError`, `PersistenceError`) with `thiserror`:
+  ```rust
+  #[derive(Debug, thiserror::Error)]
+  pub enum ConfigError {
+      #[error("failed to read config file {path}: {source}")]
+      Io {
+          path: PathBuf,
+          #[source]
+          source: std::io::Error,
+      },
+      #[error("invalid benchmark config: {0}")]
+      Invalid(String),
+  }
+  ```
+- Use `anyhow::Result` only at the **outermost layers** (main/CLI) for user-facing error reporting.
+- Add context when crossing layers (e.g., `"loading run summaries"`, `"parsing pacabench.yaml"`).
+
+**Don’t (Anti-Patterns):**
+- Don’t use `unwrap`, `expect`, or `panic!` in production paths.
+- Don’t convert typed errors to `String` or `Box<dyn std::error::Error>` in core logic.
+- Don’t log an error and then return `Ok(())` just to keep going; either handle or propagate.
+- Don’t use `Result<(), ()>` as a generic error channel; define a concrete error type.
+
+**Allowed Exceptions:**
+- Tests and benchmarks may use `unwrap`/`expect`, but with meaningful messages.
+- Truly unrecoverable issues at the very edge of the binary may `panic!`, though a typed error is still preferred.
+
+---
+
+### Defaults and Configuration
+
+**Do:**
+- Use `Default` when there is a **clear, safe, and obvious** default (e.g., empty collections, simple option structs).
+- Use `ConfigOverrides::default()` and similar types where the default truly means “no override”.
+- Provide constructors/builders that enforce invariants:
+  ```rust
+  impl Config {
+      pub fn from_file(path: &Path, overrides: ConfigOverrides) -> Result<Self, ConfigError> {
+          // parse + validate
+      }
+  }
+  ```
+
+**Don’t:**
+- Don’t derive `Default` for important domain or config types when fields must be consciously set.
+- Don’t rely on `..Default::default()` to silently fill in crucial values like timeouts, limits, or feature flags.
+- Don’t use `unwrap_or_default()` on important domain types; handle the case explicitly.
+
+---
+
+### Concurrency, Async, and Locks
+
+**Do:**
+- Prefer **structured concurrency**:
+  - A small number of clearly-owned tasks (workers) managed by a central controller (e.g., `Benchmark` + workers).
+  - Channels (`async_channel`, `tokio::sync::mpsc`) for requests and events.
+- Keep async boundaries clear:
+  - Avoid mixing sync and async I/O in the same function.
+  - Use `tokio::task::spawn_blocking` for CPU-heavy or blocking operations if needed.
+- Ensure that anything crossing threads is `Send + Sync`; let the type system enforce this.
+
+**Don’t (Anti-Patterns):**
+- Don’t introduce `Mutex`/`RwLock` (including `parking_lot` variants) as a default way to share state.
+  - If you feel tempted to add a lock, first reconsider the concurrency design:
+    - Can one task own the state?
+    - Can you send messages instead of sharing?
+- Don’t create “god” shared states like `Arc<Mutex<Vec<_>>>` that everything mutates.
+- Don’t spawn detached tasks (`tokio::spawn`) without a clear owner or shutdown path.
+- Don’t block inside async code with sync I/O or long computations.
+
+Locks are **allowed**, but they must be:
+- Narrow in scope.
+- Justified in comments.
+- Avoidable only at disproportionate cost.
+
+---
+
+### Simplicity and Abstractions
+
+**Do:**
+- Start with concrete, straightforward implementations.
+- Factor out common code only when duplication is provably painful **and** the abstraction is easy to understand.
+- Keep traits small and focused; prefer composition over inheritance-style hierarchies.
+
+**Don’t:**
+- Don’t introduce generic traits and blanket impls “just in case”.
+- Don’t wrap simple types in multiple layers of indirection, builders, or generics.
+- Don’t overuse macros; use them when they genuinely reduce boilerplate with clear semantics.
+
+---
+
+### Project-Specific Rules (PacaBench)
+
+**Metrics & Proxy:**
+- Always maintain complete metrics:
+  - Accuracy/precision/recall and failed case counts.
+  - Duration percentiles (p50/p95).
+  - LLM latency (avg/p50/p95).
+  - Token counts (input, output, judge, cached).
+  - Attempts (avg/max).
+- Never remove or silently downgrade latency/token/cost metrics from CLI or exported formats (JSON/Markdown).
+- Ensure all LLM calls within the benchmark path go through the proxy layer in `pacabench-core::proxy` so metrics stay correct.
+
+**CLI (`pacabench-cli`):**
+- Keep the CLI a **thin wrapper**:
+  - Parse arguments with `clap`.
+  - Construct `Config` / `ConfigOverrides`.
+  - Call into `Benchmark`.
+  - Render progress and metrics (no complex business logic).
+- Avoid duplicating logic that already exists in `pacabench-core`.
+
+**Persistence and Schemas:**
+- Use `serde` for stable on-disk formats in `pacabench-core::persistence`.
+- When changing result formats:
+  - Prefer additive, backwards-compatible changes.
+  - Update both CLI display and export code in sync.
+
+---
+
+### Testing and Documentation
+
+**Do:**
+- Add unit tests alongside modules in `crates/pacabench-core/src` for core logic.
+- Add integration tests to `crates/pacabench-cli/tests` for end-to-end CLI behavior.
+- Use `#[tokio::test]` for async scenarios.
+- Document public APIs with `///` comments, explaining:
+  - Purpose.
+  - Invariants.
+  - Errors and panics (if any).
+
+**Don’t:**
+- Don’t rely solely on CLI smoke tests for core behavior; important logic should have unit tests.
+- Don’t leave public functions undocumented in the core library.
+
+---
+
+## Hard Anti-Patterns (Treat as Errors)
+
+Claude should treat the following as **red flags** and avoid generating them:
+
+1. `unwrap` / `expect` / `panic!` in non-test Rust code paths.
+2. New `Mutex`/`RwLock`/`parking_lot` locks without an explicit design reason and minimal scope.
+3. Deriving or using `Default` for non-trivial domain or config types where “default” is not obvious and safe.
+4. Stringly-typed identifiers, states, and flags instead of newtypes/enums.
+5. Logging and then ignoring errors instead of handling or propagating them.
+6. Overly defensive programming (re-checking invariants everywhere instead of enforcing them at construction).
+7. Premature generalisation via generic traits, lifetimes, or macros that do not clearly simplify real code.
+8. Removing or weakening metrics (especially latency, tokens, and cost) in CLI output or exported formats.
+
+If you are unsure about a trade-off, prefer:
+- **Concrete over generic**,
+- **Typed over stringly**,
+- **Result over panic**,
+- **Simple concurrency over “clever” locking**.
+
