@@ -1,6 +1,6 @@
 //! Run persistence: storing and loading benchmark results.
 
-use crate::config::BenchmarkConfig;
+use crate::config::Config;
 use crate::types::{CaseKey, CaseResult, ErrorType, RunStatus};
 use anyhow::Result;
 use chrono::Utc;
@@ -10,32 +10,6 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-
-// ============================================================================
-// PATH RESOLUTION (no defaults - all from config)
-// ============================================================================
-
-/// Resolve the runs directory from config or override.
-pub fn resolve_runs_dir(
-    config: &BenchmarkConfig,
-    override_dir: Option<PathBuf>,
-    config_path: Option<&Path>,
-) -> PathBuf {
-    let path = override_dir.unwrap_or_else(|| PathBuf::from(&config.output.directory));
-    make_absolute(path, config_path)
-}
-
-fn make_absolute(path: PathBuf, base: Option<&Path>) -> PathBuf {
-    if path.is_absolute() {
-        return path;
-    }
-    if let Some(parent) = base.and_then(|p| p.parent()) {
-        return parent.join(path);
-    }
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(path)
-}
 
 // ============================================================================
 // RUN METADATA
@@ -235,7 +209,7 @@ pub fn iso_timestamp_now() -> String {
     Utc::now().to_rfc3339()
 }
 
-pub fn compute_config_fingerprint(config: &BenchmarkConfig) -> Result<String> {
+pub fn compute_config_fingerprint(config: &Config) -> Result<String> {
     let json = serde_json::to_string(config)?;
     let hash = Sha256::digest(json.as_bytes());
     Ok(format!("{:x}", hash))

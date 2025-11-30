@@ -1,15 +1,15 @@
 //! Integration tests for the pacabench-core Benchmark API.
 
 use pacabench_core::config::{
-    AgentConfig, BenchmarkConfig, DatasetConfig, GlobalConfig, OutputConfig, ProxyConfig,
+    AgentConfig, Config, DatasetConfig, EvaluatorConfig, GlobalConfig, OutputConfig, ProxyConfig,
 };
 use pacabench_core::metrics::aggregate_results;
 use pacabench_core::persistence::RunStore;
 use pacabench_core::Benchmark;
 use std::fs;
+use std::path::PathBuf;
 use tempfile::tempdir;
 
-/// Creates a simple echo agent that returns the input as output.
 fn create_echo_agent(path: &std::path::Path) {
     let script = r#"
 import sys
@@ -28,7 +28,6 @@ for line in sys.stdin:
     fs::write(path, script).unwrap();
 }
 
-/// Creates a simple test dataset with a few cases.
 fn create_test_dataset(path: &std::path::Path) {
     let cases = [
         r#"{"case_id": "1", "input": "hello", "expected": "hello"}"#,
@@ -38,30 +37,20 @@ fn create_test_dataset(path: &std::path::Path) {
     fs::write(path, cases.join("\n")).unwrap();
 }
 
-#[tokio::test]
-async fn test_benchmark_end_to_end() {
-    let dir = tempdir().unwrap();
-    let root = dir.path().to_path_buf();
-    let cache = root.join("cache");
-    let runs = root.join("runs");
-    let data_dir = root.join("data");
-
-    fs::create_dir_all(&cache).unwrap();
-    fs::create_dir_all(&runs).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    let agent_script = root.join("agent.py");
-    create_echo_agent(&agent_script);
-
-    let dataset_file = data_dir.join("cases.jsonl");
-    create_test_dataset(&dataset_file);
-
-    let config = BenchmarkConfig {
-        name: "integration-test".into(),
-        description: Some("Integration test benchmark".into()),
+fn make_test_config(
+    name: &str,
+    agent_command: String,
+    data_source: String,
+    root_dir: PathBuf,
+    runs_dir: PathBuf,
+    evaluator: Option<EvaluatorConfig>,
+) -> Config {
+    Config {
+        name: name.into(),
+        description: None,
         version: "0.1.0".into(),
         author: None,
-        config: GlobalConfig {
+        global: GlobalConfig {
             concurrency: 2,
             timeout_seconds: 30.0,
             max_retries: 1,
@@ -73,25 +62,55 @@ async fn test_benchmark_end_to_end() {
         },
         agents: vec![AgentConfig {
             name: "echo-agent".into(),
-            command: format!("python {}", agent_script.display()),
+            command: agent_command,
             setup: None,
             teardown: None,
             env: Default::default(),
         }],
         datasets: vec![DatasetConfig {
             name: "test-dataset".into(),
-            source: data_dir.to_string_lossy().to_string(),
+            source: data_source,
             split: None,
             prepare: None,
             input_map: Default::default(),
-            evaluator: None,
+            evaluator,
         }],
         output: OutputConfig {
-            directory: runs.to_string_lossy().to_string(),
+            directory: runs_dir.to_string_lossy().to_string(),
         },
-    };
+        root_dir: root_dir.clone(),
+        cache_dir: root_dir.join("cache"),
+        runs_dir,
+        config_path: None,
+    }
+}
 
-    let bench = Benchmark::new(config, root.clone(), cache, runs.clone());
+#[tokio::test]
+async fn test_benchmark_end_to_end() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let runs = root.join("runs");
+    let data_dir = root.join("data");
+
+    fs::create_dir_all(&runs).unwrap();
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let agent_script = root.join("agent.py");
+    create_echo_agent(&agent_script);
+
+    let dataset_file = data_dir.join("cases.jsonl");
+    create_test_dataset(&dataset_file);
+
+    let config = make_test_config(
+        "integration-test",
+        format!("python {}", agent_script.display()),
+        data_dir.to_string_lossy().to_string(),
+        root.clone(),
+        runs.clone(),
+        None,
+    );
+
+    let bench = Benchmark::new(config);
     let result = bench
         .run(Some("test-run".into()), None)
         .await
@@ -99,7 +118,6 @@ async fn test_benchmark_end_to_end() {
 
     assert!(!result.aborted, "run should not be aborted");
 
-    // Verify results
     let store = RunStore::new(runs.join("test-run")).expect("should open run store");
     let results = store.load_results().expect("should load results");
 
@@ -127,11 +145,9 @@ async fn test_benchmark_end_to_end() {
 async fn test_benchmark_resume() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    let cache = root.join("cache");
     let runs = root.join("runs");
     let data_dir = root.join("data");
 
-    fs::create_dir_all(&cache).unwrap();
     fs::create_dir_all(&runs).unwrap();
     fs::create_dir_all(&data_dir).unwrap();
 
@@ -141,43 +157,19 @@ async fn test_benchmark_resume() {
     let dataset_file = data_dir.join("cases.jsonl");
     create_test_dataset(&dataset_file);
 
-    let config = BenchmarkConfig {
-        name: "resume-test".into(),
-        description: None,
-        version: "0.1.0".into(),
-        author: None,
-        config: GlobalConfig {
-            concurrency: 1,
-            timeout_seconds: 30.0,
-            max_retries: 0,
-            proxy: ProxyConfig {
-                enabled: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        agents: vec![AgentConfig {
-            name: "echo-agent".into(),
-            command: format!("python {}", agent_script.display()),
-            setup: None,
-            teardown: None,
-            env: Default::default(),
-        }],
-        datasets: vec![DatasetConfig {
-            name: "test-dataset".into(),
-            source: data_dir.to_string_lossy().to_string(),
-            split: None,
-            prepare: None,
-            input_map: Default::default(),
-            evaluator: None,
-        }],
-        output: OutputConfig {
-            directory: runs.to_string_lossy().to_string(),
-        },
-    };
+    let mut config = make_test_config(
+        "resume-test",
+        format!("python {}", agent_script.display()),
+        data_dir.to_string_lossy().to_string(),
+        root.clone(),
+        runs.clone(),
+        None,
+    );
+    config.global.concurrency = 1;
+    config.global.max_retries = 0;
 
     // First run with limit 1
-    let bench1 = Benchmark::new(config.clone(), root.clone(), cache.clone(), runs.clone());
+    let bench1 = Benchmark::new(config.clone());
     bench1
         .run(Some("resume-run".into()), Some(1))
         .await
@@ -187,8 +179,8 @@ async fn test_benchmark_resume() {
     let results1 = store1.load_results().unwrap();
     assert_eq!(results1.len(), 1, "first run should have 1 result");
 
-    // Resume run - should complete remaining cases
-    let bench2 = Benchmark::new(config, root.clone(), cache, runs.clone());
+    // Resume run
+    let bench2 = Benchmark::new(config);
     bench2
         .run(Some("resume-run".into()), None)
         .await
@@ -203,11 +195,9 @@ async fn test_benchmark_resume() {
 async fn test_benchmark_with_evaluator() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    let cache = root.join("cache");
     let runs = root.join("runs");
     let data_dir = root.join("data");
 
-    fs::create_dir_all(&cache).unwrap();
     fs::create_dir_all(&runs).unwrap();
     fs::create_dir_all(&data_dir).unwrap();
 
@@ -221,42 +211,18 @@ async fn test_benchmark_with_evaluator() {
     ];
     fs::write(&dataset_file, cases.join("\n")).unwrap();
 
-    let config = BenchmarkConfig {
-        name: "eval-test".into(),
-        description: None,
-        version: "0.1.0".into(),
-        author: None,
-        config: GlobalConfig {
-            concurrency: 1,
-            timeout_seconds: 30.0,
-            max_retries: 0,
-            proxy: ProxyConfig {
-                enabled: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        agents: vec![AgentConfig {
-            name: "echo-agent".into(),
-            command: format!("python {}", agent_script.display()),
-            setup: None,
-            teardown: None,
-            env: Default::default(),
-        }],
-        datasets: vec![DatasetConfig {
-            name: "test-dataset".into(),
-            source: data_dir.to_string_lossy().to_string(),
-            split: None,
-            prepare: None,
-            input_map: Default::default(),
-            evaluator: Some(pacabench_core::config::EvaluatorConfig::ExactMatch),
-        }],
-        output: OutputConfig {
-            directory: runs.to_string_lossy().to_string(),
-        },
-    };
+    let mut config = make_test_config(
+        "eval-test",
+        format!("python {}", agent_script.display()),
+        data_dir.to_string_lossy().to_string(),
+        root.clone(),
+        runs.clone(),
+        Some(EvaluatorConfig::ExactMatch),
+    );
+    config.global.concurrency = 1;
+    config.global.max_retries = 0;
 
-    let bench = Benchmark::new(config, root.clone(), cache, runs.clone());
+    let bench = Benchmark::new(config);
     bench
         .run(Some("eval-run".into()), None)
         .await
@@ -319,9 +285,7 @@ fn test_upstream_url_derivation_from_provider() {
 async fn test_benchmark_uses_relative_path_with_root_dir() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    let cache = root.join("cache");
     let runs = root.join("runs");
-    fs::create_dir_all(&cache).unwrap();
     fs::create_dir_all(&runs).unwrap();
     let data_dir = root.join("data");
     fs::create_dir_all(&data_dir).unwrap();
@@ -347,12 +311,12 @@ for line in sys.stdin:
     )
     .unwrap();
 
-    let cfg = BenchmarkConfig {
+    let config = Config {
         name: "relpath-test".into(),
         description: None,
         version: "0.1.0".into(),
         author: None,
-        config: GlobalConfig {
+        global: GlobalConfig {
             proxy: ProxyConfig {
                 enabled: false,
                 ..Default::default()
@@ -377,9 +341,13 @@ for line in sys.stdin:
         output: OutputConfig {
             directory: runs.to_string_lossy().to_string(),
         },
+        root_dir: root.clone(),
+        cache_dir: root.join("cache"),
+        runs_dir: runs.clone(),
+        config_path: None,
     };
 
-    let bench = Benchmark::new(cfg, root.clone(), cache, runs.clone());
+    let bench = Benchmark::new(config);
     bench.run(None, Some(1)).await.unwrap();
 
     let run_dirs: Vec<_> = fs::read_dir(&runs).unwrap().collect();
