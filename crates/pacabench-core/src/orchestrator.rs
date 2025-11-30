@@ -5,7 +5,7 @@ use crate::datasets::{get_dataset_loader, DatasetContext, DatasetLoader};
 use crate::evaluators::get_evaluator;
 use crate::metrics::aggregate_results;
 use crate::persistence::{iso_timestamp_now, ErrorEntry};
-use crate::proxy::{MetricEntry, ProxyConfig, ProxyServer};
+use crate::proxy::{MetricEntry, MetricsCollector, ProxyConfig, ProxyServer};
 use crate::reporter::{AgentProgress, NullReporter, ProgressEvent, ProgressReporter};
 use crate::run_manager::RunManager;
 use crate::runner::CommandRunner;
@@ -13,8 +13,7 @@ use crate::types::{Case, CaseResult, ErrorType, RunnerOutput};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
@@ -235,48 +234,63 @@ impl Orchestrator {
             return Ok(());
         }
 
-        // Start proxy if enabled
-        let proxy = if self.config.config.proxy.enabled {
-            // Resolve upstream URL from config or provider
-            let upstream_base_url =
-                self.config.config.proxy.base_url.clone().or_else(|| {
-                    match self.config.config.proxy.provider.as_str() {
-                        "openai" => Some("https://api.openai.com".to_string()),
-                        "anthropic" => Some("https://api.anthropic.com".to_string()),
-                        "azure" => std::env::var("AZURE_OPENAI_ENDPOINT").ok(),
-                        _ => None,
-                    }
-                });
-            Some(
-                ProxyServer::start(ProxyConfig {
-                    port: 0,
-                    upstream_base_url,
-                    api_key: std::env::var("OPENAI_API_KEY").ok(),
-                })
-                .await?,
-            )
-        } else {
-            None
-        };
-        let proxy_url = proxy.as_ref().map(|p| format!("http://{}/v1", p.addr));
-        let metrics_handle = proxy.as_ref().map(|p| p.metrics.clone());
+        let worker_per_agent = self.config.config.concurrency.max(1);
 
-        // Create runner pool per agent
-        let mut runners: Vec<Arc<Mutex<CommandRunner>>> = Vec::new();
+        // Create per-agent runner pools (with dedicated proxies for clean metrics)
+        let mut runner_pools: Vec<Vec<Arc<Mutex<CommandRunner>>>> = Vec::new();
+        let mut runner_metrics: Vec<Vec<Option<MetricsCollector>>> = Vec::new();
+        let mut runner_proxies: Vec<Vec<Option<ProxyServer>>> = Vec::new();
+
         for agent in &self.config.agents {
-            let runner = CommandRunner::new(
-                agent.clone(),
-                proxy_url.clone(),
-                None,
-                Some(self.root_dir.clone()),
-            );
-            runners.push(Arc::new(Mutex::new(runner)));
+            let mut pool = Vec::new();
+            let mut metrics = Vec::new();
+            let mut proxies = Vec::new();
+
+            for _ in 0..worker_per_agent {
+                let proxy = if self.config.config.proxy.enabled {
+                    let upstream_base_url =
+                        self.config.config.proxy.base_url.clone().or_else(|| {
+                            match self.config.config.proxy.provider.as_str() {
+                                "openai" => Some("https://api.openai.com".to_string()),
+                                "anthropic" => Some("https://api.anthropic.com".to_string()),
+                                "azure" => std::env::var("AZURE_OPENAI_ENDPOINT").ok(),
+                                _ => None,
+                            }
+                        });
+                    Some(
+                        ProxyServer::start(ProxyConfig {
+                            port: 0,
+                            upstream_base_url,
+                            api_key: std::env::var("OPENAI_API_KEY").ok(),
+                        })
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+
+                let proxy_url = proxy.as_ref().map(|p| format!("http://{}/v1", p.addr));
+                let metrics_handle = proxy.as_ref().map(|p| p.metrics.clone());
+
+                let runner =
+                    CommandRunner::new(agent.clone(), proxy_url, None, Some(self.root_dir.clone()));
+
+                pool.push(Arc::new(Mutex::new(runner)));
+                metrics.push(metrics_handle);
+                proxies.push(proxy);
+            }
+
+            runner_pools.push(pool);
+            runner_metrics.push(metrics);
+            runner_proxies.push(proxies);
         }
 
         // Start all runners
-        for runner in &runners {
-            let mut r = runner.lock().await;
-            r.start().await?;
+        for pool in &runner_pools {
+            for runner in pool {
+                let mut r = runner.lock().await;
+                r.start().await?;
+            }
         }
 
         // Build evaluators per dataset
@@ -298,9 +312,18 @@ impl Orchestrator {
         let timeout_secs = self.config.config.timeout_seconds;
         let max_retries = self.config.config.max_retries;
         let recycle_interval = self.config.config.worker_recycle_interval;
-        let recycle_counts = Arc::new(
+        let runner_indices = Arc::new(
             (0..self.config.agents.len())
                 .map(|_| AtomicUsize::new(0))
+                .collect::<Vec<_>>(),
+        );
+        let recycle_counts = Arc::new(
+            (0..self.config.agents.len())
+                .map(|_| {
+                    (0..worker_per_agent)
+                        .map(|_| AtomicUsize::new(0))
+                        .collect::<Vec<_>>()
+                })
                 .collect::<Vec<_>>(),
         );
 
@@ -308,9 +331,11 @@ impl Orchestrator {
 
         for item in work_items {
             let permit = semaphore.clone().acquire_owned().await?;
-            let runner = runners[item.agent_idx].clone();
+            let runner_idx = runner_indices[item.agent_idx].fetch_add(1, Ordering::SeqCst)
+                % runner_pools[item.agent_idx].len();
+            let runner = runner_pools[item.agent_idx][runner_idx].clone();
             let rm = rm.clone();
-            let metrics_handle = metrics_handle.clone();
+            let metrics_handle = runner_metrics[item.agent_idx][runner_idx].clone();
             let circuit_breaker = circuit_breaker.clone();
             let agent_name = self.config.agents[item.agent_idx].name.clone();
             let ds_name = datasets[item.dataset_idx].0.name.clone();
@@ -475,10 +500,11 @@ impl Orchestrator {
                     }
 
                     if recycle_interval > 0 {
-                        let count =
-                            recycle_counts[item.agent_idx].fetch_add(1, Ordering::SeqCst) + 1;
+                        let count = recycle_counts[item.agent_idx][runner_idx]
+                            .fetch_add(1, Ordering::SeqCst)
+                            + 1;
                         if count >= recycle_interval {
-                            recycle_counts[item.agent_idx].store(0, Ordering::SeqCst);
+                            recycle_counts[item.agent_idx][runner_idx].store(0, Ordering::SeqCst);
                             let mut runner_guard = runner.lock().await;
                             let _ = runner_guard.stop().await;
                             let _ = runner_guard.start().await;
@@ -500,14 +526,20 @@ impl Orchestrator {
         }
 
         // Stop runners
-        for runner in &runners {
-            let mut r = runner.lock().await;
-            let _ = r.stop().await;
+        for pool in &runner_pools {
+            for runner in pool {
+                let mut r = runner.lock().await;
+                let _ = r.stop().await;
+            }
         }
 
-        // Stop proxy
-        if let Some(p) = proxy {
-            p.stop().await;
+        // Stop proxies
+        for proxies in runner_proxies {
+            for proxy in proxies {
+                if let Some(p) = proxy {
+                    p.stop().await;
+                }
+            }
         }
 
         let failed = circuit_breaker.is_tripped();
