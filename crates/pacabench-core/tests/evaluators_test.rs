@@ -1,13 +1,18 @@
 //! Tests for the evaluators module.
 
-use axum::{routing::post, Json, Router};
+use axum::{extract::State, routing::post, Json, Router};
 use pacabench_core::config::EvaluatorConfig;
 use pacabench_core::evaluators::{
     Evaluator, ExactMatchEvaluator, F1Evaluator, LlmJudgeEvaluator, MultipleChoiceEvaluator,
 };
 use pacabench_core::types::{Case, ErrorType, RunnerOutput};
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 fn make_case(expected: &str) -> Case {
     Case {
@@ -107,9 +112,11 @@ async fn llm_judge_records_tokens_and_cost() {
     std::env::set_var("OPENAI_API_KEY", "test");
     std::env::set_var("JUDGE_BASE_URL", format!("http://{}", addr));
 
-    let judge = LlmJudgeEvaluator::new("gpt-4o-mini".into(), None);
+    let judge = LlmJudgeEvaluator::new("gpt-4o-mini".into(), None, None, 1, 0);
     let res = judge.evaluate(&make_case("hello"), &ro("hello"));
     handle.abort();
+    std::env::remove_var("OPENAI_API_KEY");
+    std::env::remove_var("JUDGE_BASE_URL");
     assert!(res.passed);
     assert!(res.cost_usd.unwrap_or(0.0) >= 0.0);
     assert_eq!(
@@ -123,5 +130,86 @@ async fn llm_judge_records_tokens_and_cost() {
     assert!(
         res.metrics.contains_key("latency_ms"),
         "latency should be recorded"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn llm_judge_retries_and_uses_api_key_and_base_url() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let last_auth: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    #[derive(Clone)]
+    struct AppState {
+        calls: Arc<AtomicUsize>,
+        last_auth: Arc<Mutex<Option<String>>>,
+    }
+
+    let state = AppState {
+        calls: calls.clone(),
+        last_auth: last_auth.clone(),
+    };
+
+    async fn handler(
+        State(state): State<AppState>,
+        headers: axum::http::HeaderMap,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        let call = state.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(auth) = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+        {
+            let mut guard = state.last_auth.lock().await;
+            *guard = Some(auth.to_string());
+        }
+
+        if call == 0 {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "fail"})),
+            )
+        } else {
+            (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({
+                    "model": "resp-model",
+                    "choices": [{"message": {"content": "YES"}}],
+                    "usage": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 1,
+                        "prompt_tokens_details": {"cached_tokens": 0}
+                    }
+                })),
+            )
+        }
+    }
+
+    let app = Router::new()
+        .route("/v1/chat/completions", post(handler))
+        .with_state(state);
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+
+    std::env::set_var("JUDGE_API_KEY", "test-judge-key");
+    let judge = LlmJudgeEvaluator::new(
+        "gpt-4o-mini".into(),
+        Some(format!("http://{}", addr)),
+        None,
+        1,
+        0,
+    );
+    let res = judge.evaluate(&make_case("hello"), &ro("hello"));
+    handle.abort();
+    std::env::remove_var("JUDGE_API_KEY");
+
+    assert!(res.passed, "should succeed after retry");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "should retry once");
+    let auth = last_auth.lock().await.clone();
+    assert_eq!(
+        auth.as_deref(),
+        Some("Bearer test-judge-key"),
+        "should forward API key"
     );
 }

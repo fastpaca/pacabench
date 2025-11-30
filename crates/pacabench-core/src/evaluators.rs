@@ -10,6 +10,7 @@ use std::env;
 use std::sync::Arc;
 use tiktoken_rs::{cl100k_base, get_bpe_from_model};
 use tokio::runtime::Handle;
+use tokio::time::{sleep, Duration};
 
 pub trait Evaluator: Send + Sync {
     fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult;
@@ -318,7 +319,7 @@ impl Evaluator for MultipleChoiceEvaluator {
                 f1.evaluate(case, output)
             }
             MultipleChoiceFallback::Judge => {
-                let judge = LlmJudgeEvaluator::new(self.judge_model.clone(), None);
+                let judge = LlmJudgeEvaluator::new(self.judge_model.clone(), None, None, 2, 200);
                 judge.evaluate(case, output)
             }
             MultipleChoiceFallback::None => EvaluationResult {
@@ -342,45 +343,44 @@ pub struct LlmJudgeEvaluator {
     base_url: Option<String>,
     api_key: Option<String>,
     client: reqwest::Client,
+    max_retries: usize,
+    backoff_ms: u64,
 }
 
 impl LlmJudgeEvaluator {
-    pub fn new(model: String, base_url: Option<String>) -> Self {
+    pub fn new(
+        model: String,
+        base_url: Option<String>,
+        api_key: Option<String>,
+        max_retries: usize,
+        backoff_ms: u64,
+    ) -> Self {
         let base_url = base_url
             .or_else(|| env::var("JUDGE_BASE_URL").ok())
             .or_else(|| env::var("OPENAI_BASE_URL").ok());
+        let api_key = api_key
+            .or_else(|| env::var("JUDGE_API_KEY").ok())
+            .or_else(|| env::var("OPENAI_API_KEY").ok());
         Self {
             model,
             base_url,
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
+            api_key,
             client: reqwest::Client::new(),
+            max_retries,
+            backoff_ms,
         }
     }
 
-    async fn evaluate_async(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
+    async fn evaluate_once(&self, case: &Case, output: &RunnerOutput) -> Result<EvaluationResult> {
         if output.error.is_some() || output.output.is_none() {
-            return EvaluationResult {
-                passed: false,
-                score: 0.0,
-                reason: Some("No output or error".into()),
-                evaluator_latency_ms: 0.0,
-                cost_usd: None,
-                metrics: HashMap::new(),
-            };
+            return Err(anyhow!("No output or error"));
         }
-        let api_key = match &self.api_key {
-            Some(k) => k.clone(),
-            None => {
-                return EvaluationResult {
-                    passed: false,
-                    score: 0.0,
-                    reason: Some("Missing OPENAI_API_KEY".into()),
-                    evaluator_latency_ms: 0.0,
-                    cost_usd: None,
-                    metrics: HashMap::new(),
-                };
-            }
-        };
+        let api_key = self
+            .api_key
+            .clone()
+            .or_else(|| env::var("JUDGE_API_KEY").ok())
+            .or_else(|| env::var("OPENAI_API_KEY").ok())
+            .ok_or_else(|| anyhow!("Missing JUDGE_API_KEY/OPENAI_API_KEY"))?;
 
         let prompt = format!(
             "You are evaluating if a model's answer is semantically equivalent to the expected answer.\n\nQuestion: {}\n\nExpected Answer: {}\n\nModel's Answer: {}\n\nRespond with ONLY YES or NO.",
@@ -411,94 +411,113 @@ impl LlmJudgeEvaluator {
             .bearer_auth(api_key)
             .json(&body)
             .send()
-            .await;
+            .await
+            .map_err(|e| anyhow!("Judge request failed: {e}"))?;
 
-        match resp {
-            Ok(r) => {
-                let latency = start.elapsed().as_millis() as f64;
-                let json: serde_json::Value =
-                    r.json().await.unwrap_or_else(|_| serde_json::json!({}));
-                let content = json
-                    .get("choices")
-                    .and_then(|c| c.get(0))
-                    .and_then(|c| c.get("message"))
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_uppercase();
-                let passed = content.starts_with("YES");
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("Judge HTTP {status}: {text}"));
+        }
 
-                let usage = json.get("usage").cloned().unwrap_or_default();
-                let input_tokens = usage
-                    .get("prompt_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let output_tokens = usage
-                    .get("completion_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let cached_tokens = usage
-                    .get("prompt_tokens_details")
-                    .and_then(|d| d.get("cached_tokens"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let cost = calculate_cost(&self.model, input_tokens, output_tokens, cached_tokens);
+        let latency = start.elapsed().as_millis() as f64;
+        let json: serde_json::Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+        let content = json
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_uppercase();
+        let passed = content.starts_with("YES");
 
-                let mut metrics = HashMap::new();
-                metrics.insert("input_tokens".into(), serde_json::json!(input_tokens));
-                metrics.insert("output_tokens".into(), serde_json::json!(output_tokens));
-                metrics.insert(
-                    "total_tokens".into(),
-                    serde_json::json!(input_tokens + output_tokens),
-                );
-                metrics.insert("latency_ms".into(), serde_json::json!(latency));
-                metrics.insert(
-                    "prompt_tokens_details".into(),
-                    usage
-                        .get("prompt_tokens_details")
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!({ "cached_tokens": 0 })),
-                );
-                if cost > 0.0 {
-                    metrics.insert("cost_usd".into(), serde_json::json!(cost));
-                }
+        let usage = json.get("usage").cloned().unwrap_or_default();
+        let input_tokens = usage
+            .get("prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output_tokens = usage
+            .get("completion_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cached_tokens = usage
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cost = calculate_cost(&self.model, input_tokens, output_tokens, cached_tokens);
 
-                // Calculate cost from usage tokens
-                let cost_usd = if cost > 0.0 { Some(cost) } else { None };
+        let mut metrics = HashMap::new();
+        metrics.insert("input_tokens".into(), serde_json::json!(input_tokens));
+        metrics.insert("output_tokens".into(), serde_json::json!(output_tokens));
+        metrics.insert(
+            "total_tokens".into(),
+            serde_json::json!(input_tokens + output_tokens),
+        );
+        metrics.insert("latency_ms".into(), serde_json::json!(latency));
+        metrics.insert(
+            "prompt_tokens_details".into(),
+            usage
+                .get("prompt_tokens_details")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({ "cached_tokens": 0 })),
+        );
+        if cost > 0.0 {
+            metrics.insert("cost_usd".into(), serde_json::json!(cost));
+        }
 
-                EvaluationResult {
-                    passed,
-                    score: if passed { 1.0 } else { 0.0 },
-                    reason: Some(content),
-                    evaluator_latency_ms: latency,
-                    cost_usd,
-                    metrics,
+        Ok(EvaluationResult {
+            passed,
+            score: if passed { 1.0 } else { 0.0 },
+            reason: Some(content),
+            evaluator_latency_ms: latency,
+            cost_usd: if cost > 0.0 { Some(cost) } else { None },
+            metrics,
+        })
+    }
+
+    async fn evaluate_with_retries(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
+        for attempt in 0..=self.max_retries {
+            match self.evaluate_once(case, output).await {
+                Ok(res) => return res,
+                Err(err) => {
+                    if attempt >= self.max_retries {
+                        return EvaluationResult {
+                            passed: false,
+                            score: 0.0,
+                            reason: Some(format!("Judge error: {err}")),
+                            evaluator_latency_ms: 0.0,
+                            cost_usd: None,
+                            metrics: HashMap::new(),
+                        };
+                    }
+                    let backoff = self.backoff_ms * (attempt as u64 + 1);
+                    sleep(Duration::from_millis(backoff)).await;
                 }
             }
-            Err(e) => EvaluationResult {
-                passed: false,
-                score: 0.0,
-                reason: Some(format!("Judge error: {e}")),
-                evaluator_latency_ms: start.elapsed().as_millis() as f64,
-                cost_usd: None,
-                metrics: HashMap::new(),
-            },
+        }
+
+        EvaluationResult {
+            passed: false,
+            score: 0.0,
+            reason: Some("Judge error: exhausted retries".into()),
+            evaluator_latency_ms: 0.0,
+            cost_usd: None,
+            metrics: HashMap::new(),
         }
     }
 }
 
 impl Evaluator for LlmJudgeEvaluator {
     fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
-        // Try to use existing runtime, otherwise create a new one
         match Handle::try_current() {
-            Ok(handle) => {
-                // We're in an async context, use block_in_place to avoid nested runtime
-                tokio::task::block_in_place(|| handle.block_on(self.evaluate_async(case, output)))
-            }
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(self.evaluate_with_retries(case, output))
+            }),
             Err(_) => {
-                // No runtime, create a temporary one
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(self.evaluate_async(case, output))
+                rt.block_on(self.evaluate_with_retries(case, output))
             }
         }
     }
@@ -527,7 +546,28 @@ pub fn get_evaluator(cfg: &EvaluatorConfig) -> Result<Arc<dyn Evaluator>> {
                 .get("base_url")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            Ok(Arc::new(LlmJudgeEvaluator::new(model, base_url)))
+            let api_key = cfg
+                .extra_config
+                .get("api_key")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let max_retries = cfg
+                .extra_config
+                .get("max_retries")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(2) as usize;
+            let backoff_ms = cfg
+                .extra_config
+                .get("backoff_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200);
+            Ok(Arc::new(LlmJudgeEvaluator::new(
+                model,
+                base_url,
+                api_key,
+                max_retries,
+                backoff_ms,
+            )))
         }
         other => Err(anyhow!("unsupported evaluator type: {other}")),
     }
