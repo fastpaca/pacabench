@@ -24,6 +24,7 @@ pub struct RunManager {
     case_attempts: HashMap<(String, String, String), u32>,
     pub total_cases: u64,
     pub system_error_count: u64,
+    config_path: Option<PathBuf>,
 }
 
 impl RunManager {
@@ -33,6 +34,7 @@ impl RunManager {
         runs_dir: PathBuf,
         run_id: Option<String>,
         force_new: bool,
+        config_path: Option<PathBuf>,
     ) -> Result<Self> {
         let fingerprint = compute_config_fingerprint(config)?;
         let run_id = run_id.unwrap_or_else(|| super::persistence::generate_run_id(&config.name));
@@ -90,6 +92,7 @@ impl RunManager {
             case_attempts,
             total_cases,
             system_error_count,
+            config_path,
         })
     }
 
@@ -107,7 +110,19 @@ impl RunManager {
         }
         meta.config_fingerprint = self.config_fingerprint.clone();
         self.merge_extras(&mut meta);
-        self.store.write_metadata(&meta)
+        self.store.write_metadata(&meta)?;
+
+        // Copy config file to run directory for reproducibility
+        if let Some(src_path) = &self.config_path {
+            if src_path.exists() {
+                let dest_path = self.store.run_dir().join("pacabench.yaml");
+                if !dest_path.exists() {
+                    std::fs::copy(src_path, dest_path).ok();
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn set_total_cases(&mut self, total: u64) -> Result<()> {
