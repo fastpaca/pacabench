@@ -1,324 +1,169 @@
-# AI Agent Instructions
+# AI Agent Instructions for PacaBench (Rust Workspace)
 
-Universal Python patterns for AI coding agents. Project-specific details are in CLAUDE.md.
+> **Target Audience**: AI coding agents (Cursor, Copilot, Aider, etc.)
 
-Follows [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html).
+This repository is the **Rust rewrite** of PacaBench. These guidelines define how agents should work in this workspace, with a strong bias toward **type-first design**, **explicit error handling**, and **simple, composable code**.
 
-## Code Quality Gate
+See `CLAUDE.md` for a more detailed style and architecture guide.
 
-Before completing any task, run:
+---
+
+## Critical: Code Quality Gates
+
+Before marking any **Rust-related task** complete, you MUST run:
 
 ```bash
-uv run ruff check . --fix
-uv run ruff format .
-uv run ruff check .
+# Format all Rust code
+cargo fmt --all
+
+# Lint with clippy (no warnings allowed)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Run the full test suite
+cargo test --workspace
 ```
 
-If ruff fails, the task is not complete.
+- If `clippy` or `cargo test` fails, the task is **not complete**. Fix all issues first.
+- CI (GitHub Actions) also runs `fmt`, `clippy`, and tests; keep the workspace clean locally.
 
-## Google Style Conventions
+For **docs-only** or configuration-only edits (e.g., `README.md`, `AGENTS.md`, `examples/*.yaml`), running `fmt/clippy/test` is recommended but not strictly required.
 
-### Imports
+---
 
-Order imports in three groups separated by blank lines:
-1. Standard library
-2. Third-party packages
-3. Local modules
+## Quick Reference
 
-```python
-import os
-import sys
-from pathlib import Path
+### Workspace Layout
 
-import httpx
-from pydantic import BaseModel
-
-from myproject.models import User
-from myproject.utils import helpers
+```text
+Cargo.toml               # Workspace root
+crates/
+  pacabench-core/        # Core benchmarking library
+  pacabench-cli/         # CLI binary (pacabench)
+examples/
+  membench_qa_test/      # Example pacabench.yaml for quick QA runs
+  smoke_test/            # Minimal smoke test config
+runs/                    # (Created at runtime) benchmark outputs
 ```
 
-Do not use relative imports. Do not use `from module import *`.
+### Core Commands
 
-### Naming
+```bash
+# Build everything
+cargo build --workspace
 
-| Type | Convention | Example |
-|------|------------|---------|
-| Modules | `lowercase_underscores` | `user_service.py` |
-| Classes | `CapWords` | `UserService` |
-| Functions | `lowercase_underscores` | `get_user_by_id` |
-| Variables | `lowercase_underscores` | `user_count` |
-| Constants | `ALL_CAPS` | `MAX_RETRIES` |
-| Private | `_leading_underscore` | `_internal_cache` |
+# Run CLI help
+cargo run -p pacabench-cli -- --help
 
-### Docstrings
+# Quick smoke run using default pacabench.yaml in CWD
+cargo run -p pacabench-cli -- run --limit 10
 
-Use Google-style docstrings for public functions:
+# Use an example config
+cargo run -p pacabench-cli -- \
+  --config examples/membench_qa_test/pacabench.yaml \
+  run --limit 2
 
-```python
-def fetch_user(user_id: str, include_deleted: bool = False) -> User | None:
-    """Fetch a user by ID from the database.
+# Show runs
+cargo run -p pacabench-cli -- show
 
-    Args:
-        user_id: The unique identifier of the user.
-        include_deleted: Whether to include soft-deleted users.
+# Retry failures from a run
+cargo run -p pacabench-cli -- retry <run-id>
 
-    Returns:
-        The User object if found, None otherwise.
-
-    Raises:
-        DatabaseError: If the database connection fails.
-    """
+# Export results as JSON
+cargo run -p pacabench-cli -- export <run-id> --format json
 ```
 
-Skip docstrings for private functions, simple getters, and obvious one-liners.
+---
 
-### Exceptions
+## Rust Code Style Rules (High-Level)
 
-Be specific with exception types. Never use bare `except:`.
+These rules are enforced socially and via `clippy` where possible. See `CLAUDE.md` for deeper rationale and examples.
 
-```python
-# BAD
-try:
-    value = data["key"]
-except:
-    value = default
+### 1. Type-First Design
 
-# BAD - Too broad
-try:
-    value = data["key"]
-except Exception:
-    value = default
+- Model domain concepts as **structs, enums, and newtypes** (e.g., `RunId(String)`, `CaseKey`, `NonEmpty<String>`).
+- Avoid **stringly-typed** or bool-flag APIs for domain concepts.
+- Use rich standard types (`Duration`, `PathBuf`, `NonZeroU*`, `Url`) instead of raw primitives where appropriate.
+- Prefer borrowing (`&str`, `&[u8]`, `Cow<'a, str>`) over unnecessary allocation and cloning.
 
-# GOOD - Specific exception
-try:
-    value = data["key"]
-except KeyError:
-    value = default
-```
+### 2. Failures as Data, Not Panics
 
-### Comparisons
+- Use `Result<T, E>` and `Option<T>` for all fallible/optional operations; propagate errors with `?`.
+- Library and core code should **not** use `unwrap`, `expect`, or `panic!` on recoverable failures.
+- Allow `unwrap`/`expect` only in:
+  - Tests and benchmarks.
+  - Truly unreachable states with a clear, documented invariant (and even then prefer `unreachable!()`).
+- Failures are **OK** as long as they are represented explicitly and pushed upstream in a `Result`.
 
-Use `is` for None, True, False. Use implicit truthiness for sequences.
+### 3. Defaults: Allowed but Extremely Deliberate
 
-```python
-# BAD
-if x == None:
-if len(items) == 0:
-if len(items) > 0:
-if valid == True:
+- Using `Default` is fine, but only when the semantics are **obvious and safe** for every field.
+- For domain/config types:
+  - Prefer explicit constructors or builders (e.g., `Config::from_file(...)`, `ConfigOverrides::default()` with clear semantics).
+  - Avoid `..Default::default()` when some fields are **required** for correctness.
+- Never hide business-critical settings (timeouts, limits, feature flags) in implicit defaults.
 
-# GOOD
-if x is None:
-if not items:
-if items:
-if valid:
-```
+### 4. Simplicity, Not Premature Generalisation
 
-### Default Arguments
+- Avoid generic abstractions, traits, or type gymnastics until there are **at least two real use-cases**.
+- Prefer straightforward functions and concrete types over “framework-style” layers.
+- Refactor duplication only when the new abstraction is:
+  - Simple,
+  - Clearly named, and
+  - Local to the domain where it’s used.
 
-Never use mutable default arguments.
+### 5. Concurrency and Locks
 
-```python
-# BAD - Mutable default shared across calls
-def append_item(item, items=[]):
-    items.append(item)
-    return items
+- Prefer **clear ownership** and **message passing** over shared mutable state.
+- Avoid reaching for `Mutex`/`RwLock`/`parking_lot` as a default. If you feel the need to add a lock, first:
+  - Ask if you can pass owned data into tasks instead of sharing.
+  - Consider a single owner task with channels for requests/responses.
+  - Consider restructuring the concurrency model (e.g., workers + queue).
+- Locks are allowed but should be **rare, narrow in scope, and well-justified**.
+- In async code, never block on sync I/O; use async I/O or `spawn_blocking` for heavy work.
 
-# GOOD - Use None and create new list
-def append_item(item, items: list | None = None) -> list:
-    if items is None:
-        items = []
-    items.append(item)
-    return items
-```
+### 6. Error Handling and Logging
 
-### Comprehensions
+- Define dedicated error types per domain (`ConfigError`, `PersistenceError`, etc.), implemented with `thiserror` or manual enums.
+- Use typed errors inside `pacabench-core`; use `anyhow` primarily at the CLI/binary boundary for flexible reporting.
+- Add context when crossing layers (e.g., `"loading run metadata"`, `"parsing pacabench.yaml"`).
+- Avoid “log and swallow” patterns. Either:
+  - Handle the error fully and return a valid result, or
+  - Return an error upstream.
 
-Use comprehensions for simple transformations. Use loops for complex logic.
+---
 
-```python
-# GOOD - Simple transformation
-names = [user.name for user in users]
-active = {u.id: u for u in users if u.active}
+## Architecture Notes (Rust Rewrite)
 
-# BAD - Too complex for comprehension
-result = [
-    transform(x) 
-    for x in items 
-    if x.valid and x.type == "special" 
-    for y in x.children 
-    if y.enabled
-]
+- **Library-first design**:
+  - `pacabench-core` exposes `Config`, `Benchmark`, `Event`, `Command`, `CaseResult`, and aggregated metrics.
+  - `pacabench-cli` is a **thin wrapper** that:
+    - Parses CLI options (via `clap`),
+    - Loads configuration,
+    - Calls into `Benchmark`,
+    - Renders progress and metrics.
 
-# GOOD - Use explicit loop for complex logic
-result = []
-for x in items:
-    if not (x.valid and x.type == "special"):
-        continue
-    for y in x.children:
-        if y.enabled:
-            result.append(transform(x))
-```
+- **Proxy and metrics**:
+  - All LLM traffic should flow through the proxy implemented in `pacabench-core::proxy`.
+  - Metrics (`AggregatedMetrics`) must continue to include:
+    - Duration percentiles (p50/p95),
+    - LLM latency (avg/p50/p95),
+    - Token counts (input/output/judge/cached),
+    - Attempt counts and failure counts.
 
-## Pydantic Patterns
+- **Results and persistence**:
+  - Per-case and aggregated results are persisted via `pacabench-core::persistence`.
+  - CLI commands (`show`, `retry`, `export`) must keep these formats stable or evolve them in a backwards-compatible way.
 
-### 1. Models End-to-End
+---
 
-When a Pydantic model exists, use it for serialization and deserialization. Never convert to dict just to serialize.
+## Non-Negotiables
 
-```python
-# BAD - Model exists but we use dict
-def update_metadata(self, data: dict[str, Any]) -> None:
-    current = json.load(f)
-    current.update(data)
-    json.dump(current, f)
+1. **Always** run `cargo fmt`, `cargo clippy` (with `-D warnings`), and `cargo test` before merging Rust code changes.
+2. **Never** remove latency, token, or cost metrics from CLI or JSON/Markdown outputs.
+3. **Never** introduce `unwrap`/`expect`/`panic!` in production paths; use `Result`/`Option` and propagate errors.
+4. **Never** add unnecessary abstraction layers or premature generalisation; keep code as simple as the domain allows.
+5. **Avoid** new locks (`Mutex`/`RwLock`/`parking_lot` types) unless the design has been considered and documented; prefer ownership and channels.
+6. **Always** model important domain concepts as types, not loose strings or integers.
 
-def read_metadata(self) -> dict[str, Any]:
-    return json.load(f)
+Follow these rules, and use `CLAUDE.md` for deeper Rust-specific gotchas, anti-patterns, and examples when in doubt.
 
-# GOOD - Use the model
-def save_metadata(self, metadata: RunMetadata) -> None:
-    self.path.write_text(metadata.model_dump_json(indent=2))
-
-def load_metadata(self) -> RunMetadata:
-    return RunMetadata.model_validate_json(self.path.read_text())
-```
-
-### 2. Fail Fast on Required Fields
-
-Do not use `.get()` with defaults for required fields. Let validation fail early.
-
-```python
-# BAD - Silent failures, invalid data propagates
-agent = data.get("agent_name", "")
-dataset = data.get("dataset_name", "")
-count = int(data.get("count", 0) or 0)
-
-# GOOD - Validation fails immediately if data is malformed
-result = CaseResult.model_validate(data)
-agent = result.agent_name
-dataset = result.dataset_name
-count = result.count
-```
-
-### 3. Return Types, Not Dicts
-
-Functions should return typed models, not dictionaries.
-
-```python
-# BAD - Type erasure
-def load_results(path: Path) -> list[dict]:
-    return [json.loads(line) for line in f]
-
-# GOOD - Typed returns
-def load_results(path: Path) -> list[CaseResult]:
-    return [CaseResult.model_validate_json(line) for line in f]
-```
-
-### 4. Single Source of Truth
-
-Do not duplicate utility functions across modules.
-
-```python
-# BAD - Same function in two files
-# manager.py
-def _read_metadata_file(path: Path) -> dict: ...
-# discovery.py
-def _read_metadata_file(path: Path) -> dict: ...
-
-# GOOD - Single location, imported everywhere
-# storage.py
-def load_metadata(path: Path) -> RunMetadata: ...
-```
-
-### 5. Direct Attribute Access
-
-Do not use defensive getattr or dict.get for known model fields.
-
-```python
-# BAD - Unnecessary indirection
-duration = getattr(result, "duration_ms", 0)
-name = result.__dict__.get("name", "")
-
-# GOOD - Direct access, fails fast if field missing
-duration = result.duration_ms
-name = result.name
-```
-
-### 6. Type Hints Required
-
-Every function must have complete type hints.
-
-```python
-# BAD
-def process(items):
-    return [x.name for x in items]
-
-# GOOD
-def process(items: list[Item]) -> list[str]:
-    return [x.name for x in items]
-```
-
-### 7. Minimal Context Objects
-
-Do not create god objects that hold everything. Pass parameters directly.
-
-```python
-# BAD - Context as a dumping ground
-class Context:
-    db: Database
-    cache: Cache
-    config: Config
-    user: User
-    request: Request
-    logger: Logger
-    metrics: Metrics
-
-def process(ctx: Context) -> None: ...
-
-# GOOD - Pass what you need
-def process(db: Database, user: User) -> Result: ...
-```
-
-### 8. No TYPE_CHECKING Guards
-
-Using `if TYPE_CHECKING:` is a code smell indicating circular dependencies. Fix the architecture instead.
-
-```python
-# BAD - Hiding circular imports
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from myapp.models import User
-
-# GOOD - Fix the dependency structure
-# Move shared types to a base module that both can import
-```
-
-## Anti-Pattern Reference
-
-| Anti-Pattern | Correct Pattern |
-|--------------|-----------------|
-| `dict[str, Any]` when model exists | Use the model type |
-| `json.dumps(obj.__dict__)` | `obj.model_dump_json()` |
-| `Model(**json.loads(s))` | `Model.model_validate_json(s)` |
-| `data.get("field", default)` for required fields | `model.field` after validation |
-| Return `dict` from functions | Return typed model |
-| `if TYPE_CHECKING:` import guards | Fix circular dependencies |
-| Duplicate utility functions | Single canonical location |
-| `getattr(obj, "field", default)` | `obj.field` |
-| Bare `except:` | Specific exception type |
-| `if x == None` | `if x is None` |
-| `if len(items) == 0` | `if not items` |
-| Mutable default arguments | `None` with conditional init |
-| `from module import *` | Explicit imports |
-
-## Do Not
-
-1. Add redundant comments that restate the code
-2. Create abstractions for one-time operations
-3. Use magic numbers without named constants
-4. Commit code that fails ruff check
-5. Skip type hints on any function
-6. Use bare except clauses
-7. Use mutable default arguments
-8. Use relative imports
