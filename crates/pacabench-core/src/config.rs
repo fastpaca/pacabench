@@ -3,10 +3,10 @@
 //! Configuration is loaded via figment from multiple layers:
 //! 1. YAML file (base configuration)
 //! 2. Environment variables (PACABENCH_ prefix, __ as nested separator)
-//! 3. CLI overrides (passed programmatically)
+//! 3. Runtime overrides (passed programmatically)
 
 use figment::{
-    providers::{Env, Format, Serialized, Yaml},
+    providers::{Env, Format, Yaml},
     Figment,
 };
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ pub enum ConfigError {
 }
 
 // ============================================================================
-// DEFAULTS (all in one place)
+// DEFAULTS
 // ============================================================================
 
 fn default_proxy_enabled() -> bool {
@@ -146,7 +146,7 @@ pub struct AgentConfig {
 }
 
 // ============================================================================
-// EVALUATOR CONFIG (typed, not HashMap)
+// EVALUATOR CONFIG
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,7 +248,6 @@ pub struct BenchmarkConfig {
 }
 
 impl BenchmarkConfig {
-    /// Resolve the cache directory, expanding ~ to home.
     pub fn cache_dir(&self) -> std::path::PathBuf {
         let path = &self.config.cache_directory;
         if path.starts_with("~/") {
@@ -261,18 +260,14 @@ impl BenchmarkConfig {
 }
 
 // ============================================================================
-// CLI OVERRIDES
+// RUNTIME OVERRIDES
 // ============================================================================
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CliOverrides {
-    #[serde(skip_serializing_if = "Option::is_none")]
+#[derive(Debug, Clone, Default)]
+pub struct ConfigOverrides {
     pub concurrency: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_dir: Option<String>,
 }
 
@@ -281,80 +276,33 @@ pub struct CliOverrides {
 // ============================================================================
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<BenchmarkConfig, ConfigError> {
-    load_config_with_overrides(path, CliOverrides::default())
+    load_config_with_overrides(path, ConfigOverrides::default())
 }
 
 pub fn load_config_with_overrides(
     path: impl AsRef<Path>,
-    overrides: CliOverrides,
+    overrides: ConfigOverrides,
 ) -> Result<BenchmarkConfig, ConfigError> {
-    let contents = std::fs::read_to_string(path.as_ref())?;
-    let interpolated = interpolate_env_vars(&contents);
+    let mut cfg: BenchmarkConfig = Figment::new()
+        .merge(Yaml::file(path))
+        .merge(Env::prefixed("PACABENCH_").split("__"))
+        .extract()?;
 
-    let mut figment = Figment::new()
-        .merge(Yaml::string(&interpolated))
-        .merge(Env::prefixed("PACABENCH_").split("__"));
-
-    if overrides.concurrency.is_some()
-        || overrides.timeout_seconds.is_some()
-        || overrides.max_retries.is_some()
-    {
-        let mut config_overrides = HashMap::new();
-        if let Some(c) = overrides.concurrency {
-            config_overrides.insert("concurrency".to_string(), serde_json::json!(c));
-        }
-        if let Some(t) = overrides.timeout_seconds {
-            config_overrides.insert("timeout_seconds".to_string(), serde_json::json!(t));
-        }
-        if let Some(r) = overrides.max_retries {
-            config_overrides.insert("max_retries".to_string(), serde_json::json!(r));
-        }
-
-        #[derive(Serialize)]
-        struct ConfigOverride {
-            config: HashMap<String, serde_json::Value>,
-        }
-
-        figment = figment.merge(Serialized::defaults(ConfigOverride {
-            config: config_overrides,
-        }));
+    if let Some(c) = overrides.concurrency {
+        cfg.config.concurrency = c;
+    }
+    if let Some(t) = overrides.timeout_seconds {
+        cfg.config.timeout_seconds = t;
+    }
+    if let Some(r) = overrides.max_retries {
+        cfg.config.max_retries = r;
+    }
+    if let Some(dir) = overrides.runs_dir {
+        cfg.output.directory = dir;
     }
 
-    if let Some(runs_dir) = overrides.runs_dir {
-        #[derive(Serialize)]
-        struct OutputOverride {
-            output: OutputConfig,
-        }
-
-        figment = figment.merge(Serialized::defaults(OutputOverride {
-            output: OutputConfig { directory: runs_dir },
-        }));
-    }
-
-    let cfg: BenchmarkConfig = figment.extract()?;
     validate_config(&cfg)?;
     Ok(cfg)
-}
-
-fn interpolate_env_vars(input: &str) -> String {
-    use once_cell::sync::Lazy;
-    use regex::Regex;
-    use std::env;
-
-    static ENV_VAR_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}").expect("valid regex")
-    });
-
-    ENV_VAR_RE
-        .replace_all(input, |caps: &regex::Captures| {
-            let var_name = &caps[1];
-            let default_val = caps.get(2).map(|m| m.as_str());
-            match env::var(var_name) {
-                Ok(val) => val,
-                Err(_) => default_val.unwrap_or("").to_string(),
-            }
-        })
-        .to_string()
 }
 
 fn validate_config(cfg: &BenchmarkConfig) -> Result<(), ConfigError> {
@@ -362,13 +310,27 @@ fn validate_config(cfg: &BenchmarkConfig) -> Result<(), ConfigError> {
         return Err(ConfigError::Invalid("at least one agent is required".into()));
     }
     if cfg.datasets.is_empty() {
-        return Err(ConfigError::Invalid("at least one dataset is required".into()));
+        return Err(ConfigError::Invalid(
+            "at least one dataset is required".into(),
+        ));
     }
-    if cfg.agents.iter().any(|a| a.name.trim().is_empty() || a.command.trim().is_empty()) {
-        return Err(ConfigError::Invalid("agents must have non-empty name and command".into()));
+    if cfg
+        .agents
+        .iter()
+        .any(|a| a.name.trim().is_empty() || a.command.trim().is_empty())
+    {
+        return Err(ConfigError::Invalid(
+            "agents must have non-empty name and command".into(),
+        ));
     }
-    if cfg.datasets.iter().any(|d| d.name.trim().is_empty() || d.source.trim().is_empty()) {
-        return Err(ConfigError::Invalid("datasets must have non-empty name and source".into()));
+    if cfg
+        .datasets
+        .iter()
+        .any(|d| d.name.trim().is_empty() || d.source.trim().is_empty())
+    {
+        return Err(ConfigError::Invalid(
+            "datasets must have non-empty name and source".into(),
+        ));
     }
     Ok(())
 }
@@ -378,31 +340,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_interpolate_env_vars() {
-        std::env::set_var("TEST_VAR", "hello");
-        let input = "value: ${TEST_VAR}";
-        let output = interpolate_env_vars(input);
-        assert_eq!(output, "value: hello");
-        std::env::remove_var("TEST_VAR");
+    fn test_config_overrides_default() {
+        let overrides = ConfigOverrides::default();
+        assert!(overrides.concurrency.is_none());
+        assert!(overrides.timeout_seconds.is_none());
+        assert!(overrides.max_retries.is_none());
+        assert!(overrides.runs_dir.is_none());
     }
 
     #[test]
-    fn test_interpolate_with_default() {
-        std::env::remove_var("NONEXISTENT_VAR");
-        let input = "value: ${NONEXISTENT_VAR:-default_value}";
-        let output = interpolate_env_vars(input);
-        assert_eq!(output, "value: default_value");
-    }
-
-    #[test]
-    fn test_cli_overrides() {
-        let overrides = CliOverrides {
+    fn test_config_overrides_with_values() {
+        let overrides = ConfigOverrides {
             concurrency: Some(8),
             timeout_seconds: None,
             max_retries: Some(5),
             runs_dir: Some("./custom_runs".to_string()),
         };
-        assert!(overrides.concurrency.is_some());
+        assert_eq!(overrides.concurrency, Some(8));
         assert!(overrides.timeout_seconds.is_none());
+        assert_eq!(overrides.max_retries, Some(5));
     }
 }
