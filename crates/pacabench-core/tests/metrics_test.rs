@@ -2,6 +2,7 @@
 
 use pacabench_core::metrics::aggregate_results;
 use pacabench_core::types::{CaseResult, ErrorType};
+use serde_json::json;
 use std::collections::HashMap;
 
 fn make_result(ms: f64, passed: bool) -> CaseResult {
@@ -42,4 +43,26 @@ fn precision_matches_accuracy_when_only_pass_fail_known() {
     let m = aggregate_results(&res);
     assert!((m.precision - m.accuracy).abs() < 1e-6);
     assert!((m.precision - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn aggregates_judge_tokens_separately() {
+    let mut r1 = make_result(5.0, true);
+    r1.judge_metrics.insert("input_tokens".into(), json!(10));
+    r1.judge_metrics.insert("output_tokens".into(), json!(2));
+    r1.judge_cost_usd = Some(0.5);
+
+    let mut r2 = make_result(7.0, false);
+    r2.llm_metrics
+        .insert("llm_total_cost_usd".into(), json!(1.0));
+    r2.judge_metrics.insert("input_tokens".into(), json!(3));
+
+    let m = aggregate_results(&[r1, r2]);
+    assert_eq!(
+        m.total_cost_usd, 1.0,
+        "judge cost should not be in model cost"
+    );
+    assert_eq!(m.total_judge_cost_usd, 0.5);
+    assert_eq!(m.total_judge_input_tokens, 13);
+    assert_eq!(m.total_judge_output_tokens, 2);
 }

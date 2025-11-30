@@ -149,4 +149,8 @@ pub struct AggregatedMetrics {
     pub total_cost_usd: f64,
     #[serde(default)]
     pub total_judge_cost_usd: f64,
+    #[serde(default)]
+    pub total_judge_input_tokens: u64,
+    #[serde(default)]
+    pub total_judge_output_tokens: u64,
 }
