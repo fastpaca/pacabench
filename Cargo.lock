@@ -1312,6 +1312,7 @@ dependencies = [
  "console",
  "indicatif",
  "pacabench-core",
+ "parking_lot",
  "predicates",
  "serde",
  "serde_json",
@@ -1325,6 +1326,7 @@ name = "pacabench-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "futures-util",
@@ -1334,6 +1336,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "once_cell",
+ "parking_lot",
  "regex",
  "reqwest",
  "serde",

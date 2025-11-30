@@ -1,4 +1,13 @@
 //! Shared data types for PacaBench.
+//!
+//! This module defines the core data structures used throughout the benchmark:
+//!
+//! - [`Case`]: A single benchmark case to evaluate
+//! - [`RunnerOutput`]: Output from running a case through an agent
+//! - [`EvaluationResult`]: Result of evaluating a runner output
+//! - [`CaseResult`]: Combined result of running and evaluating a case
+//! - [`AggregatedMetrics`]: Aggregated metrics across all cases
+//! - [`ErrorType`]: Classification of errors
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -6,15 +15,24 @@ use std::collections::HashMap;
 
 type JsonMap = HashMap<String, Value>;
 
+/// A single benchmark case to evaluate.
+///
+/// Cases are loaded from datasets and executed by agents via runners.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Case {
+    /// Unique identifier for the case within its dataset.
     pub case_id: String,
+    /// Name of the dataset this case belongs to.
     pub dataset_name: String,
+    /// The input/question to present to the agent.
     pub input: String,
+    /// Expected answer for evaluation (if applicable).
     #[serde(default)]
     pub expected: Option<String>,
+    /// Conversation history for multi-turn cases.
     #[serde(default)]
     pub history: Vec<Value>,
+    /// Additional metadata (e.g., choices for multiple choice).
     #[serde(default)]
     pub metadata: JsonMap,
 }

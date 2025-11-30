@@ -248,11 +248,9 @@ fn canonical_json_string(value: &Value) -> String {
             let parts: Vec<String> = entries
                 .iter()
                 .map(|(k, v)| {
-                    format!(
-                        "{}:{}",
-                        serde_json::to_string(k).unwrap(),
-                        canonical_json_string(v)
-                    )
+                    // String keys always serialize successfully to JSON
+                    let key_json = serde_json::to_string(k).unwrap_or_else(|_| format!("\"{}\"", k));
+                    format!("{}:{}", key_json, canonical_json_string(v))
                 })
                 .collect();
             format!("{{{}}}", parts.join(","))
@@ -343,4 +341,127 @@ fn parse_iso(ts: &Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
     ts.as_ref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
+// ============================================================================
+// Channel-based async persistence writer
+// ============================================================================
+
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tracing::warn;
+
+/// Commands sent to the persistence writer task.
+#[derive(Debug)]
+pub enum PersistenceCommand {
+    /// Append a case result to results.jsonl.
+    AppendResult(CaseResult),
+    /// Append an error to system_errors.jsonl.
+    AppendError(ErrorEntry),
+    /// Update the run metadata.
+    UpdateMetadata(RunMetadata),
+    /// Flush any buffered writes.
+    Flush,
+    /// Shutdown the writer task.
+    Shutdown,
+}
+
+/// Handle for sending persistence commands.
+///
+/// This handle is cheap to clone and can be shared across tasks.
+#[derive(Clone)]
+pub struct PersistenceHandle {
+    tx: mpsc::Sender<PersistenceCommand>,
+}
+
+impl PersistenceHandle {
+    /// Spawn a background persistence writer task.
+    ///
+    /// Returns a handle for sending commands and a join handle for the task.
+    pub fn spawn(store: RunStore) -> (Self, JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel(256);
+        let handle = tokio::spawn(persistence_writer_task(store, rx));
+        (Self { tx }, handle)
+    }
+
+    /// Write a case result (non-blocking).
+    pub async fn write_result(&self, result: CaseResult) -> Result<()> {
+        self.tx
+            .send(PersistenceCommand::AppendResult(result))
+            .await
+            .map_err(|_| anyhow::anyhow!("persistence channel closed"))?;
+        Ok(())
+    }
+
+    /// Write an error entry (non-blocking).
+    pub async fn write_error(&self, error: ErrorEntry) -> Result<()> {
+        self.tx
+            .send(PersistenceCommand::AppendError(error))
+            .await
+            .map_err(|_| anyhow::anyhow!("persistence channel closed"))?;
+        Ok(())
+    }
+
+    /// Update run metadata (non-blocking).
+    pub async fn update_metadata(&self, metadata: RunMetadata) -> Result<()> {
+        self.tx
+            .send(PersistenceCommand::UpdateMetadata(metadata))
+            .await
+            .map_err(|_| anyhow::anyhow!("persistence channel closed"))?;
+        Ok(())
+    }
+
+    /// Request a flush of buffered writes.
+    pub async fn flush(&self) -> Result<()> {
+        self.tx
+            .send(PersistenceCommand::Flush)
+            .await
+            .map_err(|_| anyhow::anyhow!("persistence channel closed"))?;
+        Ok(())
+    }
+
+    /// Shutdown the writer task gracefully.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.tx
+            .send(PersistenceCommand::Shutdown)
+            .await
+            .map_err(|_| anyhow::anyhow!("persistence channel closed"))?;
+        Ok(())
+    }
+
+    /// Try to write a result without blocking (returns immediately if channel full).
+    pub fn try_write_result(&self, result: CaseResult) -> bool {
+        self.tx
+            .try_send(PersistenceCommand::AppendResult(result))
+            .is_ok()
+    }
+}
+
+/// Background task that processes persistence commands.
+async fn persistence_writer_task(store: RunStore, mut rx: mpsc::Receiver<PersistenceCommand>) {
+    while let Some(cmd) = rx.recv().await {
+        match cmd {
+            PersistenceCommand::AppendResult(result) => {
+                if let Err(e) = store.append_result(&result) {
+                    warn!("failed to write result: {e}");
+                }
+            }
+            PersistenceCommand::AppendError(error) => {
+                if let Err(e) = store.append_error(&error) {
+                    warn!("failed to write error: {e}");
+                }
+            }
+            PersistenceCommand::UpdateMetadata(metadata) => {
+                if let Err(e) = store.write_metadata(&metadata) {
+                    warn!("failed to write metadata: {e}");
+                }
+            }
+            PersistenceCommand::Flush => {
+                // Currently all writes are synchronous, so nothing to flush
+            }
+            PersistenceCommand::Shutdown => {
+                break;
+            }
+        }
+    }
 }

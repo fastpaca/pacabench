@@ -1,4 +1,14 @@
 //! Runner process management: spawn agent commands and exchange JSONL over stdin/stdout.
+//!
+//! The `CommandRunner` manages the lifecycle of an agent subprocess, communicating
+//! via JSONL over stdin/stdout. Each case is sent as a JSON object and the runner
+//! waits for a response with `output` or `error` fields.
+//!
+//! # Thread Safety
+//!
+//! `CommandRunner` is NOT thread-safe internally. The caller (typically the orchestrator)
+//! must ensure exclusive access when calling `run_case()`. This is by design - the
+//! orchestrator manages concurrency at a higher level using semaphores and task spawning.
 
 use crate::config::AgentConfig;
 use crate::types::{Case, ErrorType, RunnerOutput};
@@ -9,10 +19,14 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
+/// Manages an agent subprocess for running benchmark cases.
+///
+/// The runner spawns a subprocess using the configured command and communicates
+/// via JSONL over stdin/stdout. It handles process lifecycle including setup,
+/// teardown, and automatic restart if the process exits unexpectedly.
 pub struct CommandRunner {
     config: AgentConfig,
     proxy_url: Option<String>,
@@ -22,10 +36,16 @@ pub struct CommandRunner {
     stdin: Option<ChildStdin>,
     stdout: Option<BufReader<ChildStdout>>,
     stderr_task: Option<JoinHandle<()>>,
-    lock: Mutex<()>,
 }
 
 impl CommandRunner {
+    /// Create a new runner for the given agent configuration.
+    ///
+    /// # Arguments
+    /// * `config` - Agent configuration with command, env, setup/teardown
+    /// * `proxy_url` - Optional proxy URL to set as OPENAI_BASE_URL
+    /// * `base_env` - Base environment variables (defaults to current process env)
+    /// * `work_dir` - Working directory for the subprocess
     pub fn new(
         config: AgentConfig,
         proxy_url: Option<String>,
@@ -42,10 +62,23 @@ impl CommandRunner {
             stdin: None,
             stdout: None,
             stderr_task: None,
-            lock: Mutex::new(()),
         }
     }
 
+    /// Get the agent name.
+    pub fn agent_name(&self) -> &str {
+        &self.config.name
+    }
+
+    /// Check if the runner process is currently running.
+    pub fn is_running(&self) -> bool {
+        self.child.is_some()
+    }
+
+    /// Start the runner subprocess.
+    ///
+    /// Runs the setup command (if configured), then spawns the main command.
+    /// The subprocess communicates via JSONL over stdin/stdout.
     pub async fn start(&mut self) -> Result<()> {
         // Run setup if provided (blocking).
         if let Some(setup) = &self.config.setup {
@@ -114,17 +147,12 @@ impl CommandRunner {
         Ok(())
     }
 
+    /// Stop the runner subprocess.
+    ///
+    /// Kills the subprocess, aborts the stderr reader task, and runs the
+    /// teardown command (if configured).
     pub async fn stop(&mut self) -> Result<()> {
-        if let Some(child) = self.child.as_mut() {
-            child.kill().await.ok();
-            child.wait().await.ok();
-        }
-        if let Some(handle) = self.stderr_task.take() {
-            handle.abort();
-        }
-        self.child = None;
-        self.stdin = None;
-        self.stdout = None;
+        self.kill_process();
 
         // Run teardown if provided
         if let Some(teardown) = &self.config.teardown {
@@ -143,14 +171,37 @@ impl CommandRunner {
         Ok(())
     }
 
-    pub async fn run_case(&mut self, case: &Case) -> Result<RunnerOutput> {
-        let mut guard = self.lock.lock().await;
-        if self.child.is_none() {
-            drop(guard);
-            self.start().await?;
-            guard = self.lock.lock().await;
+    /// Kill the subprocess without running teardown (used by Drop).
+    fn kill_process(&mut self) {
+        if let Some(ref mut child) = self.child {
+            // start_kill() is synchronous and initiates the kill
+            let _ = child.start_kill();
         }
-        let _guard = guard;
+        if let Some(handle) = self.stderr_task.take() {
+            handle.abort();
+        }
+        self.child = None;
+        self.stdin = None;
+        self.stdout = None;
+    }
+
+    /// Execute a single case and return the runner output.
+    ///
+    /// If the runner process is not started, it will be started automatically.
+    /// The case is sent as a JSONL line to stdin and we wait for a response
+    /// containing `output` or `error` fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The runner process fails to start
+    /// - stdin/stdout communication fails
+    /// - The runner process exits unexpectedly
+    pub async fn run_case(&mut self, case: &Case) -> Result<RunnerOutput> {
+        // Auto-start if not running
+        if self.child.is_none() {
+            self.start().await?;
+        }
 
         let stdin = self
             .stdin
@@ -223,3 +274,11 @@ impl CommandRunner {
         }
     }
 }
+
+/// RAII cleanup: kill the subprocess when the runner is dropped.
+impl Drop for CommandRunner {
+    fn drop(&mut self) {
+        self.kill_process();
+    }
+}
+
