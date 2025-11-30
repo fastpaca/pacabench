@@ -3,52 +3,38 @@
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use pacabench_core::reporter::{ProgressEvent, ProgressReporter};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Progress reporter using indicatif for rich terminal output.
-pub struct IndicatifReporter {
-    multi: MultiProgress,
-    main_bar: Mutex<Option<ProgressBar>>,
-    start_time: Mutex<Option<Instant>>,
+/// Per-agent progress state.
+struct AgentState {
+    bar: ProgressBar,
     passed: AtomicU64,
     failed: AtomicU64,
     errors: AtomicU64,
-    total_cost: Mutex<f64>,
+    cost: Mutex<f64>,
 }
 
-impl Default for IndicatifReporter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl IndicatifReporter {
-    pub fn new() -> Self {
+impl AgentState {
+    fn new(bar: ProgressBar) -> Self {
         Self {
-            multi: MultiProgress::new(),
-            main_bar: Mutex::new(None),
-            start_time: Mutex::new(None),
+            bar,
             passed: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             errors: AtomicU64::new(0),
-            total_cost: Mutex::new(0.0),
+            cost: Mutex::new(0.0),
         }
     }
 
-    fn update_message(&self, bar: &ProgressBar) {
+    fn update_message(&self, start_time: Option<Instant>) {
         let passed = self.passed.load(Ordering::Relaxed);
         let failed = self.failed.load(Ordering::Relaxed);
         let errors = self.errors.load(Ordering::Relaxed);
-        let cost = *self.total_cost.lock().unwrap();
+        let cost = *self.cost.lock().unwrap();
 
-        let elapsed = self
-            .start_time
-            .lock()
-            .unwrap()
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
+        let elapsed = start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
 
         let elapsed_str = if elapsed >= 60 {
             format!("{}m{}s", elapsed / 60, elapsed % 60)
@@ -67,7 +53,30 @@ impl IndicatifReporter {
             style(format!("${:.3}", cost)).cyan(),
             style(elapsed_str).dim(),
         );
-        bar.set_message(msg);
+        self.bar.set_message(msg);
+    }
+}
+
+/// Progress reporter using indicatif for rich terminal output.
+pub struct IndicatifReporter {
+    multi: MultiProgress,
+    agents: Mutex<HashMap<String, AgentState>>,
+    start_time: Mutex<Option<Instant>>,
+}
+
+impl Default for IndicatifReporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IndicatifReporter {
+    pub fn new() -> Self {
+        Self {
+            multi: MultiProgress::new(),
+            agents: Mutex::new(HashMap::new()),
+            start_time: Mutex::new(None),
+        }
     }
 }
 
@@ -79,18 +88,9 @@ impl ProgressReporter for IndicatifReporter {
                 total_cases,
                 resuming,
                 completed_cases,
+                agents,
             } => {
                 *self.start_time.lock().unwrap() = Some(Instant::now());
-
-                let bar_style = ProgressStyle::with_template(
-                    "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}",
-                )
-                .unwrap()
-                .progress_chars("█▓▒░  ");
-
-                let bar = self.multi.add(ProgressBar::new(total_cases));
-                bar.set_style(bar_style);
-                bar.set_position(completed_cases);
 
                 if resuming {
                     println!(
@@ -108,35 +108,61 @@ impl ProgressReporter for IndicatifReporter {
                     );
                 }
 
-                self.update_message(&bar);
-                bar.enable_steady_tick(std::time::Duration::from_millis(100));
+                // Find max agent name length for alignment
+                let max_name_len = agents.keys().map(|n| n.len()).max().unwrap_or(10);
 
-                *self.main_bar.lock().unwrap() = Some(bar);
+                // Create one progress bar per agent
+                let mut agents_guard = self.agents.lock().unwrap();
+                let mut agent_names: Vec<_> = agents.keys().cloned().collect();
+                agent_names.sort();
+
+                for agent_name in agent_names {
+                    let progress = agents.get(&agent_name).unwrap();
+                    let bar_style = ProgressStyle::with_template(&format!(
+                        "{{spinner:.green}} {{prefix:<{max_name_len}}} [{{bar:30.cyan/blue}}] {{pos}}/{{len}} {{msg}}"
+                    ))
+                    .unwrap()
+                    .progress_chars("█▓▒░  ");
+
+                    let bar = self.multi.add(ProgressBar::new(progress.total_cases));
+                    bar.set_style(bar_style);
+                    bar.set_prefix(agent_name.clone());
+                    bar.set_position(progress.completed_cases);
+
+                    let state = AgentState::new(bar);
+                    state.update_message(*self.start_time.lock().unwrap());
+                    state
+                        .bar
+                        .enable_steady_tick(std::time::Duration::from_millis(100));
+                    agents_guard.insert(agent_name, state);
+                }
             }
             ProgressEvent::CaseCompleted {
+                agent_name,
                 passed,
                 is_system_error,
                 cost_usd,
                 ..
             } => {
-                if is_system_error {
-                    self.errors.fetch_add(1, Ordering::Relaxed);
-                } else if passed {
-                    self.passed.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    self.failed.fetch_add(1, Ordering::Relaxed);
-                }
+                let agents_guard = self.agents.lock().unwrap();
+                if let Some(state) = agents_guard.get(&agent_name) {
+                    if is_system_error {
+                        state.errors.fetch_add(1, Ordering::Relaxed);
+                    } else if passed {
+                        state.passed.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        state.failed.fetch_add(1, Ordering::Relaxed);
+                    }
 
-                *self.total_cost.lock().unwrap() += cost_usd;
-
-                if let Some(bar) = self.main_bar.lock().unwrap().as_ref() {
-                    bar.inc(1);
-                    self.update_message(bar);
+                    *state.cost.lock().unwrap() += cost_usd;
+                    state.bar.inc(1);
+                    state.update_message(*self.start_time.lock().unwrap());
                 }
             }
             ProgressEvent::CircuitTripped { error_ratio } => {
-                if let Some(bar) = self.main_bar.lock().unwrap().as_ref() {
-                    bar.println(format!(
+                let agents_guard = self.agents.lock().unwrap();
+                if let Some((_, state)) = agents_guard.iter().next() {
+                    state.bar.println(format!(
                         "{} Circuit breaker tripped at {:.1}% error rate",
                         style("⚠").yellow().bold(),
                         error_ratio * 100.0
@@ -151,8 +177,12 @@ impl ProgressReporter for IndicatifReporter {
                 total_cost_usd,
                 circuit_tripped,
             } => {
-                if let Some(bar) = self.main_bar.lock().unwrap().take() {
-                    bar.finish_and_clear();
+                // Finish all agent bars
+                {
+                    let mut agents_guard = self.agents.lock().unwrap();
+                    for (_, state) in agents_guard.drain() {
+                        state.bar.finish_and_clear();
+                    }
                 }
 
                 let elapsed = self

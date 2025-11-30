@@ -6,7 +6,7 @@ use crate::evaluators::get_evaluator;
 use crate::metrics::aggregate_results;
 use crate::persistence::{iso_timestamp_now, ErrorEntry};
 use crate::proxy::{MetricEntry, ProxyConfig, ProxyServer};
-use crate::reporter::{NullReporter, ProgressEvent, ProgressReporter};
+use crate::reporter::{AgentProgress, NullReporter, ProgressEvent, ProgressReporter};
 use crate::run_manager::RunManager;
 use crate::runner::CommandRunner;
 use crate::types::{Case, CaseResult, ErrorType, RunnerOutput};
@@ -185,11 +185,40 @@ impl Orchestrator {
             rm_guard.run_id.clone()
         };
 
+        // Build per-agent progress information
+        let agents = {
+            let mut agent_progress: HashMap<String, AgentProgress> = HashMap::new();
+
+            // Initialize with all agents
+            for agent in &self.config.agents {
+                agent_progress.insert(agent.name.clone(), AgentProgress::default());
+            }
+
+            // Count pending cases per agent
+            for item in &work_items {
+                let agent_name = &self.config.agents[item.agent_idx].name;
+                if let Some(ap) = agent_progress.get_mut(agent_name) {
+                    ap.total_cases += 1;
+                }
+            }
+
+            // Get completed cases per agent from RunManager
+            let rm_guard = rm.lock().await;
+            for (agent_name, ap) in agent_progress.iter_mut() {
+                let completed = rm_guard.completed_count_for_agent(agent_name) as u64;
+                ap.completed_cases = completed;
+                ap.total_cases += completed;
+            }
+
+            agent_progress
+        };
+
         self.reporter.report(ProgressEvent::RunStarted {
             run_id: run_id.clone(),
             total_cases,
             resuming,
             completed_cases: completed_before,
+            agents,
         });
 
         if work_items.is_empty() {
