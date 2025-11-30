@@ -37,6 +37,8 @@ pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
     let mut total_output = 0;
     let mut total_calls = 0;
     let mut total_judge_cost = 0.0;
+    let mut total_judge_input_tokens = 0;
+    let mut total_judge_output_tokens = 0;
     for r in results {
         if let Some(ms_list) = r.llm_metrics.get("llm_latency_ms") {
             if let Some(arr) = ms_list.as_array() {
@@ -68,6 +70,12 @@ pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         total_judge_cost += r.judge_cost_usd.unwrap_or(0.0);
+        if let Some(jmetrics) = r.judge_metrics.get("input_tokens") {
+            total_judge_input_tokens += jmetrics.as_u64().unwrap_or(0);
+        }
+        if let Some(jmetrics) = r.judge_metrics.get("output_tokens") {
+            total_judge_output_tokens += jmetrics.as_u64().unwrap_or(0);
+        }
     }
 
     let avg_lat = if latencies.is_empty() {
@@ -93,5 +101,7 @@ pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
         total_output_tokens: total_output,
         total_cost_usd: total_cost,
         total_judge_cost_usd: total_judge_cost,
+        total_judge_input_tokens,
+        total_judge_output_tokens,
     }
 }
