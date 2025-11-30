@@ -5,7 +5,7 @@ mod progress;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use pacabench_core::config::{load_config_with_overrides, CliOverrides};
+use pacabench_core::config::{load_config_with_overrides, ConfigOverrides};
 use pacabench_core::metrics::aggregate_results;
 use pacabench_core::persistence::{
     list_run_summaries, resolve_runs_dir, ErrorEntry, RunMetadata, RunStore, RunSummary,
@@ -155,13 +155,13 @@ output:
             concurrency,
             timeout,
             ..
-        }) => CliOverrides {
+        }) => ConfigOverrides {
             concurrency: *concurrency,
             timeout_seconds: *timeout,
             max_retries: None,
             runs_dir: runs_dir.clone(),
         },
-        _ => CliOverrides::default(),
+        _ => ConfigOverrides::default(),
     };
 
     let config = load_config_with_overrides(&config_path, overrides)?;
