@@ -6,7 +6,7 @@ config:
   concurrency: 2
   timeout_seconds: 60
   proxy:
-    enabled: true
+    enabled: false
     provider: "openai"
 
 agents:

@@ -272,8 +272,7 @@ impl Evaluator for MultipleChoiceEvaluator {
         let pred_letter = self
             .extract_choice_letter(output.output.as_deref().unwrap_or_default(), &valid_letters);
 
-        if !valid_letters.is_empty() && pred_letter.is_some() {
-            let letter = pred_letter.unwrap();
+        if let Some(letter) = pred_letter.filter(|_| !valid_letters.is_empty()) {
             let passed = letter == expected_letter;
             return EvaluationResult {
                 passed,

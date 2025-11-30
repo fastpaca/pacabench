@@ -121,7 +121,7 @@ async fn llm_judge_records_tokens_and_cost() {
         Some(2)
     );
     assert!(
-        res.metrics.get("latency_ms").is_some(),
+        res.metrics.contains_key("latency_ms"),
         "latency should be recorded"
     );
 }

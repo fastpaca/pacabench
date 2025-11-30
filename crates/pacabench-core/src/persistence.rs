@@ -332,8 +332,8 @@ pub fn list_run_summaries(runs_dir: &Path) -> Result<Vec<RunSummary>> {
     }
 
     summaries.sort_by(|a, b| {
-        let a_ts = parse_iso(&a.start_time).unwrap_or_else(|| chrono::Utc::now());
-        let b_ts = parse_iso(&b.start_time).unwrap_or_else(|| chrono::Utc::now());
+        let a_ts = parse_iso(&a.start_time).unwrap_or_else(chrono::Utc::now);
+        let b_ts = parse_iso(&b.start_time).unwrap_or_else(chrono::Utc::now);
         b_ts.cmp(&a_ts)
     });
     Ok(summaries)

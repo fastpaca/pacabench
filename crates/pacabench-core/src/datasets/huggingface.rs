@@ -55,7 +55,7 @@ impl HuggingFaceDataset {
             .ctx
             .cache_dir
             .join("hf")
-            .join(&repo_id.replace('/', "_"));
+            .join(repo_id.replace('/', "_"));
         std::fs::create_dir_all(&cache_dir)?;
 
         let split = self.config.split.clone().unwrap_or_else(|| "train".into());
