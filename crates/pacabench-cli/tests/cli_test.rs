@@ -61,36 +61,45 @@ fn export_json_includes_judge_fields_and_precision() {
   "run_id": "run1",
   "status": "completed",
   "config_fingerprint": "fp",
+  "agents": ["agent"],
+  "datasets": ["ds"],
   "total_cases": 1,
   "completed_cases": 1,
   "start_time": "2024-01-01T00:00:00Z",
   "completed_time": "2024-01-01T00:00:01Z",
-  "system_error_count": 0,
-  "extras": {}
+  "system_error_count": 0
 }"#,
     )
     .unwrap();
 
-    // Single case with judge fields
+    // Single case with judge fields (cost is computed at CLI layer, not stored)
     let result = serde_json::json!({
         "case_id": "1",
         "dataset_name": "ds",
         "agent_name": "agent",
         "passed": true,
         "output": "ok",
-        "error": null,
         "error_type": "none",
         "runner_duration_ms": 10.0,
-        "llm_metrics": { "llm_total_cost_usd": 0.5, "llm_call_count": 1 },
+        "llm_metrics": {
+            "call_count": 1,
+            "latency_ms": [],
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_tokens": 0
+        },
         "attempt": 1,
         "timestamp": "2024-01-01T00:00:00Z",
         "f1_score": 1.0,
         "f1_passed": true,
         "judge_passed": true,
         "judge_reason": "good",
-        "judge_metrics": { "input_tokens": 10, "output_tokens": 5 },
-        "judge_cost_usd": 1.0,
-        "extra": {}
+        "judge_metrics": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cached_tokens": 0,
+            "latency_ms": 0.0
+        }
     });
     let mut results_file = fs::File::create(run_dir.join("results.jsonl")).unwrap();
     writeln!(results_file, "{}", result).unwrap();
@@ -113,16 +122,17 @@ fn export_json_includes_judge_fields_and_precision() {
     let parsed: Value = serde_json::from_slice(&output).unwrap();
     let metrics = &parsed["agents"]["agent"]["metrics"];
     assert_eq!(metrics["precision"], metrics["accuracy"]);
-    assert_eq!(
-        parsed["agents"]["agent"]["results"][0]["judge_cost_usd"]
-            .as_f64()
-            .unwrap(),
-        1.0
-    );
+    // Judge tokens should be tracked (cost is computed at CLI layer)
     assert_eq!(
         parsed["agents"]["agent"]["results"][0]["judge_metrics"]["input_tokens"]
             .as_u64()
             .unwrap(),
         10
+    );
+    assert_eq!(
+        parsed["agents"]["agent"]["results"][0]["judge_metrics"]["output_tokens"]
+            .as_u64()
+            .unwrap(),
+        5
     );
 }

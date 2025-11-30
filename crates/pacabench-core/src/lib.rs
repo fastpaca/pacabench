@@ -1,43 +1,71 @@
-//! Core library for the Rust rewrite of PacaBench.
+//! PacaBench Core - LLM agent benchmarking library.
 //!
-//! This crate provides the building blocks for running LLM agent benchmarks:
+//! # Quick Start
 //!
-//! - [`config`]: Configuration loading and validation
-//! - [`datasets`]: Dataset loaders (local, git, HuggingFace)
-//! - [`evaluators`]: Result evaluation (F1, exact match, LLM judge)
-//! - [`orchestrator`]: Main benchmark execution pipeline
-//! - [`proxy`]: OpenAI-compatible proxy for metrics collection
-//! - [`events`]: Event bus for observability and progress reporting
-//! - [`state`]: Run state machine for lifecycle management
-//! - [`error`]: Unified error types
+//! ```ignore
+//! use pacabench_core::{Benchmark, Event, Command};
 //!
-//! # Architecture
+//! let bench = Benchmark::from_config_file("pacabench.yaml")?;
 //!
-//! The orchestrator spawns runner processes and a metrics proxy, executes
-//! cases concurrently, and streams results via an event bus. The state
-//! machine tracks run lifecycle for checkpointing and resume.
+//! // Subscribe to events
+//! let events = bench.subscribe();
+//! tokio::spawn(async move {
+//!     while let Some(event) = events.recv().await {
+//!         match event {
+//!             Event::CaseCompleted { passed, .. } => println!("Case: {}", if passed { "✓" } else { "✗" }),
+//!             Event::RunCompleted { metrics, .. } => println!("Done: {:.1}% accuracy", metrics.accuracy * 100.0),
+//!             _ => {}
+//!         }
+//!     }
+//! });
+//!
+//! // Run or control
+//! let result = bench.run(None, None).await?;
+//! // bench.send(Command::Stop { reason: "user cancelled".into() });
+//! ```
+//!
+//! # Public API
+//!
+//! - [`Benchmark`] - Main entry point for running benchmarks
+//! - [`Event`] - Events emitted during execution (subscribe to observe)
+//! - [`Command`] - Commands to control execution (stop, abort)
+//! - [`Config`](config::BenchmarkConfig) - Configuration
+//! - [`RunResult`](benchmark::RunResult) - Result of a benchmark run
 
-// Foundation modules (no internal dependencies)
-pub mod state;
+// Public API - the primary interface
+pub mod benchmark;
+pub use benchmark::{from_config_file, Benchmark, RunResult};
+
+// Protocol - events and commands (public)
+pub mod protocol;
+pub use protocol::{Command, Event};
+
+// Configuration (public)
+pub mod config;
+
+// Types (public)
 pub mod types;
+pub use types::{
+    AggregatedMetrics, Case, CaseKey, CaseResult, ErrorType, EvaluationResult, JudgeMetrics,
+    LlmMetrics, RunStatus, RunnerOutput,
+};
 
-// Error types (depends on state)
+// Error types (public)
 pub mod error;
 
-// Core modules
-pub mod config;
-pub mod events;
-pub mod pricing;
-
-// Data loading
-pub mod datasets;
-
-// Execution
-pub mod evaluators;
-pub mod metrics;
-pub mod orchestrator;
+// Persistence (public for CLI)
 pub mod persistence;
+
+// Metrics aggregation (public for CLI)
+pub mod metrics;
+
+// Internal modules - used by Benchmark but not part of primary API
+pub(crate) mod retry;
+pub(crate) mod state;
+pub(crate) mod worker;
+
+// Supporting modules - available but not primary
+pub mod datasets;
+pub mod evaluators;
 pub mod proxy;
-pub mod reporter;
-pub mod run_manager;
 pub mod runner;

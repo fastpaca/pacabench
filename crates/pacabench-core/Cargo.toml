@@ -32,7 +32,9 @@ reqwest = { version = "0.12", features = ["json", "gzip", "stream", "blocking"] 
 tokio-stream = "0.1"
 futures-util = "0.3"
 tiktoken-rs = "0.5"
-config = "0.15.19"
+figment = { version = "0.10", features = ["yaml", "env"] }
+async-channel = "2"
+statrs = "0.17"
 
 [dev-dependencies]
 tempfile = "3.12"

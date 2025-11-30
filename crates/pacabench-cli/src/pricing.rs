@@ -1,4 +1,7 @@
-//! Model pricing tables for cost calculation (parity with genai-prices).
+//! Model pricing tables for cost calculation.
+//!
+//! This module is application-layer only - the core library tracks tokens,
+//! and the CLI applies pricing when displaying/exporting results.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -337,6 +340,8 @@ pub fn get_pricing(model: &str) -> Option<ModelPricing> {
     None
 }
 
+/// Calculate cost for a model given token counts.
+/// Returns 0.0 if the model is not found in the pricing table.
 pub fn calculate_cost(
     model: &str,
     input_tokens: u64,
@@ -348,3 +353,15 @@ pub fn calculate_cost(
         None => 0.0,
     }
 }
+
+/// Calculate cost from aggregated metrics.
+/// Uses gpt-4o-mini as default model for estimation when model is unknown.
+pub fn calculate_cost_from_metrics(
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+) -> f64 {
+    // Use gpt-4o-mini pricing as a reasonable default
+    calculate_cost("gpt-4o-mini", input_tokens, output_tokens, cached_tokens)
+}
+

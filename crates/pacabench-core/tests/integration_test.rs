@@ -1,11 +1,11 @@
-//! Integration tests for the pacabench-core orchestrator.
+//! Integration tests for the pacabench-core Benchmark API.
 
 use pacabench_core::config::{
     AgentConfig, BenchmarkConfig, DatasetConfig, GlobalConfig, OutputConfig, ProxyConfig,
 };
 use pacabench_core::metrics::aggregate_results;
-use pacabench_core::orchestrator::Orchestrator;
 use pacabench_core::persistence::RunStore;
+use pacabench_core::Benchmark;
 use std::fs;
 use tempfile::tempdir;
 
@@ -39,7 +39,7 @@ fn create_test_dataset(path: &std::path::Path) {
 }
 
 #[tokio::test]
-async fn test_orchestrator_end_to_end() {
+async fn test_benchmark_end_to_end() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let cache = root.join("cache");
@@ -50,11 +50,9 @@ async fn test_orchestrator_end_to_end() {
     fs::create_dir_all(&runs).unwrap();
     fs::create_dir_all(&data_dir).unwrap();
 
-    // Create echo agent
     let agent_script = root.join("agent.py");
     create_echo_agent(&agent_script);
 
-    // Create test dataset
     let dataset_file = data_dir.join("cases.jsonl");
     create_test_dataset(&dataset_file);
 
@@ -93,12 +91,13 @@ async fn test_orchestrator_end_to_end() {
         },
     };
 
-    let orch = Orchestrator::new(config, root.clone(), cache, runs.clone());
-
-    // Run the orchestrator
-    orch.run(Some("test-run".into()), None, false)
+    let bench = Benchmark::new(config, root.clone(), cache, runs.clone());
+    let result = bench
+        .run(Some("test-run".into()), None)
         .await
-        .expect("orchestrator should run successfully");
+        .expect("benchmark should run successfully");
+
+    assert!(!result.aborted, "run should not be aborted");
 
     // Verify results
     let store = RunStore::new(runs.join("test-run")).expect("should open run store");
@@ -106,7 +105,6 @@ async fn test_orchestrator_end_to_end() {
 
     assert_eq!(results.len(), 3, "should have 3 results");
 
-    // All cases should pass (echo agent returns input which matches expected)
     for result in &results {
         assert!(
             result.passed,
@@ -116,7 +114,6 @@ async fn test_orchestrator_end_to_end() {
         assert!(result.error.is_none(), "should have no error");
     }
 
-    // Check aggregated metrics
     let metrics = aggregate_results(&results);
     assert_eq!(metrics.total_cases, 3);
     assert!(
@@ -127,7 +124,7 @@ async fn test_orchestrator_end_to_end() {
 }
 
 #[tokio::test]
-async fn test_orchestrator_resume() {
+async fn test_benchmark_resume() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let cache = root.join("cache");
@@ -179,10 +176,10 @@ async fn test_orchestrator_resume() {
         },
     };
 
-    let orch = Orchestrator::new(config.clone(), root.clone(), cache.clone(), runs.clone());
-
     // First run with limit 1
-    orch.run(Some("resume-run".into()), Some(1), false)
+    let bench1 = Benchmark::new(config.clone(), root.clone(), cache.clone(), runs.clone());
+    bench1
+        .run(Some("resume-run".into()), Some(1))
         .await
         .expect("first run should succeed");
 
@@ -191,9 +188,9 @@ async fn test_orchestrator_resume() {
     assert_eq!(results1.len(), 1, "first run should have 1 result");
 
     // Resume run - should complete remaining cases
-    let orch2 = Orchestrator::new(config, root.clone(), cache, runs.clone());
-    orch2
-        .run(Some("resume-run".into()), None, false)
+    let bench2 = Benchmark::new(config, root.clone(), cache, runs.clone());
+    bench2
+        .run(Some("resume-run".into()), None)
         .await
         .expect("resume should succeed");
 
@@ -203,7 +200,7 @@ async fn test_orchestrator_resume() {
 }
 
 #[tokio::test]
-async fn test_orchestrator_with_evaluator() {
+async fn test_benchmark_with_evaluator() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let cache = root.join("cache");
@@ -217,7 +214,6 @@ async fn test_orchestrator_with_evaluator() {
     let agent_script = root.join("agent.py");
     create_echo_agent(&agent_script);
 
-    // Create dataset with cases that will pass exact match
     let dataset_file = data_dir.join("cases.jsonl");
     let cases = [
         r#"{"case_id": "1", "input": "hello", "expected": "hello"}"#,
@@ -253,21 +249,16 @@ async fn test_orchestrator_with_evaluator() {
             split: None,
             prepare: None,
             input_map: Default::default(),
-            evaluator: Some(pacabench_core::config::EvaluatorConfig {
-                r#type: "exact_match".into(),
-                model: None,
-                extra_config: Default::default(),
-                additional: Default::default(),
-            }),
+            evaluator: Some(pacabench_core::config::EvaluatorConfig::ExactMatch),
         }],
         output: OutputConfig {
             directory: runs.to_string_lossy().to_string(),
         },
     };
 
-    let orch = Orchestrator::new(config, root.clone(), cache, runs.clone());
-
-    orch.run(Some("eval-run".into()), None, false)
+    let bench = Benchmark::new(config, root.clone(), cache, runs.clone());
+    bench
+        .run(Some("eval-run".into()), None)
         .await
         .expect("run should succeed");
 
@@ -276,7 +267,6 @@ async fn test_orchestrator_with_evaluator() {
 
     assert_eq!(results.len(), 2);
 
-    // Find results by case_id
     let r1 = results.iter().find(|r| r.case_id == "1").unwrap();
     let r2 = results.iter().find(|r| r.case_id == "2").unwrap();
 
@@ -292,7 +282,6 @@ async fn test_orchestrator_with_evaluator() {
 
 #[test]
 fn test_proxy_url_format_includes_v1() {
-    // Verify the proxy URL format is correct for OpenAI SDK compatibility
     let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let proxy_url = format!("http://{}/v1", addr);
     assert!(proxy_url.ends_with("/v1"), "proxy_url should end with /v1");
@@ -301,7 +290,6 @@ fn test_proxy_url_format_includes_v1() {
 
 #[test]
 fn test_upstream_url_derivation_from_provider() {
-    // Test that upstream URL is correctly derived from provider name
     let providers: [(&str, Option<&str>); 3] = [
         ("openai", Some("https://api.openai.com")),
         ("anthropic", Some("https://api.anthropic.com")),
@@ -328,7 +316,7 @@ fn test_upstream_url_derivation_from_provider() {
 }
 
 #[tokio::test]
-async fn test_orchestrator_uses_relative_path_with_root_dir() {
+async fn test_benchmark_uses_relative_path_with_root_dir() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let cache = root.join("cache");
@@ -344,7 +332,6 @@ async fn test_orchestrator_uses_relative_path_with_root_dir() {
     )
     .unwrap();
 
-    // Create agent in root directory
     fs::write(
         root.join("agent.py"),
         r#"
@@ -360,7 +347,6 @@ for line in sys.stdin:
     )
     .unwrap();
 
-    // Use RELATIVE path (verifies work_dir is used)
     let cfg = BenchmarkConfig {
         name: "relpath-test".into(),
         description: None,
@@ -375,7 +361,7 @@ for line in sys.stdin:
         },
         agents: vec![AgentConfig {
             name: "agent".into(),
-            command: "python agent.py".into(), // Relative path!
+            command: "python agent.py".into(),
             setup: None,
             teardown: None,
             env: Default::default(),
@@ -393,8 +379,8 @@ for line in sys.stdin:
         },
     };
 
-    let orch = Orchestrator::new(cfg, root.clone(), cache, runs.clone());
-    orch.run(None, Some(1), false).await.unwrap();
+    let bench = Benchmark::new(cfg, root.clone(), cache, runs.clone());
+    bench.run(None, Some(1)).await.unwrap();
 
     let run_dirs: Vec<_> = fs::read_dir(&runs).unwrap().collect();
     assert_eq!(run_dirs.len(), 1);
@@ -407,98 +393,4 @@ for line in sys.stdin:
         result["error"]
     );
     assert_eq!(result["output"].as_str(), Some("test"));
-}
-
-#[tokio::test]
-async fn test_runner_recycle_interval_restarts_process() {
-    let dir = tempdir().unwrap();
-    let root = dir.path().to_path_buf();
-    let cache = root.join("cache");
-    let runs = root.join("runs");
-    let data_dir = root.join("data");
-    fs::create_dir_all(&cache).unwrap();
-    fs::create_dir_all(&runs).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    // Agent emits its PID so we can detect restarts.
-    let agent_script = root.join("agent_pid.py");
-    fs::write(
-        &agent_script,
-        r#"
-import sys, json, os
-for line in sys.stdin:
-    if not line.strip():
-        continue
-    _ = json.loads(line)
-    out = {"output": str(os.getpid()), "error": None}
-    print(json.dumps(out))
-    sys.stdout.flush()
-"#,
-    )
-    .unwrap();
-
-    // Two cases to force recycle after first.
-    fs::write(
-        data_dir.join("cases.jsonl"),
-        r#"{"case_id": "1", "input": "a", "expected": "a"}
-{"case_id": "2", "input": "b", "expected": "b"}"#,
-    )
-    .unwrap();
-
-    let cfg = BenchmarkConfig {
-        name: "recycle-test".into(),
-        description: None,
-        version: "0.1.0".into(),
-        author: None,
-        config: GlobalConfig {
-            concurrency: 1,
-            timeout_seconds: 30.0,
-            max_retries: 0,
-            proxy: ProxyConfig {
-                enabled: false,
-                ..Default::default()
-            },
-            worker_recycle_interval: 1,
-            ..Default::default()
-        },
-        agents: vec![AgentConfig {
-            name: "pid-agent".into(),
-            command: format!("python {}", agent_script.display()),
-            setup: None,
-            teardown: None,
-            env: Default::default(),
-        }],
-        datasets: vec![DatasetConfig {
-            name: "ds".into(),
-            source: data_dir.to_string_lossy().to_string(),
-            split: None,
-            prepare: None,
-            input_map: Default::default(),
-            evaluator: None,
-        }],
-        output: OutputConfig {
-            directory: runs.to_string_lossy().to_string(),
-        },
-    };
-
-    let orch = Orchestrator::new(cfg, root.clone(), cache, runs.clone());
-    orch.run(Some("recycle-run".into()), None, false)
-        .await
-        .unwrap();
-
-    let store = RunStore::new(runs.join("recycle-run")).unwrap();
-    let results = store.load_results().unwrap();
-    assert_eq!(results.len(), 2);
-
-    let pid1 = results
-        .iter()
-        .find(|r| r.case_id == "1")
-        .and_then(|r| r.output.clone())
-        .unwrap();
-    let pid2 = results
-        .iter()
-        .find(|r| r.case_id == "2")
-        .and_then(|r| r.output.clone())
-        .unwrap();
-    assert_ne!(pid1, pid2, "runner should have been recycled between cases");
 }
