@@ -1,7 +1,7 @@
 //! Tests for the evaluators module.
 
 use axum::{extract::State, routing::post, Json, Router};
-use pacabench_core::config::EvaluatorConfig;
+use pacabench_core::config::MultipleChoiceFallback;
 use pacabench_core::evaluators::{
     Evaluator, ExactMatchEvaluator, F1Evaluator, LlmJudgeEvaluator, MultipleChoiceEvaluator,
 };
@@ -29,11 +29,9 @@ fn ro(output: &str) -> RunnerOutput {
     RunnerOutput {
         output: Some(output.into()),
         error: None,
-        metrics: None,
-        duration_ms: 0.0,
         error_type: ErrorType::None,
+        duration_ms: 0.0,
         error_traceback: None,
-        retry_count: 0,
     }
 }
 
@@ -69,12 +67,12 @@ async fn multiple_choice_letter_match() {
     let mut outer = HashMap::new();
     outer.insert("choices".into(), serde_json::Value::Object(meta));
     case.metadata = outer;
-    let ev = MultipleChoiceEvaluator::new(&EvaluatorConfig {
-        r#type: "multiple_choice".into(),
-        model: None,
-        extra_config: Default::default(),
-        additional: Default::default(),
-    });
+
+    let ev = MultipleChoiceEvaluator::new(
+        MultipleChoiceFallback::F1,
+        0.5,
+        "gpt-4o-mini".to_string(),
+    );
     let res = ev.evaluate(&case, &ro("A")).await;
     assert!(res.passed);
 }
@@ -83,19 +81,18 @@ async fn multiple_choice_letter_match() {
 async fn multiple_choice_fallbacks_to_f1_without_choices() {
     let mut case = make_case("foo bar");
     case.metadata = HashMap::new();
-    let ev = MultipleChoiceEvaluator::new(&EvaluatorConfig {
-        r#type: "multiple_choice".into(),
-        model: None,
-        extra_config: Default::default(),
-        additional: Default::default(),
-    });
+
+    let ev = MultipleChoiceEvaluator::new(
+        MultipleChoiceFallback::F1,
+        0.5,
+        "gpt-4o-mini".to_string(),
+    );
     let res = ev.evaluate(&case, &ro("foo bar")).await;
     assert!(res.passed, "fallback F1 should be used when no choices");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn llm_judge_records_tokens_and_cost() {
-    // Stub server to avoid real OpenAI calls.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = Router::new().route(
@@ -120,19 +117,11 @@ async fn llm_judge_records_tokens_and_cost() {
     std::env::remove_var("OPENAI_API_KEY");
     std::env::remove_var("JUDGE_BASE_URL");
     assert!(res.passed);
-    assert!(res.cost_usd.unwrap_or(0.0) >= 0.0);
-    assert_eq!(
-        res.metrics.get("input_tokens").and_then(|v| v.as_u64()),
-        Some(10)
-    );
-    assert_eq!(
-        res.metrics.get("output_tokens").and_then(|v| v.as_u64()),
-        Some(2)
-    );
-    assert!(
-        res.metrics.contains_key("latency_ms"),
-        "latency should be recorded"
-    );
+    let jm = res.judge_metrics.expect("judge_metrics should be present");
+    assert_eq!(jm.input_tokens, 10);
+    assert_eq!(jm.output_tokens, 2);
+    assert!(jm.latency_ms > 0.0, "latency should be recorded");
+    assert!(jm.model.is_some(), "model should be recorded for cost calculation");
 }
 
 #[tokio::test(flavor = "multi_thread")]

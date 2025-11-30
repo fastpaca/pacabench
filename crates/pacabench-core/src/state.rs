@@ -1,212 +1,124 @@
-//! Run state machine for lifecycle management.
+//! Run state management.
 //!
-//! Provides explicit, type-safe state transitions for benchmark runs.
-//! All state is stored atomically for lock-free concurrent access.
+//! Provides explicit state tracking for benchmark runs with proper state transitions.
 
-use crate::error::PacabenchError;
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use crate::protocol::WorkItem;
+use crate::types::{CaseKey, CaseResult, RunStatus};
+use std::collections::{HashMap, HashSet};
 
-/// The possible states of a benchmark run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum RunStateKind {
-    /// Run is being initialized.
-    Initializing = 0,
-    /// Loading datasets.
-    Loading = 1,
-    /// Executing cases.
-    Running = 2,
-    /// Run was paused (e.g., for checkpointing).
-    Paused = 3,
-    /// Run completed successfully.
-    Completed = 4,
-    /// Run failed due to errors.
-    Failed = 5,
+/// Tracks state for a benchmark run.
+pub struct RunState {
+    pub run_id: String,
+    pub status: RunStatus,
+    cases: HashMap<CaseKey, WorkItem>,
+    pending: HashSet<CaseKey>,
+    completed: HashMap<CaseKey, CaseResult>,
+    attempt_counts: HashMap<CaseKey, u32>,
+    max_retries: u32,
 }
 
-impl RunStateKind {
-    fn from_u8(val: u8) -> Self {
-        match val {
-            0 => Self::Initializing,
-            1 => Self::Loading,
-            2 => Self::Running,
-            3 => Self::Paused,
-            4 => Self::Completed,
-            5 => Self::Failed,
-            _ => Self::Failed,
+impl RunState {
+    pub fn new(run_id: String, work_items: Vec<WorkItem>, max_retries: u32) -> Self {
+        let mut cases = HashMap::new();
+        let mut pending = HashSet::new();
+
+        for item in work_items {
+            let key = item.key();
+            cases.insert(key.clone(), item);
+            pending.insert(key);
         }
-    }
 
-    /// Check if transition to `to` is valid from this state.
-    pub fn can_transition_to(self, to: Self) -> bool {
-        use RunStateKind::*;
-        matches!(
-            (self, to),
-            // Normal flow
-            (Initializing, Loading)
-                | (Loading, Running)
-                | (Running, Completed)
-                // Pause/resume
-                | (Running, Paused)
-                | (Paused, Running)
-                // Failures from any non-terminal state
-                | (Initializing, Failed)
-                | (Loading, Failed)
-                | (Running, Failed)
-                | (Paused, Failed)
-        )
-    }
-}
-
-/// Atomic state machine for tracking run lifecycle and progress.
-///
-/// All operations are lock-free using atomic primitives.
-#[derive(Debug)]
-pub struct RunStateMachine {
-    state: AtomicU8,
-    total: AtomicU64,
-    completed: AtomicU64,
-    passed: AtomicU64,
-    failed: AtomicU64,
-    system_errors: AtomicU64,
-}
-
-impl RunStateMachine {
-    /// Create a new state machine in `Initializing` state.
-    pub fn new() -> Self {
         Self {
-            state: AtomicU8::new(RunStateKind::Initializing as u8),
-            total: AtomicU64::new(0),
-            completed: AtomicU64::new(0),
-            passed: AtomicU64::new(0),
-            failed: AtomicU64::new(0),
-            system_errors: AtomicU64::new(0),
+            run_id,
+            status: RunStatus::Pending,
+            cases,
+            pending,
+            completed: HashMap::new(),
+            attempt_counts: HashMap::new(),
+            max_retries,
         }
     }
 
-    /// Create a state machine with known totals (for resume).
-    pub fn with_totals(total: u64, completed: u64, passed: u64) -> Self {
-        Self {
-            state: AtomicU8::new(RunStateKind::Initializing as u8),
-            total: AtomicU64::new(total),
-            completed: AtomicU64::new(completed),
-            passed: AtomicU64::new(passed),
-            failed: AtomicU64::new(completed.saturating_sub(passed)),
-            system_errors: AtomicU64::new(0),
+    /// Resume from existing results - mark completed cases.
+    pub fn resume_from(&mut self, existing_results: Vec<CaseResult>) {
+        for result in existing_results {
+            let key = result.key();
+            if result.passed {
+                self.pending.remove(&key);
+                self.completed.insert(key.clone(), result.clone());
+            }
+            self.attempt_counts.insert(key, result.attempt);
         }
     }
 
-    /// Get the current state.
-    pub fn state(&self) -> RunStateKind {
-        RunStateKind::from_u8(self.state.load(Ordering::Acquire))
+    pub fn total_cases(&self) -> u64 {
+        self.cases.len() as u64
     }
 
-    /// Attempt to transition to a new state.
-    ///
-    /// Returns the previous state on success, or an error if the transition is invalid.
-    pub fn transition(&self, to: RunStateKind) -> Result<RunStateKind, PacabenchError> {
-        let current = self.state();
-        if !current.can_transition_to(to) {
-            return Err(PacabenchError::InvalidTransition {
-                from: current,
-                to,
-            });
+    pub fn completed_cases(&self) -> u64 {
+        self.completed.len() as u64
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Get initial work items (those not yet completed).
+    pub fn initial_work_items(&self) -> Vec<WorkItem> {
+        self.pending
+            .iter()
+            .filter_map(|key| self.cases.get(key).cloned())
+            .map(|mut item| {
+                // Set attempt based on previous attempts
+                if let Some(&prev) = self.attempt_counts.get(&item.key()) {
+                    item.attempt = prev + 1;
+                }
+                item
+            })
+            .collect()
+    }
+
+    /// Record a case completion. Returns true if a retry should be scheduled.
+    pub fn mark_completed(&mut self, key: CaseKey, result: CaseResult) -> bool {
+        let attempt = result.attempt;
+        self.attempt_counts.insert(key.clone(), attempt);
+
+        let needs_retry = !result.passed
+            && result.error_type.is_retryable()
+            && attempt < self.max_retries;
+
+        if !needs_retry {
+            self.pending.remove(&key);
+            self.completed.insert(key, result);
         }
-        self.state.store(to as u8, Ordering::Release);
-        Ok(current)
+
+        needs_retry
     }
 
-    /// Set the total number of cases.
-    pub fn set_total(&self, total: u64) {
-        self.total.store(total, Ordering::Release);
+    /// Get the retry work item for a case.
+    pub fn retry_item(&self, key: &CaseKey) -> Option<WorkItem> {
+        let item = self.cases.get(key)?;
+        let attempt = self.attempt_counts.get(key).copied().unwrap_or(0) + 1;
+        Some(WorkItem {
+            run_id: item.run_id.clone(),
+            agent_name: item.agent_name.clone(),
+            dataset_name: item.dataset_name.clone(),
+            case_id: item.case_id.clone(),
+            case: item.case.clone(),
+            attempt,
+        })
     }
 
-    /// Get the total number of cases.
-    pub fn total(&self) -> u64 {
-        self.total.load(Ordering::Acquire)
+    pub fn results(&self) -> Vec<CaseResult> {
+        self.completed.values().cloned().collect()
     }
 
-    /// Get the number of completed cases.
-    pub fn completed(&self) -> u64 {
-        self.completed.load(Ordering::Acquire)
+    pub fn transition(&mut self, to: RunStatus) {
+        self.status = to;
     }
-
-    /// Get the number of passed cases.
-    pub fn passed(&self) -> u64 {
-        self.passed.load(Ordering::Acquire)
-    }
-
-    /// Get the number of failed cases.
-    pub fn failed(&self) -> u64 {
-        self.failed.load(Ordering::Acquire)
-    }
-
-    /// Get the number of system errors.
-    pub fn system_errors(&self) -> u64 {
-        self.system_errors.load(Ordering::Acquire)
-    }
-
-    /// Record a completed case.
-    pub fn record_completed(&self, passed: bool, is_system_error: bool) {
-        self.completed.fetch_add(1, Ordering::AcqRel);
-        if passed {
-            self.passed.fetch_add(1, Ordering::AcqRel);
-        } else {
-            self.failed.fetch_add(1, Ordering::AcqRel);
-        }
-        if is_system_error {
-            self.system_errors.fetch_add(1, Ordering::AcqRel);
-        }
-    }
-
-    /// Get current progress as a fraction (0.0 - 1.0).
-    pub fn progress(&self) -> f64 {
-        let total = self.total.load(Ordering::Acquire);
-        if total == 0 {
-            return 0.0;
-        }
-        let completed = self.completed.load(Ordering::Acquire);
-        completed as f64 / total as f64
-    }
-
-    /// Get current error ratio.
-    pub fn error_ratio(&self) -> f64 {
-        let completed = self.completed.load(Ordering::Acquire);
-        if completed == 0 {
-            return 0.0;
-        }
-        let errors = self.system_errors.load(Ordering::Acquire);
-        errors as f64 / completed as f64
-    }
-
-    /// Create a snapshot for checkpointing.
-    pub fn snapshot(&self) -> RunSnapshot {
-        RunSnapshot {
-            state: self.state(),
-            total: self.total.load(Ordering::Acquire),
-            completed: self.completed.load(Ordering::Acquire),
-            passed: self.passed.load(Ordering::Acquire),
-            failed: self.failed.load(Ordering::Acquire),
-            system_errors: self.system_errors.load(Ordering::Acquire),
-        }
-    }
-}
-
-impl Default for RunStateMachine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A point-in-time snapshot of run state (for checkpointing).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RunSnapshot {
-    pub state: RunStateKind,
-    pub total: u64,
-    pub completed: u64,
-    pub passed: u64,
-    pub failed: u64,
-    pub system_errors: u64,
 }
 

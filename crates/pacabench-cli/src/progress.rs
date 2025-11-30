@@ -1,28 +1,26 @@
-//! Indicatif-based progress reporter for the CLI.
+//! Indicatif-based progress display for the CLI.
 //!
 //! Provides rich terminal output using progress bars for each agent.
-//! All counters use atomics for lock-free concurrent updates.
+//! Receives events via tokio channel and updates the display.
+//! Cost is computed here using pricing tables from the pricing module.
 
+use crate::pricing::calculate_cost_from_metrics;
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use pacabench_core::reporter::{ProgressEvent, ProgressReporter};
+use pacabench_core::Event;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+use tokio::sync::broadcast;
 
-/// Microdollars per USD (for storing cost as atomic integer).
 const MICRODOLLARS_PER_USD: f64 = 1_000_000.0;
 
-/// Per-agent progress state.
-///
-/// All counters are atomic for lock-free updates from concurrent tasks.
 struct AgentState {
     bar: ProgressBar,
     passed: AtomicU64,
     failed: AtomicU64,
     errors: AtomicU64,
-    /// Cost stored as microdollars (1 USD = 1,000,000 microdollars).
     cost_micros: AtomicU64,
 }
 
@@ -37,13 +35,11 @@ impl AgentState {
         }
     }
 
-    /// Add cost in USD (converted to microdollars internally).
     fn add_cost(&self, usd: f64) {
         let micros = (usd * MICRODOLLARS_PER_USD) as u64;
         self.cost_micros.fetch_add(micros, Ordering::Relaxed);
     }
 
-    /// Get cost in USD.
     fn cost_usd(&self) -> f64 {
         self.cost_micros.load(Ordering::Relaxed) as f64 / MICRODOLLARS_PER_USD
     }
@@ -77,20 +73,20 @@ impl AgentState {
     }
 }
 
-/// Progress reporter using indicatif for rich terminal output.
-pub struct IndicatifReporter {
+/// Progress display using indicatif for rich terminal output.
+pub struct ProgressDisplay {
     multi: MultiProgress,
     agents: Mutex<HashMap<String, AgentState>>,
     start_time: Mutex<Option<Instant>>,
 }
 
-impl Default for IndicatifReporter {
+impl Default for ProgressDisplay {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl IndicatifReporter {
+impl ProgressDisplay {
     pub fn new() -> Self {
         Self {
             multi: MultiProgress::new(),
@@ -98,17 +94,27 @@ impl IndicatifReporter {
             start_time: Mutex::new(None),
         }
     }
-}
 
-impl ProgressReporter for IndicatifReporter {
-    fn report(&self, event: ProgressEvent) {
+    /// Process events until the channel closes.
+    pub async fn run(self, mut rx: broadcast::Receiver<Event>) {
+        loop {
+            match rx.recv().await {
+                Ok(event) => self.handle_event(event),
+                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
+    }
+
+    fn handle_event(&self, event: Event) {
         match event {
-            ProgressEvent::RunStarted {
+            Event::RunStarted {
                 run_id,
                 total_cases,
                 resuming,
                 completed_cases,
                 agents,
+                datasets: _,
             } => {
                 *self.start_time.lock() = Some(Instant::now());
 
@@ -128,45 +134,54 @@ impl ProgressReporter for IndicatifReporter {
                     );
                 }
 
-                // Find max agent name length for alignment
-                let max_name_len = agents.keys().map(|n| n.len()).max().unwrap_or(10);
+                let max_name_len = agents.iter().map(|n| n.len()).max().unwrap_or(10);
+                let cases_per_agent = if agents.is_empty() {
+                    total_cases
+                } else {
+                    total_cases / agents.len() as u64
+                };
+                let completed_per_agent = if agents.is_empty() {
+                    completed_cases
+                } else {
+                    completed_cases / agents.len() as u64
+                };
 
-                // Create one progress bar per agent
                 let mut agents_guard = self.agents.lock();
-                let mut agent_names: Vec<_> = agents.keys().cloned().collect();
+                let mut agent_names = agents.clone();
                 agent_names.sort();
 
                 for agent_name in agent_names {
-                    let progress = agents.get(&agent_name).unwrap();
                     let bar_style = ProgressStyle::with_template(&format!(
                         "{{spinner:.green}} {{prefix:<{max_name_len}}} [{{bar:30.cyan/blue}}] {{pos}}/{{len}} {{msg}}"
                     ))
                     .unwrap()
                     .progress_chars("█▓▒░  ");
 
-                    let bar = self.multi.add(ProgressBar::new(progress.total_cases));
+                    let bar = self.multi.add(ProgressBar::new(cases_per_agent));
                     bar.set_style(bar_style);
                     bar.set_prefix(agent_name.clone());
-                    bar.set_position(progress.completed_cases);
+                    bar.set_position(completed_per_agent);
 
                     let state = AgentState::new(bar);
                     state.update_message(*self.start_time.lock());
-                    state
-                        .bar
-                        .enable_steady_tick(std::time::Duration::from_millis(100));
+                    state.bar.enable_steady_tick(std::time::Duration::from_millis(100));
                     agents_guard.insert(agent_name, state);
                 }
             }
-            ProgressEvent::CaseCompleted {
-                agent_name,
+
+            Event::CaseStarted { .. } => {}
+
+            Event::CaseCompleted {
+                agent,
                 passed,
-                is_system_error,
-                cost_usd,
+                is_error,
+                input_tokens,
+                output_tokens,
                 ..
             } => {
                 let agents_guard = self.agents.lock();
-                if let Some(state) = agents_guard.get(&agent_name) {
-                    if is_system_error {
+                if let Some(state) = agents_guard.get(&agent) {
+                    if is_error {
                         state.errors.fetch_add(1, Ordering::Relaxed);
                     } else if passed {
                         state.passed.fetch_add(1, Ordering::Relaxed);
@@ -174,12 +189,14 @@ impl ProgressReporter for IndicatifReporter {
                         state.failed.fetch_add(1, Ordering::Relaxed);
                     }
 
+                    let cost_usd = calculate_cost_from_metrics(input_tokens, output_tokens, 0);
                     state.add_cost(cost_usd);
                     state.bar.inc(1);
                     state.update_message(*self.start_time.lock());
                 }
             }
-            ProgressEvent::CircuitTripped { error_ratio } => {
+
+            Event::CircuitTripped { error_ratio } => {
                 let agents_guard = self.agents.lock();
                 if let Some((_, state)) = agents_guard.iter().next() {
                     state.bar.println(format!(
@@ -189,17 +206,27 @@ impl ProgressReporter for IndicatifReporter {
                     ));
                 }
             }
-            ProgressEvent::RunCompleted {
+
+            Event::RunCompleted {
                 run_id,
                 total_cases,
                 passed_cases,
                 failed_cases,
-                total_cost_usd,
-                circuit_tripped,
+                aborted,
                 metrics,
-                agents,
+                agent_metrics,
             } => {
-                // Finish all agent bars
+                let total_cost_usd = calculate_cost_from_metrics(
+                    metrics.total_input_tokens,
+                    metrics.total_output_tokens,
+                    metrics.total_cached_tokens,
+                );
+                let judge_cost_usd = calculate_cost_from_metrics(
+                    metrics.total_judge_input_tokens,
+                    metrics.total_judge_output_tokens,
+                    0,
+                );
+
                 {
                     let mut agents_guard = self.agents.lock();
                     for (_, state) in agents_guard.drain() {
@@ -213,8 +240,8 @@ impl ProgressReporter for IndicatifReporter {
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0);
 
-                let status = if circuit_tripped {
-                    style("FAILED").red().bold()
+                let status = if aborted {
+                    style("ABORTED").red().bold()
                 } else {
                     style("COMPLETED").green().bold()
                 };
@@ -270,19 +297,30 @@ impl ProgressReporter for IndicatifReporter {
                     metrics.p50_llm_latency_ms,
                     metrics.p95_llm_latency_ms,
                     style("Cost:").dim(),
-                    metrics.total_cost_usd,
-                    metrics.total_judge_cost_usd,
+                    total_cost_usd,
+                    judge_cost_usd,
                     style("Attempts avg/max:").dim(),
                     metrics.avg_attempts,
                     metrics.max_attempts
                 );
-                if !agents.is_empty() {
+
+                if !agent_metrics.is_empty() {
                     println!();
                     println!("  Per agent:");
-                    let mut names: Vec<_> = agents.keys().cloned().collect();
+                    let mut names: Vec<_> = agent_metrics.keys().cloned().collect();
                     names.sort();
                     for name in names {
-                        if let Some(m) = agents.get(&name) {
+                        if let Some(m) = agent_metrics.get(&name) {
+                            let agent_cost = calculate_cost_from_metrics(
+                                m.total_input_tokens,
+                                m.total_output_tokens,
+                                m.total_cached_tokens,
+                            );
+                            let agent_judge_cost = calculate_cost_from_metrics(
+                                m.total_judge_input_tokens,
+                                m.total_judge_output_tokens,
+                                0,
+                            );
                             println!(
                                 "    {} acc {:.1}% p50 {:.0}ms tokens {}/{} cost ${:.4} (judge ${:.4}) attempts {:.1}/{}",
                                 style(&name).bold(),
@@ -290,8 +328,8 @@ impl ProgressReporter for IndicatifReporter {
                                 m.p50_duration_ms,
                                 m.total_input_tokens,
                                 m.total_output_tokens,
-                                m.total_cost_usd,
-                                m.total_judge_cost_usd,
+                                agent_cost,
+                                agent_judge_cost,
                                 m.avg_attempts,
                                 m.max_attempts
                             );
@@ -300,12 +338,16 @@ impl ProgressReporter for IndicatifReporter {
                 }
                 println!();
 
-                if circuit_tripped {
+                if aborted {
                     println!(
-                        "{} Run aborted due to high error rate",
+                        "{} Run aborted",
                         style("⚠").yellow().bold()
                     );
                 }
+            }
+
+            Event::Error { message } => {
+                println!("{} {}", style("Error:").red().bold(), message);
             }
         }
     }

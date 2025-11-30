@@ -238,15 +238,11 @@ impl CommandRunner {
             let mut buf = String::new();
             let n = stdout.read_line(&mut buf).await?;
             if n == 0 {
-                return Ok(RunnerOutput {
-                    output: None,
-                    error: Some("Process exited unexpectedly (EOF)".into()),
-                    metrics: None,
-                    duration_ms: 0.0,
-                    error_type: ErrorType::SystemFailure,
-                    error_traceback: None,
-                    retry_count: 0,
-                });
+                return Ok(RunnerOutput::failure(
+                    "Process exited unexpectedly (EOF)".into(),
+                    ErrorType::SystemFailure,
+                    0.0,
+                ));
             }
             if buf.trim().is_empty() {
                 continue;
@@ -258,12 +254,6 @@ impl CommandRunner {
             if let Value::Object(map) = val {
                 if map.get("output").is_some() || map.get("error").is_some() {
                     let mut ro: RunnerOutput = serde_json::from_value(Value::Object(map.clone()))?;
-                    if ro.metrics.is_none() {
-                        // try to map metrics object if present
-                        if let Some(Value::Object(obj)) = map.get("metrics") {
-                            ro.metrics = Some(obj.clone().into_iter().collect());
-                        }
-                    }
                     // If no error_type but error present, mark as system failure.
                     if ro.error_type == ErrorType::None && ro.error.is_some() {
                         ro.error_type = ErrorType::SystemFailure;

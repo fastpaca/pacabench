@@ -5,8 +5,7 @@ use pacabench_core::persistence::{
     compute_config_fingerprint, iso_timestamp_now, list_run_summaries, ErrorEntry, RunMetadata,
     RunStore,
 };
-use pacabench_core::types::{CaseResult, ErrorType};
-use std::collections::HashMap;
+use pacabench_core::types::{CaseResult, ErrorType, LlmMetrics, RunStatus};
 use std::path::PathBuf;
 use tempfile::tempdir;
 
@@ -36,16 +35,14 @@ fn run_store_roundtrip_results_and_errors() {
         error: None,
         error_type: ErrorType::None,
         runner_duration_ms: 10.0,
-        llm_metrics: HashMap::new(),
+        llm_metrics: LlmMetrics::default(),
         attempt: 1,
         timestamp: Some(iso_timestamp_now()),
         f1_score: None,
         f1_passed: None,
         judge_passed: None,
         judge_reason: None,
-        judge_metrics: HashMap::new(),
-        judge_cost_usd: None,
-        extra: HashMap::new(),
+        judge_metrics: None,
     };
 
     store.append_result(&result).unwrap();
@@ -74,37 +71,38 @@ fn run_store_roundtrip_results_and_errors() {
 fn list_run_summaries_includes_progress() {
     let dir = tempdir().unwrap();
     let store1 = RunStore::new(dir.path().join("run-a")).unwrap();
-    let meta1 = RunMetadata {
-        run_id: "run-a".into(),
-        status: "completed".into(),
-        config_fingerprint: "fp".into(),
-        total_cases: 10,
-        completed_cases: 10,
-        start_time: Some("2024-01-01T00:00:00Z".into()),
-        completed_time: Some("2024-01-01T00:10:00Z".into()),
-        system_error_count: 0,
-        extras: Default::default(),
-    };
+    let meta1 = RunMetadata::new(
+        "run-a".into(),
+        "fp".into(),
+        vec!["agent".into()],
+        vec!["ds".into()],
+        10,
+    );
+    let mut meta1 = meta1;
+    meta1.status = RunStatus::Completed;
+    meta1.completed_cases = 10;
+    meta1.start_time = Some("2024-01-01T00:00:00Z".into());
+    meta1.completed_time = Some("2024-01-01T00:10:00Z".into());
     store1.write_metadata(&meta1).unwrap();
 
     let store2 = RunStore::new(dir.path().join("run-b")).unwrap();
-    let meta2 = RunMetadata {
-        run_id: "run-b".into(),
-        status: "running".into(),
-        config_fingerprint: "fp".into(),
-        total_cases: 8,
-        completed_cases: 4,
-        start_time: Some("2024-02-01T00:00:00Z".into()),
-        completed_time: None,
-        system_error_count: 1,
-        extras: Default::default(),
-    };
+    let mut meta2 = RunMetadata::new(
+        "run-b".into(),
+        "fp".into(),
+        vec!["agent".into()],
+        vec!["ds".into()],
+        8,
+    );
+    meta2.status = RunStatus::Running;
+    meta2.completed_cases = 4;
+    meta2.start_time = Some("2024-02-01T00:00:00Z".into());
+    meta2.system_error_count = 1;
     store2.write_metadata(&meta2).unwrap();
 
     let summaries = list_run_summaries(dir.path()).unwrap();
     assert_eq!(summaries.len(), 2);
     // run-b has newer start_time so should come first
     assert_eq!(summaries[0].run_id, "run-b");
-    assert_eq!(summaries[0].progress, Some(0.5));
+    assert!((summaries[0].progress - 0.5).abs() < 0.01);
     assert_eq!(summaries[1].completed_cases, 10);
 }

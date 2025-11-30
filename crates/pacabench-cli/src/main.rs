@@ -1,23 +1,24 @@
 //! Thin CLI wrapper for the Rust rewrite of PacaBench.
 
+mod pricing;
 mod progress;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use pacabench_core::config::load_config;
+use pacabench_core::config::{load_config_with_overrides, CliOverrides};
 use pacabench_core::metrics::aggregate_results;
-use pacabench_core::orchestrator::Orchestrator;
 use pacabench_core::persistence::{
-    default_dataset_cache_dir, list_run_summaries, resolve_runs_dir, ErrorEntry, RunMetadata,
-    RunStore, RunSummary,
+    list_run_summaries, resolve_runs_dir, ErrorEntry, RunMetadata, RunStore, RunSummary,
 };
-use pacabench_core::types::{CaseResult, ErrorType};
-use progress::IndicatifReporter;
+use pacabench_core::Benchmark;
+use pacabench_core::CaseResult;
+use pacabench_core::types::ErrorType;
+use pricing::calculate_cost_from_metrics;
+use progress::ProgressDisplay;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(name = "pacabench", about = "Rust rewrite of the PacaBench CLI")]
@@ -51,6 +52,12 @@ enum Command {
         /// Comma-separated list of agents to run (e.g. --agents agent1,agent2).
         #[arg(long, short = 'a')]
         agents: Option<String>,
+        /// Override concurrency (number of parallel workers).
+        #[arg(long)]
+        concurrency: Option<usize>,
+        /// Override timeout in seconds.
+        #[arg(long)]
+        timeout: Option<f64>,
     },
 
     /// Show aggregated metrics for a run id.
@@ -141,7 +148,23 @@ output:
         return Ok(());
     }
 
-    let config = load_config(&config_path)?;
+    // Build CLI overrides based on command
+    let overrides = match &cli.command {
+        Some(Command::Run {
+            runs_dir,
+            concurrency,
+            timeout,
+            ..
+        }) => CliOverrides {
+            concurrency: *concurrency,
+            timeout_seconds: *timeout,
+            max_retries: None,
+            runs_dir: runs_dir.clone(),
+        },
+        _ => CliOverrides::default(),
+    };
+
+    let config = load_config_with_overrides(&config_path, overrides)?;
 
     let root_dir = config_path
         .parent()
@@ -165,17 +188,16 @@ output:
             run_id,
             runs_dir,
             cache_dir,
-            force_new,
+            force_new: _,
             agents,
+            ..
         }) => {
             let runs_dir = resolve_runs_dir(
-                Some(&config),
+                &config,
                 runs_dir.map(PathBuf::from),
                 Some(&config_path),
             );
-            let cache_dir = cache_dir
-                .map(PathBuf::from)
-                .unwrap_or_else(default_dataset_cache_dir);
+            let cache_dir = cache_dir.map(PathBuf::from).unwrap_or_else(|| config.cache_dir());
 
             // Filter agents if specified
             let mut config = config;
@@ -205,12 +227,22 @@ output:
                 );
             }
 
-            let reporter = Arc::new(IndicatifReporter::new());
-            let orch = Orchestrator::new(config, root_dir, cache_dir, runs_dir)
-                .with_reporter(reporter)
+            let bench = Benchmark::new(config, root_dir, cache_dir, runs_dir)
                 .with_config_path(config_path.clone());
+
+            let events = bench.subscribe();
+
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(orch.run(run_id, limit, force_new))?;
+            rt.block_on(async {
+                let display = ProgressDisplay::new();
+                let display_handle = tokio::spawn(display.run(events));
+
+                let result = bench.run(run_id, limit).await;
+
+                let _ = display_handle.await;
+
+                result
+            })?;
         }
         Some(Command::Show {
             run_id,
@@ -220,7 +252,7 @@ output:
             limit,
         }) => {
             let runs_dir = resolve_runs_dir(
-                Some(&config),
+                &config,
                 runs_dir.map(PathBuf::from),
                 Some(&config_path),
             );
@@ -247,7 +279,7 @@ output:
             limit,
         }) => {
             let runs_dir = resolve_runs_dir(
-                Some(&config),
+                &config,
                 runs_dir.map(PathBuf::from),
                 Some(&config_path),
             );
@@ -268,14 +300,20 @@ output:
                 failed_count
             );
 
-            let cache_dir = default_dataset_cache_dir();
-            let reporter = Arc::new(IndicatifReporter::new());
-            let orch = Orchestrator::new(config, root_dir, cache_dir, runs_dir)
-                .with_reporter(reporter)
+            let cache_dir = config.cache_dir();
+            let bench = Benchmark::new(config, root_dir, cache_dir, runs_dir)
                 .with_config_path(config_path.clone());
+
+            let events = bench.subscribe();
+
             let rt = tokio::runtime::Runtime::new()?;
-            // Resume the run - it will re-attempt failed cases
-            rt.block_on(orch.run(Some(resolved_id), limit, false))?;
+            rt.block_on(async {
+                let display = ProgressDisplay::new();
+                let display_handle = tokio::spawn(display.run(events));
+                let result = bench.run(Some(resolved_id), limit).await;
+                let _ = display_handle.await;
+                result
+            })?;
         }
         Some(Command::Export {
             run_id,
@@ -284,7 +322,7 @@ output:
             runs_dir,
         }) => {
             let runs_dir = resolve_runs_dir(
-                Some(&config),
+                &config,
                 runs_dir.map(PathBuf::from),
                 Some(&config_path),
             );
@@ -338,28 +376,22 @@ fn print_run_list(runs: &[RunSummary], limit: usize) {
 
     println!("Runs (showing up to {limit}):");
     println!(
-        "{:<28} {:<10} {:>14} {:>10} {:>10}",
-        "run_id", "status", "cases", "progress", "cost"
+        "{:<28} {:<10} {:>14} {:>10}",
+        "run_id", "status", "cases", "progress"
     );
 
     for r in runs.iter().take(limit.min(runs.len())) {
-        let progress = r
-            .progress
-            .map(|p| format!("{:.0}%", p * 100.0))
-            .unwrap_or_else(|| "-".into());
+        let progress = format!("{:.0}%", r.progress * 100.0);
         let cases = if r.total_cases > 0 {
             format!("{}/{}", r.completed_cases, r.total_cases)
         } else {
             "-".into()
         };
-        let cost = r
-            .total_cost_usd
-            .map(|c| format!("${:.3}", c))
-            .unwrap_or_else(|| "-".into());
+        let status = format!("{:?}", r.status).to_lowercase();
 
         println!(
-            "{:<28} {:<10} {:>14} {:>10} {:>10}",
-            r.run_id, r.status, cases, progress, cost
+            "{:<28} {:<10} {:>14} {:>10}",
+            r.run_id, status, cases, progress
         );
     }
 
@@ -376,8 +408,8 @@ fn print_run_details(
 ) {
     let status = metadata
         .as_ref()
-        .map(|m| m.status.as_str())
-        .unwrap_or("unknown");
+        .map(|m| format!("{:?}", m.status).to_lowercase())
+        .unwrap_or_else(|| "unknown".to_string());
     let total_cases = metadata
         .as_ref()
         .map(|m| m.total_cases)
@@ -399,6 +431,16 @@ fn print_run_details(
     }
 
     let agg = aggregate_results(results);
+    let total_cost = calculate_cost_from_metrics(
+        agg.total_input_tokens,
+        agg.total_output_tokens,
+        agg.total_cached_tokens,
+    );
+    let judge_cost = calculate_cost_from_metrics(
+        agg.total_judge_input_tokens,
+        agg.total_judge_output_tokens,
+        0,
+    );
     println!(
         "Accuracy {acc:.1}% | Precision {prec:.1}% | Recall {rec:.1}% | Failed {failed}",
         acc = agg.accuracy * 100.0,
@@ -421,8 +463,8 @@ fn print_run_details(
         agg.total_judge_input_tokens,
         agg.total_judge_output_tokens,
         agg.total_llm_calls,
-        agg.total_cost_usd,
-        agg.total_judge_cost_usd,
+        total_cost,
+        judge_cost,
         agg.avg_attempts,
         agg.max_attempts
     );
@@ -444,7 +486,17 @@ fn print_run_details(
             let metrics = aggregate_results(&group);
             let passed = group.iter().filter(|r| r.passed).count();
             let total = group.len();
-            let cost = metrics.total_cost_usd + metrics.total_judge_cost_usd;
+            let group_cost = calculate_cost_from_metrics(
+                metrics.total_input_tokens,
+                metrics.total_output_tokens,
+                metrics.total_cached_tokens,
+            );
+            let group_judge_cost = calculate_cost_from_metrics(
+                metrics.total_judge_input_tokens,
+                metrics.total_judge_output_tokens,
+                0,
+            );
+            let cost = group_cost + group_judge_cost;
             println!(
                 "  {agent} on {dataset}: {passed}/{total} ({acc:.1}%) p50={p50:.0}ms cost=${cost:.4}",
                 acc = metrics.accuracy * 100.0,
@@ -601,7 +653,7 @@ fn build_export_json(
 
     json!({
         "run_id": run_id,
-        "status": metadata.map(|m| m.status.clone()).unwrap_or_else(|| "unknown".into()),
+        "status": metadata.map(|m| format!("{:?}", m.status).to_lowercase()).unwrap_or_else(|| "unknown".to_string()),
         "start_time": metadata.and_then(|m| m.start_time.clone()),
         "completed_time": metadata.and_then(|m| m.completed_time.clone()),
         "total_cases": metadata.map(|m| m.total_cases).unwrap_or(results.len() as u64),
@@ -623,7 +675,7 @@ fn build_export_markdown(
     md.push_str("## Summary\n\n");
     md.push_str(&format!(
         "- **Status**: {}\n",
-        metadata.map(|m| m.status.as_str()).unwrap_or("unknown")
+        metadata.map(|m| format!("{:?}", m.status).to_lowercase()).unwrap_or_else(|| "unknown".to_string())
     ));
     md.push_str(&format!(
         "- **Cases**: {} / {}\n",
@@ -656,9 +708,19 @@ fn build_export_markdown(
         "- **Judge Tokens (in/out)**: {} / {}\n",
         agg.total_judge_input_tokens, agg.total_judge_output_tokens
     ));
+    let md_cost = calculate_cost_from_metrics(
+        agg.total_input_tokens,
+        agg.total_output_tokens,
+        agg.total_cached_tokens,
+    );
+    let md_judge_cost = calculate_cost_from_metrics(
+        agg.total_judge_input_tokens,
+        agg.total_judge_output_tokens,
+        0,
+    );
     md.push_str(&format!(
         "- **Cost**: ${:.4} (judge ${:.4})\n",
-        agg.total_cost_usd, agg.total_judge_cost_usd
+        md_cost, md_judge_cost
     ));
     md.push_str(&format!(
         "- **Attempts (avg/max)**: {:.1} / {}\n",
@@ -681,7 +743,17 @@ fn build_export_markdown(
             let metrics = aggregate_results(&group);
             let passed = group.iter().filter(|r| r.passed).count();
             let total = group.len();
-            let cost = metrics.total_cost_usd + metrics.total_judge_cost_usd;
+            let row_cost = calculate_cost_from_metrics(
+                metrics.total_input_tokens,
+                metrics.total_output_tokens,
+                metrics.total_cached_tokens,
+            );
+            let row_judge_cost = calculate_cost_from_metrics(
+                metrics.total_judge_input_tokens,
+                metrics.total_judge_output_tokens,
+                0,
+            );
+            let cost = row_cost + row_judge_cost;
             md.push_str(&format!(
                 "| {} | {} | {}/{} | {:.1}% | ${:.4} |\n",
                 agent,

@@ -3,7 +3,6 @@
 //! This module provides a comprehensive error hierarchy using `thiserror`
 //! for all operations in the benchmark pipeline.
 
-use crate::state::RunStateKind;
 use thiserror::Error;
 
 /// The main error type for PacaBench operations.
@@ -40,10 +39,6 @@ pub enum PacabenchError {
     /// Persistence (file I/O) error.
     #[error("persistence error: {0}")]
     Persistence(#[source] std::io::Error),
-
-    /// Invalid run state transition.
-    #[error("invalid state transition: {from:?} -> {to:?}")]
-    InvalidTransition { from: RunStateKind, to: RunStateKind },
 
     /// Circuit breaker tripped due to high error rate.
     #[error("circuit breaker tripped at {error_ratio:.1}% error rate")]
@@ -91,4 +86,3 @@ impl PacabenchError {
         Self::Evaluation(source.into())
     }
 }
-
