@@ -130,7 +130,7 @@ async fn handle_embeddings(
 
 async fn forward_or_stub(
     state: &ProxyState,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     body: Value,
     path: &str,
 ) -> Response {
@@ -146,6 +146,23 @@ async fn forward_or_stub(
         let mut req = state.client.post(&url).json(&body);
         if let Some(key) = &state.api_key {
             req = req.header("Authorization", format!("Bearer {key}"));
+        } else if let Some(auth) = headers.get(header::AUTHORIZATION) {
+            req = req.header(header::AUTHORIZATION, auth.clone());
+        }
+        for (name, value) in headers.iter() {
+            if name == header::AUTHORIZATION
+                || name == header::HOST
+                || name == header::CONTENT_LENGTH
+            {
+                continue;
+            }
+            if name.as_str().eq_ignore_ascii_case("api-key")
+                || name.as_str().eq_ignore_ascii_case("x-api-key")
+                || name.as_str().eq_ignore_ascii_case("openai-organization")
+                || name.as_str().eq_ignore_ascii_case("azure-api-key")
+            {
+                req = req.header(name, value.clone());
+            }
         }
         match req.send().await {
             Ok(resp) => {
@@ -160,7 +177,7 @@ async fn forward_or_stub(
                     .await
                     .unwrap_or_else(|_| serde_json::json!({ "error": "invalid json" }));
                 let latency_ms = start.elapsed().as_millis() as f64;
-                let usage = json.get("usage").cloned().unwrap_or_default();
+                let usage = json.get("usage").cloned().unwrap_or_else(default_usage);
                 // Response may contain model info that differs from request
                 let response_model = json
                     .get("model")
@@ -179,11 +196,8 @@ async fn forward_or_stub(
                 return (status, Json(json)).into_response();
             }
             Err(err) => {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(serde_json::json!({ "error": err.to_string() })),
-                )
-                    .into_response();
+                let body = serde_json::json!({ "error": err.to_string() });
+                return (StatusCode::BAD_GATEWAY, Json(body)).into_response();
             }
         }
     }
@@ -197,7 +211,7 @@ async fn forward_or_stub(
         .metrics
         .record(MetricEntry {
             latency_ms,
-            usage: serde_json::json!({}),
+            usage: default_usage(),
             status: StatusCode::OK,
             model,
         })
@@ -214,7 +228,8 @@ async fn forward_or_stub(
         "usage": {
             "prompt_tokens": 0,
             "completion_tokens": 0,
-            "total_tokens": 0
+            "total_tokens": 0,
+            "prompt_tokens_details": {"cached_tokens": 0}
         }
     });
     (StatusCode::OK, Json(response)).into_response()
@@ -267,7 +282,8 @@ fn stream_response(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(16);
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
-        let mut last_usage: Option<Value> = None;
+        let mut usage_totals = (0u64, 0u64, 0u64);
+        let mut saw_usage = false;
         let mut last_model = initial_model;
 
         while let Some(chunk) = stream.next().await {
@@ -286,7 +302,23 @@ fn stream_response(
                                         last_model = Some(m.to_string());
                                     }
                                     if let Some(u) = json.get("usage") {
-                                        last_usage = Some(u.clone());
+                                        let prompt = u
+                                            .get("prompt_tokens")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        let completion = u
+                                            .get("completion_tokens")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        let cached = u
+                                            .get("prompt_tokens_details")
+                                            .and_then(|d| d.get("cached_tokens"))
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0);
+                                        usage_totals.0 += prompt;
+                                        usage_totals.1 += completion;
+                                        usage_totals.2 += cached;
+                                        saw_usage = true;
                                     }
                                 }
                             }
@@ -299,10 +331,20 @@ fn stream_response(
         }
 
         let latency_ms = start.elapsed().as_millis() as f64;
+        let usage = if saw_usage {
+            serde_json::json!({
+                "prompt_tokens": usage_totals.0,
+                "completion_tokens": usage_totals.1,
+                "total_tokens": usage_totals.0 + usage_totals.1,
+                "prompt_tokens_details": {"cached_tokens": usage_totals.2}
+            })
+        } else {
+            default_usage()
+        };
         metrics
             .record(MetricEntry {
                 latency_ms,
-                usage: last_usage.unwrap_or_else(|| serde_json::json!({})),
+                usage,
                 status,
                 model: last_model,
             })
@@ -318,4 +360,13 @@ fn stream_response(
         )
         .body(axum::body::Body::from_stream(stream))
         .unwrap()
+}
+
+fn default_usage() -> Value {
+    serde_json::json!({
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "prompt_tokens_details": {"cached_tokens": 0}
+    })
 }
