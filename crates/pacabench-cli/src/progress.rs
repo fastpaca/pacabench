@@ -164,7 +164,9 @@ impl ProgressDisplay {
 
                     let state = AgentState::new(bar);
                     state.update_message(*self.start_time.lock());
-                    state.bar.enable_steady_tick(std::time::Duration::from_millis(100));
+                    state
+                        .bar
+                        .enable_steady_tick(std::time::Duration::from_millis(100));
                     agents_guard.insert(agent_name, state);
                 }
             }
@@ -339,10 +341,7 @@ impl ProgressDisplay {
                 println!();
 
                 if aborted {
-                    println!(
-                        "{} Run aborted",
-                        style("⚠").yellow().bold()
-                    );
+                    println!("{} Run aborted", style("⚠").yellow().bold());
                 }
             }
 

@@ -8,7 +8,9 @@
 //! - [`WorkItem`]: Unit of work
 //! - [`WorkResult`]: Result from processing a work item
 
-use crate::types::{AggregatedMetrics, Case, CaseKey, CaseResult, ErrorType, EvaluationResult, LlmMetrics};
+use crate::types::{
+    AggregatedMetrics, Case, CaseKey, CaseResult, ErrorType, EvaluationResult, LlmMetrics,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -174,7 +176,10 @@ impl WorkResult {
             f1_passed: self.evaluation.as_ref().map(|e| e.passed),
             judge_passed: self.evaluation.as_ref().map(|e| e.passed),
             judge_reason: self.evaluation.as_ref().and_then(|e| e.reason.clone()),
-            judge_metrics: self.evaluation.as_ref().and_then(|e| e.judge_metrics.clone()),
+            judge_metrics: self
+                .evaluation
+                .as_ref()
+                .and_then(|e| e.judge_metrics.clone()),
         }
     }
 }

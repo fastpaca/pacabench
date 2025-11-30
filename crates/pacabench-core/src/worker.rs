@@ -176,7 +176,10 @@ async fn spawn_worker(
     runner.start().await?;
 
     let handle = tokio::spawn(async move {
-        worker_loop(config, work_rx, result_tx, event_tx, runner, proxy, evaluators).await;
+        worker_loop(
+            config, work_rx, result_tx, event_tx, runner, proxy, evaluators,
+        )
+        .await;
     });
 
     Ok(handle)
@@ -259,7 +262,10 @@ async fn worker_loop(
             None
         };
 
-        let passed = evaluation.as_ref().map(|e| e.passed).unwrap_or(error.is_none());
+        let passed = evaluation
+            .as_ref()
+            .map(|e| e.passed)
+            .unwrap_or(error.is_none());
 
         // Send result back to benchmark
         let work_result = WorkResult {

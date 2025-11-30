@@ -143,7 +143,11 @@ impl ProxyServer {
             }
         });
 
-        Ok(Self { handle, addr, metrics })
+        Ok(Self {
+            handle,
+            addr,
+            metrics,
+        })
     }
 
     pub fn base_url(&self) -> String {
@@ -247,7 +251,9 @@ async fn forward_request(
         }
         Err(err) => {
             let latency_ms = start.elapsed().as_millis() as f64;
-            state.metrics.record(latency_ms, &Value::Null, request_model);
+            state
+                .metrics
+                .record(latency_ms, &Value::Null, request_model);
 
             let body = serde_json::json!({"error": err.to_string()});
             (StatusCode::BAD_GATEWAY, Json(body)).into_response()

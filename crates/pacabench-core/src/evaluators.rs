@@ -217,8 +217,8 @@ impl Evaluator for MultipleChoiceEvaluator {
             }
         }
 
-        let pred_letter =
-            self.extract_choice_letter(output.output.as_deref().unwrap_or_default(), &valid_letters);
+        let pred_letter = self
+            .extract_choice_letter(output.output.as_deref().unwrap_or_default(), &valid_letters);
 
         if let Some(letter) = pred_letter.filter(|_| !valid_letters.is_empty()) {
             let passed = letter == expected_letter;
@@ -256,7 +256,9 @@ impl Evaluator for MultipleChoiceEvaluator {
 
         match self.fallback {
             MultipleChoiceFallback::F1 => {
-                F1Evaluator::new(self.f1_threshold).evaluate(case, output).await
+                F1Evaluator::new(self.f1_threshold)
+                    .evaluate(case, output)
+                    .await
             }
             MultipleChoiceFallback::Judge => {
                 LlmJudgeEvaluator::new(self.judge_model.clone(), None, None, 2, 200)
@@ -342,7 +344,9 @@ impl LlmJudgeEvaluator {
 
         let url = format!(
             "{}/v1/chat/completions",
-            self.base_url.clone().unwrap_or_else(|| "https://api.openai.com".into())
+            self.base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".into())
         );
 
         let start = std::time::Instant::now();
