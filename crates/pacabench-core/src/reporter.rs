@@ -1,6 +1,14 @@
 //! Progress reporting trait and types for benchmark execution.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Per-agent progress information.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentProgress {
+    pub total_cases: u64,
+    pub completed_cases: u64,
+}
 
 /// Events emitted during benchmark execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +19,8 @@ pub enum ProgressEvent {
         total_cases: u64,
         resuming: bool,
         completed_cases: u64,
+        /// Per-agent case counts (agent_name -> progress).
+        agents: HashMap<String, AgentProgress>,
     },
     /// A case completed (pass or fail).
     CaseCompleted {
@@ -64,6 +74,7 @@ impl ProgressReporter for PrintReporter {
                 total_cases,
                 resuming,
                 completed_cases,
+                agents,
             } => {
                 if resuming {
                     println!(
@@ -71,6 +82,12 @@ impl ProgressReporter for PrintReporter {
                     );
                 } else {
                     println!("Starting run {run_id}: {total_cases} cases");
+                }
+                for (name, progress) in &agents {
+                    println!(
+                        "  {name}: {}/{} cases",
+                        progress.completed_cases, progress.total_cases
+                    );
                 }
             }
             ProgressEvent::CaseCompleted {

@@ -167,6 +167,13 @@ impl RunManager {
         self.completed_entries.len()
     }
 
+    pub fn completed_count_for_agent(&self, agent: &str) -> usize {
+        self.completed_entries
+            .iter()
+            .filter(|(a, _, _)| a == agent)
+            .count()
+    }
+
     pub fn passed_count(&self) -> usize {
         self.passed_entries.len()
     }
