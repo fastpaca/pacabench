@@ -126,6 +126,8 @@ pub struct AggregatedMetrics {
     #[serde(default)]
     pub precision: f64,
     #[serde(default)]
+    pub recall: f64,
+    #[serde(default)]
     pub total_cases: u64,
     #[serde(default)]
     pub failed_cases: u64,
@@ -153,4 +155,10 @@ pub struct AggregatedMetrics {
     pub total_judge_input_tokens: u64,
     #[serde(default)]
     pub total_judge_output_tokens: u64,
+    #[serde(default)]
+    pub total_attempts: u64,
+    #[serde(default)]
+    pub avg_attempts: f64,
+    #[serde(default)]
+    pub max_attempts: u32,
 }

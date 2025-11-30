@@ -192,6 +192,10 @@ impl RunManager {
         *self.case_attempts.get(&key).unwrap_or(&0)
     }
 
+    pub fn load_results(&self) -> Result<Vec<CaseResult>> {
+        self.store.load_results()
+    }
+
     fn update_metadata_status(&self, status: &str) -> Result<()> {
         let mut meta = self
             .store

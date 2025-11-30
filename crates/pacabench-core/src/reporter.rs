@@ -1,5 +1,6 @@
 //! Progress reporting trait and types for benchmark execution.
 
+use crate::types::AggregatedMetrics;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -40,6 +41,8 @@ pub enum ProgressEvent {
         failed_cases: u64,
         total_cost_usd: f64,
         circuit_tripped: bool,
+        metrics: AggregatedMetrics,
+        agents: HashMap<String, AggregatedMetrics>,
     },
     /// Circuit breaker tripped.
     CircuitTripped { error_ratio: f64 },
@@ -112,6 +115,8 @@ impl ProgressReporter for PrintReporter {
                 passed_cases,
                 total_cost_usd,
                 circuit_tripped,
+                metrics,
+                agents,
                 ..
             } => {
                 let status = if circuit_tripped {
@@ -122,6 +127,47 @@ impl ProgressReporter for PrintReporter {
                 println!(
                     "Run {run_id} {status}: {passed_cases}/{total_cases} passed, cost ${total_cost_usd:.4}"
                 );
+                println!(
+                    "  Acc/Prec/Rec: {:.1}% / {:.1}% / {:.1}%",
+                    metrics.accuracy * 100.0,
+                    metrics.precision * 100.0,
+                    metrics.recall * 100.0
+                );
+                println!(
+                    "  Duration p50/p95: {:.0}ms / {:.0}ms | LLM latency avg/p50/p95: {:.0}/{:.0}/{:.0}ms",
+                    metrics.p50_duration_ms,
+                    metrics.p95_duration_ms,
+                    metrics.avg_llm_latency_ms,
+                    metrics.p50_llm_latency_ms,
+                    metrics.p95_llm_latency_ms
+                );
+                println!(
+                    "  Tokens in/out: {}/{} (judge {}/{})",
+                    metrics.total_input_tokens,
+                    metrics.total_output_tokens,
+                    metrics.total_judge_input_tokens,
+                    metrics.total_judge_output_tokens
+                );
+                println!(
+                    "  Cost: ${:.4} (judge ${:.4}) | Attempts avg/max {:.1}/{}",
+                    metrics.total_cost_usd,
+                    metrics.total_judge_cost_usd,
+                    metrics.avg_attempts,
+                    metrics.max_attempts
+                );
+                if !agents.is_empty() {
+                    println!("  Per agent:");
+                    for (agent, m) in agents {
+                        println!(
+                            "    {}: acc {:.1}%, p50 {:.0}ms, cost ${:.4} (judge ${:.4})",
+                            agent,
+                            m.accuracy * 100.0,
+                            m.p50_duration_ms,
+                            m.total_cost_usd,
+                            m.total_judge_cost_usd
+                        );
+                    }
+                }
             }
             ProgressEvent::CircuitTripped { error_ratio } => {
                 println!(
