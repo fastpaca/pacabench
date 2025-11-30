@@ -364,4 +364,3 @@ pub fn calculate_cost_from_metrics(
     // Use gpt-4o-mini pricing as a reasonable default
     calculate_cost("gpt-4o-mini", input_tokens, output_tokens, cached_tokens)
 }
-

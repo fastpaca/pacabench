@@ -286,7 +286,11 @@ pub struct CaseKey {
 }
 
 impl CaseKey {
-    pub fn new(agent: impl Into<String>, dataset: impl Into<String>, case_id: impl Into<String>) -> Self {
+    pub fn new(
+        agent: impl Into<String>,
+        dataset: impl Into<String>,
+        case_id: impl Into<String>,
+    ) -> Self {
         Self {
             agent: agent.into(),
             dataset: dataset.into(),

@@ -7,7 +7,9 @@ use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use pacabench_core::config::ConfigOverrides;
 use pacabench_core::metrics::aggregate_results;
-use pacabench_core::persistence::{list_run_summaries, ErrorEntry, RunMetadata, RunStore, RunSummary};
+use pacabench_core::persistence::{
+    list_run_summaries, ErrorEntry, RunMetadata, RunStore, RunSummary,
+};
 use pacabench_core::types::ErrorType;
 use pacabench_core::{Benchmark, CaseResult, Config};
 use pricing::calculate_cost_from_metrics;
@@ -187,8 +189,7 @@ output:
             if let Some(agents_filter) = agents {
                 let filter_set: std::collections::HashSet<&str> =
                     agents_filter.split(',').map(|s| s.trim()).collect();
-                let available: Vec<String> =
-                    config.agents.iter().map(|a| a.name.clone()).collect();
+                let available: Vec<String> = config.agents.iter().map(|a| a.name.clone()).collect();
                 config
                     .agents
                     .retain(|a| filter_set.contains(a.name.as_str()));

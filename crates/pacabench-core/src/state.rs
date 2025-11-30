@@ -87,9 +87,8 @@ impl RunState {
         let attempt = result.attempt;
         self.attempt_counts.insert(key.clone(), attempt);
 
-        let needs_retry = !result.passed
-            && result.error_type.is_retryable()
-            && attempt < self.max_retries;
+        let needs_retry =
+            !result.passed && result.error_type.is_retryable() && attempt < self.max_retries;
 
         if !needs_retry {
             self.pending.remove(&key);
@@ -121,4 +120,3 @@ impl RunState {
         self.status = to;
     }
 }
-

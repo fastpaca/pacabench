@@ -72,8 +72,12 @@ impl Benchmark {
         // Phase 2: Load datasets
         let datasets = self.load_datasets(limit)?;
         let agent_names: Vec<String> = self.config.agents.iter().map(|a| a.name.clone()).collect();
-        let dataset_names: Vec<String> =
-            self.config.datasets.iter().map(|d| d.name.clone()).collect();
+        let dataset_names: Vec<String> = self
+            .config
+            .datasets
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
 
         // Build work items
         let mut work_items = Vec::new();
@@ -148,12 +152,7 @@ impl Benchmark {
         state.transition(RunStatus::Running);
 
         let concurrency = self.config.global.concurrency.max(1);
-        let mut pool = WorkerPool::start(
-            concurrency,
-            &self.config,
-            self.event_tx.clone(),
-        )
-        .await?;
+        let mut pool = WorkerPool::start(concurrency, &self.config, self.event_tx.clone()).await?;
 
         // Push initial work
         pool.push_batch(state.initial_work_items()).await;

@@ -68,11 +68,8 @@ async fn multiple_choice_letter_match() {
     outer.insert("choices".into(), serde_json::Value::Object(meta));
     case.metadata = outer;
 
-    let ev = MultipleChoiceEvaluator::new(
-        MultipleChoiceFallback::F1,
-        0.5,
-        "gpt-4o-mini".to_string(),
-    );
+    let ev =
+        MultipleChoiceEvaluator::new(MultipleChoiceFallback::F1, 0.5, "gpt-4o-mini".to_string());
     let res = ev.evaluate(&case, &ro("A")).await;
     assert!(res.passed);
 }
@@ -82,11 +79,8 @@ async fn multiple_choice_fallbacks_to_f1_without_choices() {
     let mut case = make_case("foo bar");
     case.metadata = HashMap::new();
 
-    let ev = MultipleChoiceEvaluator::new(
-        MultipleChoiceFallback::F1,
-        0.5,
-        "gpt-4o-mini".to_string(),
-    );
+    let ev =
+        MultipleChoiceEvaluator::new(MultipleChoiceFallback::F1, 0.5, "gpt-4o-mini".to_string());
     let res = ev.evaluate(&case, &ro("foo bar")).await;
     assert!(res.passed, "fallback F1 should be used when no choices");
 }
@@ -121,7 +115,10 @@ async fn llm_judge_records_tokens_and_cost() {
     assert_eq!(jm.input_tokens, 10);
     assert_eq!(jm.output_tokens, 2);
     assert!(jm.latency_ms > 0.0, "latency should be recorded");
-    assert!(jm.model.is_some(), "model should be recorded for cost calculation");
+    assert!(
+        jm.model.is_some(),
+        "model should be recorded for cost calculation"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

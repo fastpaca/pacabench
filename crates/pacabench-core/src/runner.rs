@@ -271,4 +271,3 @@ impl Drop for CommandRunner {
         self.kill_process();
     }
 }
-
