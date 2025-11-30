@@ -1,5 +1,7 @@
 //! Thin CLI wrapper for the Rust rewrite of PacaBench.
 
+mod progress;
+
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use pacabench_core::config::load_config;
@@ -10,10 +12,12 @@ use pacabench_core::persistence::{
     RunStore, RunSummary,
 };
 use pacabench_core::types::{CaseResult, ErrorType};
+use progress::IndicatifReporter;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(name = "pacabench", about = "Rust rewrite of the PacaBench CLI")]
@@ -44,6 +48,9 @@ enum Command {
         /// Force a new run even if run_id exists with different config.
         #[arg(long)]
         force_new: bool,
+        /// Comma-separated list of agents to run (e.g. --agents agent1,agent2).
+        #[arg(long, short = 'a')]
+        agents: Option<String>,
     },
 
     /// Show aggregated metrics for a run id.
@@ -158,6 +165,7 @@ output:
             runs_dir,
             cache_dir,
             force_new,
+            agents,
         }) => {
             let runs_dir = resolve_runs_dir(
                 Some(&config),
@@ -167,7 +175,39 @@ output:
             let cache_dir = cache_dir
                 .map(PathBuf::from)
                 .unwrap_or_else(default_dataset_cache_dir);
-            let orch = Orchestrator::new(config, root_dir, cache_dir, runs_dir);
+
+            // Filter agents if specified
+            let mut config = config;
+            if let Some(agents_filter) = agents {
+                let filter_set: std::collections::HashSet<&str> =
+                    agents_filter.split(',').map(|s| s.trim()).collect();
+                let available: Vec<String> = config.agents.iter().map(|a| a.name.clone()).collect();
+                config
+                    .agents
+                    .retain(|a| filter_set.contains(a.name.as_str()));
+                if config.agents.is_empty() {
+                    return Err(anyhow!(
+                        "No agents found matching filter: {}. Available: {}",
+                        agents_filter,
+                        available.join(", ")
+                    ));
+                }
+                println!(
+                    "Running {} agent(s): {}",
+                    config.agents.len(),
+                    config
+                        .agents
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+
+            let reporter = Arc::new(IndicatifReporter::new());
+            let orch = Orchestrator::new(config, root_dir, cache_dir, runs_dir)
+                .with_reporter(reporter)
+                .with_config_path(config_path.clone());
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(orch.run(run_id, limit, force_new))?;
         }
@@ -228,7 +268,10 @@ output:
             );
 
             let cache_dir = default_dataset_cache_dir();
-            let orch = Orchestrator::new(config, root_dir, cache_dir, runs_dir);
+            let reporter = Arc::new(IndicatifReporter::new());
+            let orch = Orchestrator::new(config, root_dir, cache_dir, runs_dir)
+                .with_reporter(reporter)
+                .with_config_path(config_path.clone());
             let rt = tokio::runtime::Runtime::new()?;
             // Resume the run - it will re-attempt failed cases
             rt.block_on(orch.run(Some(resolved_id), limit, false))?;

@@ -11,6 +11,7 @@ pub mod orchestrator;
 pub mod persistence;
 pub mod pricing;
 pub mod proxy;
+pub mod reporter;
 pub mod run_manager;
 pub mod runner;
 pub mod types;

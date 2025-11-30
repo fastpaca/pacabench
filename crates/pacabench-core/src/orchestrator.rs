@@ -6,6 +6,7 @@ use crate::evaluators::get_evaluator;
 use crate::metrics::aggregate_results;
 use crate::persistence::{iso_timestamp_now, ErrorEntry};
 use crate::proxy::{MetricEntry, ProxyConfig, ProxyServer};
+use crate::reporter::{NullReporter, ProgressEvent, ProgressReporter};
 use crate::run_manager::RunManager;
 use crate::runner::CommandRunner;
 use crate::types::{Case, CaseResult, ErrorType, RunnerOutput};
@@ -24,6 +25,8 @@ pub struct Orchestrator {
     root_dir: PathBuf,
     cache_dir: PathBuf,
     runs_dir: PathBuf,
+    reporter: Arc<dyn ProgressReporter>,
+    config_path: Option<PathBuf>,
 }
 
 struct WorkItem {
@@ -58,7 +61,7 @@ impl CircuitBreaker {
         self.total_cases.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn record_failure(&self) {
+    fn record_failure(&self) -> bool {
         self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
         self.total_cases.fetch_add(1, Ordering::SeqCst);
         self.total_failures.fetch_add(1, Ordering::SeqCst);
@@ -67,8 +70,20 @@ impl CircuitBreaker {
             let total = self.total_cases.load(Ordering::SeqCst);
             let failures = self.total_failures.load(Ordering::SeqCst);
             if total >= self.min_cases && (failures as f64 / total as f64) > threshold {
-                self.tripped.store(true, Ordering::SeqCst);
+                let was_tripped = self.tripped.swap(true, Ordering::SeqCst);
+                return !was_tripped; // Return true if we just tripped it
             }
+        }
+        false
+    }
+
+    fn error_ratio(&self) -> f64 {
+        let total = self.total_cases.load(Ordering::SeqCst);
+        let failures = self.total_failures.load(Ordering::SeqCst);
+        if total == 0 {
+            0.0
+        } else {
+            failures as f64 / total as f64
         }
     }
 
@@ -89,7 +104,21 @@ impl Orchestrator {
             root_dir,
             cache_dir,
             runs_dir,
+            reporter: Arc::new(NullReporter),
+            config_path: None,
         }
+    }
+
+    /// Set a custom progress reporter.
+    pub fn with_reporter(mut self, reporter: Arc<dyn ProgressReporter>) -> Self {
+        self.reporter = reporter;
+        self
+    }
+
+    /// Set the config path for copying to run directory.
+    pub fn with_config_path(mut self, path: PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
     }
 
     pub async fn run(
@@ -103,6 +132,7 @@ impl Orchestrator {
             self.runs_dir.clone(),
             run_id,
             force_new,
+            self.config_path.clone(),
         )?));
 
         let datasets = self.load_all_datasets(limit)?;
@@ -135,15 +165,44 @@ impl Orchestrator {
             g.completed_count() as u64
         };
 
+        let resuming = {
+            let rm_guard = rm.lock().await;
+            rm_guard.resuming
+        };
+        let completed_before = {
+            let rm_guard = rm.lock().await;
+            rm_guard.completed_count() as u64
+        };
+
         {
             let mut rm_guard = rm.lock().await;
             rm_guard.set_total_cases(total_cases)?;
             rm_guard.initialize_metadata()?;
         }
 
+        let run_id = {
+            let rm_guard = rm.lock().await;
+            rm_guard.run_id.clone()
+        };
+
+        self.reporter.report(ProgressEvent::RunStarted {
+            run_id: run_id.clone(),
+            total_cases,
+            resuming,
+            completed_cases: completed_before,
+        });
+
         if work_items.is_empty() {
             let rm_guard = rm.lock().await;
             rm_guard.mark_completed(false)?;
+            self.reporter.report(ProgressEvent::RunCompleted {
+                run_id,
+                total_cases,
+                passed_cases: rm_guard.passed_count() as u64,
+                failed_cases: total_cases.saturating_sub(rm_guard.passed_count() as u64),
+                total_cost_usd: 0.0,
+                circuit_tripped: false,
+            });
             return Ok(());
         }
 
@@ -233,7 +292,7 @@ impl Orchestrator {
                 .as_ref()
                 .map(|e| e.r#type.clone());
             let recycle_counts = recycle_counts.clone();
-            let recycle_interval = recycle_interval;
+            let reporter = self.reporter.clone();
 
             let handle = tokio::spawn(async move {
                 let _permit = permit;
@@ -303,36 +362,60 @@ impl Orchestrator {
                             );
 
                             let passed = result.passed;
+                            let is_system_error = matches!(
+                                result.error_type,
+                                ErrorType::SystemFailure | ErrorType::FatalError
+                            );
+                            let case_cost = result
+                                .llm_metrics
+                                .get("llm_total_cost_usd")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0)
+                                + result.judge_cost_usd.unwrap_or(0.0);
+
                             {
                                 let mut rm_guard = rm.lock().await;
                                 let _ = rm_guard.append_result(&result);
                             }
 
-                            if matches!(
-                                result.error_type,
-                                ErrorType::SystemFailure | ErrorType::FatalError
-                            ) {
-                                circuit_breaker.record_failure();
+                            if is_system_error {
+                                if circuit_breaker.record_failure() {
+                                    reporter.report(ProgressEvent::CircuitTripped {
+                                        error_ratio: circuit_breaker.error_ratio(),
+                                    });
+                                }
                             } else {
                                 circuit_breaker.record_success();
                             }
 
-                            if passed
-                                || matches!(
-                                    result.error_type,
-                                    ErrorType::SystemFailure | ErrorType::FatalError
-                                )
-                            {
+                            // Determine if this is the final attempt for this case
+                            let is_final_attempt =
+                                passed || is_system_error || retry >= max_retries;
+
+                            // Only report CaseCompleted when no more retries will occur
+                            if is_final_attempt {
+                                reporter.report(ProgressEvent::CaseCompleted {
+                                    case_id: case.case_id.clone(),
+                                    agent_name: agent_name.clone(),
+                                    dataset_name: ds_name.clone(),
+                                    passed,
+                                    is_system_error,
+                                    duration_ms: result.runner_duration_ms,
+                                    cost_usd: case_cost,
+                                });
                                 completed_attempt = true;
-                            } else if retry < max_retries {
+                            } else {
+                                // Retry after backoff
                                 tokio::time::sleep(Duration::from_millis(100 * (retry as u64 + 1)))
                                     .await;
-                            } else {
-                                completed_attempt = true;
                             }
                         }
                         Err(err) => {
-                            circuit_breaker.record_failure();
+                            if circuit_breaker.record_failure() {
+                                reporter.report(ProgressEvent::CircuitTripped {
+                                    error_ratio: circuit_breaker.error_ratio(),
+                                });
+                            }
 
                             if retry == max_retries {
                                 let mut rm_guard = rm.lock().await;
@@ -344,6 +427,17 @@ impl Orchestrator {
                                     case_id: Some(case.case_id.clone()),
                                     error: Some(err.to_string()),
                                 });
+
+                                reporter.report(ProgressEvent::CaseCompleted {
+                                    case_id: case.case_id.clone(),
+                                    agent_name: agent_name.clone(),
+                                    dataset_name: ds_name.clone(),
+                                    passed: false,
+                                    is_system_error: true,
+                                    duration_ms: 0.0,
+                                    cost_usd: 0.0,
+                                });
+                                completed_attempt = true;
                             } else {
                                 tokio::time::sleep(Duration::from_millis(100 * (retry as u64 + 1)))
                                     .await;
@@ -388,10 +482,29 @@ impl Orchestrator {
         }
 
         let failed = circuit_breaker.is_tripped();
-        {
+        let (passed_count, total_cost) = {
             let rm_guard = rm.lock().await;
             rm_guard.mark_completed(failed)?;
-        }
+            let results = self.runs_dir.join(&run_id);
+            let store = crate::persistence::RunStore::new(&results).ok();
+            let results = store
+                .and_then(|s| s.load_results().ok())
+                .unwrap_or_default();
+            let agg = aggregate_results(&results);
+            (
+                agg.total_cases - agg.failed_cases,
+                agg.total_cost_usd + agg.total_judge_cost_usd,
+            )
+        };
+
+        self.reporter.report(ProgressEvent::RunCompleted {
+            run_id,
+            total_cases,
+            passed_cases: passed_count,
+            failed_cases: total_cases.saturating_sub(passed_count),
+            total_cost_usd: total_cost,
+            circuit_tripped: failed,
+        });
 
         Ok(())
     }

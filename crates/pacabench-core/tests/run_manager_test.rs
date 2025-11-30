@@ -48,7 +48,7 @@ fn attempts_increment_and_resume() {
     let runs_dir = tempdir().unwrap();
 
     #[allow(unused_mut)]
-    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false).unwrap();
+    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false, None).unwrap();
     rm.set_total_cases(5).unwrap();
     rm.initialize_metadata().unwrap();
 
@@ -70,6 +70,7 @@ fn attempts_increment_and_resume() {
         runs_dir.path().to_path_buf(),
         Some(rm.run_id.clone()),
         false,
+        None,
     )
     .unwrap();
     assert!(rm2.resuming);
@@ -81,7 +82,7 @@ fn attempts_increment_and_resume() {
 fn fingerprint_mismatch_errors() {
     let cfg = minimal_config();
     let runs_dir = tempdir().unwrap();
-    let rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false).unwrap();
+    let rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false, None).unwrap();
     rm.initialize_metadata().unwrap();
 
     // Different config fingerprint triggers error unless force_new
@@ -92,6 +93,7 @@ fn fingerprint_mismatch_errors() {
         runs_dir.path().to_path_buf(),
         Some(rm.run_id.clone()),
         false,
+        None,
     )
     .unwrap_err();
     assert!(format!("{err}").contains("different config fingerprint"));
@@ -102,7 +104,7 @@ fn retry_tracks_passed_vs_failed_cases() {
     let cfg = minimal_config();
     let runs_dir = tempdir().unwrap();
 
-    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false).unwrap();
+    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false, None).unwrap();
     rm.set_total_cases(3).unwrap();
     rm.initialize_metadata().unwrap();
 
@@ -132,6 +134,7 @@ fn retry_tracks_passed_vs_failed_cases() {
         runs_dir.path().to_path_buf(),
         Some(rm.run_id.clone()),
         false,
+        None,
     )
     .unwrap();
 
@@ -162,7 +165,7 @@ fn metadata_includes_config_extras_and_timestamps() {
     });
 
     let runs_dir = tempdir().unwrap();
-    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false).unwrap();
+    let mut rm = RunManager::new(&cfg, runs_dir.path().to_path_buf(), None, false, None).unwrap();
     rm.set_total_cases(1).unwrap();
     rm.initialize_metadata().unwrap();
 
