@@ -52,7 +52,9 @@ impl CommandRunner {
             let mut setup_cmd = Command::new("sh");
             setup_cmd.arg("-c").arg(setup);
             if let Some(dir) = &self.work_dir {
-                setup_cmd.current_dir(dir);
+                if !dir.as_os_str().is_empty() {
+                    setup_cmd.current_dir(dir);
+                }
             }
             let status = setup_cmd.status().await?;
             if !status.success() {
@@ -67,7 +69,9 @@ impl CommandRunner {
             .stderr(Stdio::piped());
 
         if let Some(dir) = &self.work_dir {
-            cmd.current_dir(dir);
+            if !dir.as_os_str().is_empty() {
+                cmd.current_dir(dir);
+            }
         }
 
         // Build environment.
@@ -127,7 +131,9 @@ impl CommandRunner {
             let mut teardown_cmd = Command::new("sh");
             teardown_cmd.arg("-c").arg(teardown);
             if let Some(dir) = &self.work_dir {
-                teardown_cmd.current_dir(dir);
+                if !dir.as_os_str().is_empty() {
+                    teardown_cmd.current_dir(dir);
+                }
             }
             let status = teardown_cmd.status().await?;
             if !status.success() {

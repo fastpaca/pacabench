@@ -292,7 +292,7 @@ fn stream_response(
                             }
                         }
                     }
-                    let _ = tx.send(Ok(axum::body::Bytes::from(bytes))).await;
+                    let _ = tx.send(Ok(bytes)).await;
                 }
                 Err(_) => break,
             }

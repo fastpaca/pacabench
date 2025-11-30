@@ -93,7 +93,7 @@ fn export_json_includes_judge_fields_and_precision() {
         "extra": {}
     });
     let mut results_file = fs::File::create(run_dir.join("results.jsonl")).unwrap();
-    writeln!(results_file, "{}", result.to_string()).unwrap();
+    writeln!(results_file, "{}", result).unwrap();
 
     let output = Command::new(assert_cmd::cargo::cargo_bin!("pacabench-cli"))
         .arg("--config")

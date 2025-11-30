@@ -145,6 +145,7 @@ output:
 
     let root_dir = config_path
         .parent()
+        .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
 
@@ -518,8 +519,8 @@ fn print_cases(
     rows.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
 
     println!(
-        "{:<12} {:<16} {:<16} {:<8} {}",
-        "case_id", "agent", "dataset", "status", "output/error"
+        "{:<12} {:<16} {:<16} {:<8} output/error",
+        "case_id", "agent", "dataset", "status"
     );
     let total = rows.len();
     for (case_id, agent, dataset, status, summary) in rows.into_iter().take(limit) {
@@ -688,7 +689,7 @@ fn build_export_markdown(
 }
 
 /// Resolve a partial run ID to a full run ID by finding matching directories.
-fn resolve_run_id(runs_dir: &PathBuf, partial: &str) -> Result<String> {
+fn resolve_run_id(runs_dir: &std::path::Path, partial: &str) -> Result<String> {
     let summaries = list_run_summaries(runs_dir)?;
     if summaries.is_empty() {
         return Err(anyhow!("no runs found in {}", runs_dir.display()));
