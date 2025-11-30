@@ -176,6 +176,8 @@ impl ProgressReporter for IndicatifReporter {
                 failed_cases,
                 total_cost_usd,
                 circuit_tripped,
+                metrics,
+                agents,
             } => {
                 // Finish all agent bars
                 {
@@ -227,6 +229,56 @@ impl ProgressReporter for IndicatifReporter {
                     style(format!("${:.4}", total_cost_usd)).cyan()
                 );
                 println!("  {} {:.1}s", style("Duration:").dim(), elapsed);
+                println!(
+                    "  {} {:.1}% / {:.1}% / {:.1}% | {} {:.0} / {:.0} ms | {} {:.0}/{:.0} (judge {}/{})",
+                    style("Acc/Prec/Rec:").dim(),
+                    metrics.accuracy * 100.0,
+                    metrics.precision * 100.0,
+                    metrics.recall * 100.0,
+                    style("Duration p50/p95:").dim(),
+                    metrics.p50_duration_ms,
+                    metrics.p95_duration_ms,
+                    style("Tokens in/out:").dim(),
+                    metrics.total_input_tokens,
+                    metrics.total_output_tokens,
+                    metrics.total_judge_input_tokens,
+                    metrics.total_judge_output_tokens
+                );
+                println!(
+                    "  {} {:.0}/{:.0}/{:.0} ms | {} ${:.4} (judge ${:.4}) | {} {:.1}/{}",
+                    style("LLM latency avg/p50/p95:").dim(),
+                    metrics.avg_llm_latency_ms,
+                    metrics.p50_llm_latency_ms,
+                    metrics.p95_llm_latency_ms,
+                    style("Cost:").dim(),
+                    metrics.total_cost_usd,
+                    metrics.total_judge_cost_usd,
+                    style("Attempts avg/max:").dim(),
+                    metrics.avg_attempts,
+                    metrics.max_attempts
+                );
+                if !agents.is_empty() {
+                    println!();
+                    println!("  Per agent:");
+                    let mut names: Vec<_> = agents.keys().cloned().collect();
+                    names.sort();
+                    for name in names {
+                        if let Some(m) = agents.get(&name) {
+                            println!(
+                                "    {} acc {:.1}% p50 {:.0}ms tokens {}/{} cost ${:.4} (judge ${:.4}) attempts {:.1}/{}",
+                                style(&name).bold(),
+                                m.accuracy * 100.0,
+                                m.p50_duration_ms,
+                                m.total_input_tokens,
+                                m.total_output_tokens,
+                                m.total_cost_usd,
+                                m.total_judge_cost_usd,
+                                m.avg_attempts,
+                                m.max_attempts
+                            );
+                        }
+                    }
+                }
                 println!();
 
                 if circuit_tripped {

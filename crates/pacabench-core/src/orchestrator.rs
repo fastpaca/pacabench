@@ -9,7 +9,7 @@ use crate::proxy::{MetricEntry, MetricsCollector, ProxyConfig, ProxyServer};
 use crate::reporter::{AgentProgress, NullReporter, ProgressEvent, ProgressReporter};
 use crate::run_manager::RunManager;
 use crate::runner::CommandRunner;
-use crate::types::{Case, CaseResult, ErrorType, RunnerOutput};
+use crate::types::{AggregatedMetrics, Case, CaseResult, ErrorType, RunnerOutput};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -223,13 +223,18 @@ impl Orchestrator {
         if work_items.is_empty() {
             let rm_guard = rm.lock().await;
             rm_guard.mark_completed(false)?;
+            let results = rm_guard.load_results().unwrap_or_else(|_| Vec::new());
+            let agg = aggregate_results(&results);
+            let agent_metrics = aggregate_by_agent(&results);
             self.reporter.report(ProgressEvent::RunCompleted {
                 run_id,
                 total_cases,
                 passed_cases: rm_guard.passed_count() as u64,
                 failed_cases: total_cases.saturating_sub(rm_guard.passed_count() as u64),
-                total_cost_usd: 0.0,
+                total_cost_usd: agg.total_cost_usd + agg.total_judge_cost_usd,
                 circuit_tripped: false,
+                metrics: agg,
+                agents: agent_metrics,
             });
             return Ok(());
         }
@@ -543,7 +548,7 @@ impl Orchestrator {
         }
 
         let failed = circuit_breaker.is_tripped();
-        let (passed_count, total_cost) = {
+        let (passed_count, total_cost, metrics, agent_metrics) = {
             let rm_guard = rm.lock().await;
             rm_guard.mark_completed(failed)?;
             let results = self.runs_dir.join(&run_id);
@@ -552,9 +557,12 @@ impl Orchestrator {
                 .and_then(|s| s.load_results().ok())
                 .unwrap_or_default();
             let agg = aggregate_results(&results);
+            let agents = aggregate_by_agent(&results);
             (
                 agg.total_cases - agg.failed_cases,
                 agg.total_cost_usd + agg.total_judge_cost_usd,
+                agg,
+                agents,
             )
         };
 
@@ -565,6 +573,8 @@ impl Orchestrator {
             failed_cases: total_cases.saturating_sub(passed_count),
             total_cost_usd: total_cost,
             circuit_tripped: failed,
+            metrics,
+            agents: agent_metrics,
         });
 
         Ok(())
@@ -710,5 +720,20 @@ fn merge_proxy_entries(entries: &[MetricEntry]) -> HashMap<String, serde_json::V
         "llm_total_cost_usd".into(),
         serde_json::Value::from(total_cost),
     );
+    out
+}
+
+fn aggregate_by_agent(results: &[CaseResult]) -> HashMap<String, AggregatedMetrics> {
+    let mut grouped: HashMap<String, Vec<CaseResult>> = HashMap::new();
+    for r in results {
+        grouped
+            .entry(r.agent_name.clone())
+            .or_default()
+            .push(r.clone());
+    }
+    let mut out = HashMap::new();
+    for (agent, cases) in grouped {
+        out.insert(agent, aggregate_results(&cases));
+    }
     out
 }

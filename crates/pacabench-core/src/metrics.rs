@@ -27,6 +27,18 @@ pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
     let passed = results.iter().filter(|r| r.passed).count() as f64;
     let accuracy = passed / total;
 
+    let mut total_attempts = 0u64;
+    let mut max_attempts = 0u32;
+    for r in results {
+        total_attempts += r.attempt as u64;
+        max_attempts = max_attempts.max(r.attempt);
+    }
+    let avg_attempts = if total > 0.0 {
+        total_attempts as f64 / total
+    } else {
+        0.0
+    };
+
     let mut durations: Vec<f64> = results.iter().map(|r| r.runner_duration_ms).collect();
     let p50_duration_ms = percentile(&mut durations.clone(), 0.5);
     let p95_duration_ms = percentile(&mut durations, 0.95);
@@ -88,7 +100,6 @@ pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
 
     AggregatedMetrics {
         accuracy,
-        precision: accuracy,
         total_cases: results.len() as u64,
         failed_cases: (results.len() as u64).saturating_sub(passed as u64),
         p50_duration_ms,
@@ -103,5 +114,11 @@ pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
         total_judge_cost_usd: total_judge_cost,
         total_judge_input_tokens,
         total_judge_output_tokens,
+        // With only pass/fail available, precision and recall mirror accuracy.
+        precision: accuracy,
+        recall: accuracy,
+        total_attempts,
+        avg_attempts,
+        max_attempts,
     }
 }

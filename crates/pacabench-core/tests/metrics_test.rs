@@ -35,6 +35,7 @@ fn aggregates_accuracy() {
     assert_eq!(m.total_cases, 2);
     assert_eq!(m.failed_cases, 1);
     assert!((m.accuracy - 0.5).abs() < 1e-6);
+    assert!((m.recall - m.accuracy).abs() < 1e-6);
 }
 
 #[test]
@@ -65,4 +66,16 @@ fn aggregates_judge_tokens_separately() {
     assert_eq!(m.total_judge_cost_usd, 0.5);
     assert_eq!(m.total_judge_input_tokens, 13);
     assert_eq!(m.total_judge_output_tokens, 2);
+}
+
+#[test]
+fn aggregates_attempts() {
+    let mut r1 = make_result(5.0, true);
+    r1.attempt = 1;
+    let mut r2 = make_result(7.0, false);
+    r2.attempt = 3;
+    let m = aggregate_results(&[r1, r2]);
+    assert_eq!(m.total_attempts, 4);
+    assert!((m.avg_attempts - 2.0).abs() < 1e-6);
+    assert_eq!(m.max_attempts, 3);
 }

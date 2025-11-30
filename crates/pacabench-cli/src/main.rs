@@ -400,9 +400,10 @@ fn print_run_details(
 
     let agg = aggregate_results(results);
     println!(
-        "Accuracy {acc:.1}% | Precision {prec:.1}% | Failed {failed}",
+        "Accuracy {acc:.1}% | Precision {prec:.1}% | Recall {rec:.1}% | Failed {failed}",
         acc = agg.accuracy * 100.0,
         prec = agg.precision * 100.0,
+        rec = agg.recall * 100.0,
         failed = agg.failed_cases
     );
     println!(
@@ -414,12 +415,16 @@ fn print_run_details(
         agg.p95_llm_latency_ms
     );
     println!(
-        "Tokens in/out: {}/{} | LLM calls {} | Cost ${:.4} (judge ${:.4})",
+        "Tokens in/out: {}/{} (judge {}/{}) | LLM calls {} | Cost ${:.4} (judge ${:.4}) | Attempts avg/max {:.1}/{}",
         agg.total_input_tokens,
         agg.total_output_tokens,
+        agg.total_judge_input_tokens,
+        agg.total_judge_output_tokens,
         agg.total_llm_calls,
         agg.total_cost_usd,
-        agg.total_judge_cost_usd
+        agg.total_judge_cost_usd,
+        agg.avg_attempts,
+        agg.max_attempts
     );
     if !errors.is_empty() {
         println!("System errors: {}", errors.len());
@@ -629,8 +634,12 @@ fn build_export_markdown(
             .map(|m| m.total_cases)
             .unwrap_or(results.len() as u64)
     ));
-    md.push_str(&format!("- **Accuracy**: {:.1}%\n", agg.accuracy * 100.0));
-    md.push_str(&format!("- **Precision**: {:.1}%\n", agg.precision * 100.0));
+    md.push_str(&format!(
+        "- **Accuracy / Precision / Recall**: {:.1}% / {:.1}% / {:.1}%\n",
+        agg.accuracy * 100.0,
+        agg.precision * 100.0,
+        agg.recall * 100.0
+    ));
     md.push_str(&format!(
         "- **Duration (p50/p95)**: {:.0}ms / {:.0}ms\n",
         agg.p50_duration_ms, agg.p95_duration_ms
@@ -644,8 +653,16 @@ fn build_export_markdown(
         agg.total_input_tokens, agg.total_output_tokens
     ));
     md.push_str(&format!(
+        "- **Judge Tokens (in/out)**: {} / {}\n",
+        agg.total_judge_input_tokens, agg.total_judge_output_tokens
+    ));
+    md.push_str(&format!(
         "- **Cost**: ${:.4} (judge ${:.4})\n",
         agg.total_cost_usd, agg.total_judge_cost_usd
+    ));
+    md.push_str(&format!(
+        "- **Attempts (avg/max)**: {:.1} / {}\n",
+        agg.avg_attempts, agg.max_attempts
     ));
 
     let mut grouped: BTreeMap<(String, String), Vec<CaseResult>> = BTreeMap::new();
