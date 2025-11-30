@@ -1,4 +1,31 @@
 //! Concurrent orchestration: load datasets, run agents in parallel, and persist results.
+//!
+//! The orchestrator is the main entry point for running benchmarks. It:
+//!
+//! 1. Loads datasets and builds work items (case + agent combinations)
+//! 2. Spawns proxy servers and runner processes per agent
+//! 3. Executes work items concurrently with configurable parallelism
+//! 4. Handles retries, timeouts, and circuit breaking
+//! 5. Persists results and reports progress
+//!
+//! # Architecture
+//!
+//! ```text
+//! Orchestrator
+//!   ├── DatasetLoaders (load cases)
+//!   ├── ProxyServers (one per runner, metrics collection)
+//!   ├── CommandRunners (agent subprocesses)
+//!   ├── Evaluators (per dataset)
+//!   ├── RunManager (persistence)
+//!   └── ProgressReporter (UI updates)
+//! ```
+//!
+//! # Concurrency Model
+//!
+//! - A semaphore limits global concurrency
+//! - Each agent has a pool of runners (round-robin selection)
+//! - Each runner has its own proxy for isolated metrics
+//! - Results are written via RunManager (currently mutex-protected)
 
 use crate::config::BenchmarkConfig;
 use crate::datasets::{get_dataset_loader, DatasetContext, DatasetLoader};
@@ -19,6 +46,18 @@ use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{timeout, Duration};
 
+/// Main orchestrator for running benchmarks.
+///
+/// The orchestrator coordinates dataset loading, agent execution, evaluation,
+/// and result persistence. Use the builder pattern to configure it:
+///
+/// ```ignore
+/// let orch = Orchestrator::new(config, root_dir, cache_dir, runs_dir)
+///     .with_reporter(reporter)
+///     .with_config_path(config_path);
+///
+/// orch.run(None, Some(10), false).await?;
+/// ```
 pub struct Orchestrator {
     config: BenchmarkConfig,
     root_dir: PathBuf,
@@ -28,12 +67,17 @@ pub struct Orchestrator {
     config_path: Option<PathBuf>,
 }
 
+/// A single unit of work: run a case through an agent.
 struct WorkItem {
     agent_idx: usize,
     dataset_idx: usize,
     case: Case,
 }
 
+/// Circuit breaker to stop execution on high error rates.
+///
+/// Trips when the error ratio exceeds the threshold after `min_cases` have run.
+/// Uses atomic operations for lock-free concurrent access.
 struct CircuitBreaker {
     consecutive_failures: AtomicU64,
     total_cases: AtomicU64,
@@ -369,7 +413,7 @@ impl Orchestrator {
 
                     // Clear metrics before each attempt
                     if let Some(m) = &metrics_handle {
-                        let _ = m.snapshot_and_clear().await;
+                        let _ = m.snapshot_and_clear();
                     }
 
                     let attempt = {
@@ -397,14 +441,14 @@ impl Orchestrator {
                             }
 
                             let (eval, kind) = if let Some(ev) = evaluator.as_ref() {
-                                let res = ev.evaluate(&case, &ro);
+                                let res = ev.evaluate(&case, &ro).await;
                                 (Some(res), eval_kind.clone())
                             } else {
                                 (None, None)
                             };
 
                             let merged_metrics = if let Some(mh) = &metrics_handle {
-                                merge_proxy_entries(&mh.snapshot_and_clear().await)
+                                merge_proxy_entries(&mh.snapshot_and_clear())
                             } else {
                                 HashMap::new()
                             };
@@ -538,14 +582,7 @@ impl Orchestrator {
             }
         }
 
-        // Stop proxies
-        for proxies in runner_proxies {
-            for proxy in proxies {
-                if let Some(p) = proxy {
-                    p.stop().await;
-                }
-            }
-        }
+        // Proxies are automatically cleaned up when runner_proxies goes out of scope (RAII)
 
         let failed = circuit_breaker.is_tripped();
         let (passed_count, total_cost, metrics, agent_metrics) = {

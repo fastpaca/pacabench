@@ -1,26 +1,45 @@
 //! Simple evaluator implementations (exact match, F1, multiple choice, LLM judge).
+//!
+//! Evaluators determine whether a runner's output is correct for a given case.
+//! All evaluators implement the async [`Evaluator`] trait.
+//!
+//! # Available Evaluators
+//!
+//! - [`ExactMatchEvaluator`]: Exact string match
+//! - [`F1Evaluator`]: Token-level F1 score with threshold
+//! - [`MultipleChoiceEvaluator`]: Letter extraction with fallback
+//! - [`LlmJudgeEvaluator`]: LLM-based semantic comparison
 
 use crate::config::EvaluatorConfig;
 use crate::pricing::calculate_cost;
 use crate::types::{Case, EvaluationResult, RunnerOutput};
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Arc;
 use tiktoken_rs::{cl100k_base, get_bpe_from_model};
-use tokio::runtime::Handle;
 use tokio::time::{sleep, Duration};
 
+/// Trait for evaluating runner outputs against expected answers.
+///
+/// All evaluation methods are async to support LLM-based judges that
+/// make network calls.
+#[async_trait]
 pub trait Evaluator: Send + Sync {
-    fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult;
+    /// Evaluate the runner output for the given case.
+    async fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult;
+
+    /// Return the kind of evaluator (e.g., "f1", "exact_match", "llm_judge").
     fn kind(&self) -> &str;
 }
 
 pub struct ExactMatchEvaluator;
 
+#[async_trait]
 impl Evaluator for ExactMatchEvaluator {
-    fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
+    async fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
         if output.error.is_some() || output.output.is_none() {
             return EvaluationResult {
                 passed: false,
@@ -98,8 +117,9 @@ impl F1Evaluator {
     }
 }
 
+#[async_trait]
 impl Evaluator for F1Evaluator {
-    fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
+    async fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
         if output.error.is_some() || output.output.is_none() {
             return EvaluationResult {
                 passed: false,
@@ -204,8 +224,12 @@ impl MultipleChoiceEvaluator {
     }
 
     fn extract_choice_letter(&self, text: &str, valid: &HashSet<char>) -> Option<char> {
-        let letters = Regex::new(r"[A-Za-z]").unwrap();
-        for cap in letters.find_iter(text) {
+        use once_cell::sync::Lazy;
+        // Compile-time constant pattern for extracting letters
+        static LETTERS_RE: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"[A-Za-z]").expect("valid regex pattern"));
+
+        for cap in LETTERS_RE.find_iter(text) {
             let c = cap
                 .as_str()
                 .chars()
@@ -220,16 +244,21 @@ impl MultipleChoiceEvaluator {
     }
 
     fn clean_text(&self, text: &str) -> String {
-        let letters = Regex::new(r"[^a-z0-9]+").unwrap();
-        letters
+        use once_cell::sync::Lazy;
+        // Compile-time constant pattern for cleaning text
+        static NON_ALPHANUM_RE: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"[^a-z0-9]+").expect("valid regex pattern"));
+
+        NON_ALPHANUM_RE
             .replace_all(&text.to_lowercase(), " ")
             .trim()
             .to_string()
     }
 }
 
+#[async_trait]
 impl Evaluator for MultipleChoiceEvaluator {
-    fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
+    async fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
         if output.error.is_some() || output.output.is_none() {
             return EvaluationResult {
                 passed: false,
@@ -316,11 +345,11 @@ impl Evaluator for MultipleChoiceEvaluator {
         match self.fallback {
             MultipleChoiceFallback::F1 => {
                 let f1 = F1Evaluator::new(self.f1_threshold);
-                f1.evaluate(case, output)
+                f1.evaluate(case, output).await
             }
             MultipleChoiceFallback::Judge => {
                 let judge = LlmJudgeEvaluator::new(self.judge_model.clone(), None, None, 2, 200);
-                judge.evaluate(case, output)
+                judge.evaluate(case, output).await
             }
             MultipleChoiceFallback::None => EvaluationResult {
                 passed: false,
@@ -509,17 +538,10 @@ impl LlmJudgeEvaluator {
     }
 }
 
+#[async_trait]
 impl Evaluator for LlmJudgeEvaluator {
-    fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
-        match Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| {
-                handle.block_on(self.evaluate_with_retries(case, output))
-            }),
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(self.evaluate_with_retries(case, output))
-            }
-        }
+    async fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult {
+        self.evaluate_with_retries(case, output).await
     }
 
     fn kind(&self) -> &str {

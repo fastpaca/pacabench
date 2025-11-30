@@ -28,11 +28,10 @@ async fn proxy_starts_and_provides_stub_without_upstream() {
     let json: serde_json::Value = resp.json().await.unwrap();
     assert!(json.get("choices").is_some());
 
-    let metrics = proxy.metrics.snapshot_and_clear().await;
+    let metrics = proxy.metrics.snapshot_and_clear();
     assert_eq!(metrics.len(), 1);
     assert_eq!(metrics[0].model.as_deref(), Some("gpt-4"));
-
-    proxy.stop().await;
+    // proxy is automatically cleaned up when dropped
 }
 
 #[tokio::test]
@@ -59,13 +58,11 @@ async fn proxy_records_metrics() {
             .unwrap();
     }
 
-    let metrics = proxy.metrics.snapshot_and_clear().await;
+    let metrics = proxy.metrics.snapshot_and_clear();
     assert_eq!(metrics.len(), 3);
 
-    let metrics2 = proxy.metrics.snapshot_and_clear().await;
+    let metrics2 = proxy.metrics.snapshot_and_clear();
     assert!(metrics2.is_empty());
-
-    proxy.stop().await;
 }
 
 #[tokio::test]
@@ -89,8 +86,6 @@ async fn proxy_url_should_include_v1_prefix() {
         .await
         .unwrap();
     assert!(resp.status().is_success());
-
-    proxy.stop().await;
 }
 
 #[tokio::test]
@@ -109,7 +104,6 @@ async fn proxy_healthcheck() {
         .await
         .unwrap();
     assert!(resp.status().is_success());
-    proxy.stop().await;
 }
 
 #[tokio::test]
@@ -139,8 +133,7 @@ async fn proxy_streaming_stub_records_metric() {
         "streaming response should contain data lines"
     );
 
-    let metrics = proxy.metrics.snapshot_and_clear().await;
+    let metrics = proxy.metrics.snapshot_and_clear();
     assert_eq!(metrics.len(), 1);
     assert_eq!(metrics[0].model.as_deref(), Some("stream-model"));
-    proxy.stop().await;
 }

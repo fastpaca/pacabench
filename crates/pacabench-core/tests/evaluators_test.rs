@@ -37,29 +37,31 @@ fn ro(output: &str) -> RunnerOutput {
     }
 }
 
-#[test]
-fn exact_match_passes() {
+#[tokio::test]
+async fn exact_match_passes() {
     let ev = ExactMatchEvaluator;
-    let res = ev.evaluate(&make_case("hi"), &ro("hi"));
+    let res = ev.evaluate(&make_case("hi"), &ro("hi")).await;
     assert!(res.passed);
 }
 
-#[test]
-fn f1_evaluator_scores() {
+#[tokio::test]
+async fn f1_evaluator_scores() {
     let ev = F1Evaluator::new(0.5);
-    let res = ev.evaluate(&make_case("hello world"), &ro("hello"));
+    let res = ev.evaluate(&make_case("hello world"), &ro("hello")).await;
     assert!(res.score > 0.0);
 }
 
-#[test]
-fn f1_evaluator_handles_punctuation() {
+#[tokio::test]
+async fn f1_evaluator_handles_punctuation() {
     let ev = F1Evaluator::new(0.5);
-    let res = ev.evaluate(&make_case("Hello world"), &ro("Hello, world!"));
+    let res = ev
+        .evaluate(&make_case("Hello world"), &ro("Hello, world!"))
+        .await;
     assert!(res.passed, "punctuation should not break token match");
 }
 
-#[test]
-fn multiple_choice_letter_match() {
+#[tokio::test]
+async fn multiple_choice_letter_match() {
     let mut case = make_case("A");
     let mut meta = serde_json::Map::new();
     meta.insert("A".into(), "foo".into());
@@ -73,12 +75,12 @@ fn multiple_choice_letter_match() {
         extra_config: Default::default(),
         additional: Default::default(),
     });
-    let res = ev.evaluate(&case, &ro("A"));
+    let res = ev.evaluate(&case, &ro("A")).await;
     assert!(res.passed);
 }
 
-#[test]
-fn multiple_choice_fallbacks_to_f1_without_choices() {
+#[tokio::test]
+async fn multiple_choice_fallbacks_to_f1_without_choices() {
     let mut case = make_case("foo bar");
     case.metadata = HashMap::new();
     let ev = MultipleChoiceEvaluator::new(&EvaluatorConfig {
@@ -87,7 +89,7 @@ fn multiple_choice_fallbacks_to_f1_without_choices() {
         extra_config: Default::default(),
         additional: Default::default(),
     });
-    let res = ev.evaluate(&case, &ro("foo bar"));
+    let res = ev.evaluate(&case, &ro("foo bar")).await;
     assert!(res.passed, "fallback F1 should be used when no choices");
 }
 
@@ -113,7 +115,7 @@ async fn llm_judge_records_tokens_and_cost() {
     std::env::set_var("JUDGE_BASE_URL", format!("http://{}", addr));
 
     let judge = LlmJudgeEvaluator::new("gpt-4o-mini".into(), None, None, 1, 0);
-    let res = judge.evaluate(&make_case("hello"), &ro("hello"));
+    let res = judge.evaluate(&make_case("hello"), &ro("hello")).await;
     handle.abort();
     std::env::remove_var("OPENAI_API_KEY");
     std::env::remove_var("JUDGE_BASE_URL");
@@ -200,7 +202,7 @@ async fn llm_judge_retries_and_uses_api_key_and_base_url() {
         1,
         0,
     );
-    let res = judge.evaluate(&make_case("hello"), &ro("hello"));
+    let res = judge.evaluate(&make_case("hello"), &ro("hello")).await;
     handle.abort();
     std::env::remove_var("JUDGE_API_KEY");
 

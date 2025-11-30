@@ -186,22 +186,28 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BenchmarkConfig, ConfigErro
 /// Interpolate environment variables in the config string.
 /// Supports `${VAR}` and `${VAR:-default}` syntax.
 pub fn interpolate_env_vars(input: &str) -> String {
+    use once_cell::sync::Lazy;
     use regex::Regex;
     use std::env;
 
     // Match ${VAR} or ${VAR:-default}
-    let re = Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}").unwrap();
+    // Pattern is compile-time constant, panic on invalid regex is acceptable.
+    static ENV_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+            .expect("valid regex pattern")
+    });
 
-    re.replace_all(input, |caps: &regex::Captures| {
-        let var_name = &caps[1];
-        let default_val = caps.get(2).map(|m| m.as_str());
+    ENV_VAR_RE
+        .replace_all(input, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            let default_val = caps.get(2).map(|m| m.as_str());
 
-        match env::var(var_name) {
-            Ok(val) => val,
-            Err(_) => default_val.unwrap_or("").to_string(),
-        }
-    })
-    .to_string()
+            match env::var(var_name) {
+                Ok(val) => val,
+                Err(_) => default_val.unwrap_or("").to_string(),
+            }
+        })
+        .to_string()
 }
 
 /// Validate required fields and basic invariants.

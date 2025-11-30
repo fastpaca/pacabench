@@ -1,7 +1,15 @@
 //! Metrics aggregation utilities.
+//!
+//! Aggregates individual case results into summary metrics including:
+//! - Accuracy, precision, recall
+//! - Duration percentiles (p50, p95)
+//! - LLM latency statistics
+//! - Token counts and costs
+//! - Retry attempt statistics
 
 use crate::types::{AggregatedMetrics, CaseResult};
 
+/// Calculate the percentile value from a sorted slice.
 fn percentile(data: &mut [f64], pct: f64) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -18,6 +26,11 @@ fn percentile(data: &mut [f64], pct: f64) -> f64 {
     }
 }
 
+/// Aggregate individual case results into summary metrics.
+///
+/// Computes accuracy, latency percentiles, token counts, costs, and retry statistics.
+/// Returns default metrics if `results` is empty.
+#[must_use]
 pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
     if results.is_empty() {
         return AggregatedMetrics::default();

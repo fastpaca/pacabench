@@ -1,20 +1,29 @@
 //! Indicatif-based progress reporter for the CLI.
+//!
+//! Provides rich terminal output using progress bars for each agent.
+//! All counters use atomics for lock-free concurrent updates.
 
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use pacabench_core::reporter::{ProgressEvent, ProgressReporter};
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::Instant;
 
+/// Microdollars per USD (for storing cost as atomic integer).
+const MICRODOLLARS_PER_USD: f64 = 1_000_000.0;
+
 /// Per-agent progress state.
+///
+/// All counters are atomic for lock-free updates from concurrent tasks.
 struct AgentState {
     bar: ProgressBar,
     passed: AtomicU64,
     failed: AtomicU64,
     errors: AtomicU64,
-    cost: Mutex<f64>,
+    /// Cost stored as microdollars (1 USD = 1,000,000 microdollars).
+    cost_micros: AtomicU64,
 }
 
 impl AgentState {
@@ -24,15 +33,26 @@ impl AgentState {
             passed: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             errors: AtomicU64::new(0),
-            cost: Mutex::new(0.0),
+            cost_micros: AtomicU64::new(0),
         }
+    }
+
+    /// Add cost in USD (converted to microdollars internally).
+    fn add_cost(&self, usd: f64) {
+        let micros = (usd * MICRODOLLARS_PER_USD) as u64;
+        self.cost_micros.fetch_add(micros, Ordering::Relaxed);
+    }
+
+    /// Get cost in USD.
+    fn cost_usd(&self) -> f64 {
+        self.cost_micros.load(Ordering::Relaxed) as f64 / MICRODOLLARS_PER_USD
     }
 
     fn update_message(&self, start_time: Option<Instant>) {
         let passed = self.passed.load(Ordering::Relaxed);
         let failed = self.failed.load(Ordering::Relaxed);
         let errors = self.errors.load(Ordering::Relaxed);
-        let cost = *self.cost.lock().unwrap();
+        let cost = self.cost_usd();
 
         let elapsed = start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0);
 
@@ -90,7 +110,7 @@ impl ProgressReporter for IndicatifReporter {
                 completed_cases,
                 agents,
             } => {
-                *self.start_time.lock().unwrap() = Some(Instant::now());
+                *self.start_time.lock() = Some(Instant::now());
 
                 if resuming {
                     println!(
@@ -112,7 +132,7 @@ impl ProgressReporter for IndicatifReporter {
                 let max_name_len = agents.keys().map(|n| n.len()).max().unwrap_or(10);
 
                 // Create one progress bar per agent
-                let mut agents_guard = self.agents.lock().unwrap();
+                let mut agents_guard = self.agents.lock();
                 let mut agent_names: Vec<_> = agents.keys().cloned().collect();
                 agent_names.sort();
 
@@ -130,7 +150,7 @@ impl ProgressReporter for IndicatifReporter {
                     bar.set_position(progress.completed_cases);
 
                     let state = AgentState::new(bar);
-                    state.update_message(*self.start_time.lock().unwrap());
+                    state.update_message(*self.start_time.lock());
                     state
                         .bar
                         .enable_steady_tick(std::time::Duration::from_millis(100));
@@ -144,7 +164,7 @@ impl ProgressReporter for IndicatifReporter {
                 cost_usd,
                 ..
             } => {
-                let agents_guard = self.agents.lock().unwrap();
+                let agents_guard = self.agents.lock();
                 if let Some(state) = agents_guard.get(&agent_name) {
                     if is_system_error {
                         state.errors.fetch_add(1, Ordering::Relaxed);
@@ -154,13 +174,13 @@ impl ProgressReporter for IndicatifReporter {
                         state.failed.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    *state.cost.lock().unwrap() += cost_usd;
+                    state.add_cost(cost_usd);
                     state.bar.inc(1);
-                    state.update_message(*self.start_time.lock().unwrap());
+                    state.update_message(*self.start_time.lock());
                 }
             }
             ProgressEvent::CircuitTripped { error_ratio } => {
-                let agents_guard = self.agents.lock().unwrap();
+                let agents_guard = self.agents.lock();
                 if let Some((_, state)) = agents_guard.iter().next() {
                     state.bar.println(format!(
                         "{} Circuit breaker tripped at {:.1}% error rate",
@@ -181,7 +201,7 @@ impl ProgressReporter for IndicatifReporter {
             } => {
                 // Finish all agent bars
                 {
-                    let mut agents_guard = self.agents.lock().unwrap();
+                    let mut agents_guard = self.agents.lock();
                     for (_, state) in agents_guard.drain() {
                         state.bar.finish_and_clear();
                     }
@@ -190,7 +210,6 @@ impl ProgressReporter for IndicatifReporter {
                 let elapsed = self
                     .start_time
                     .lock()
-                    .unwrap()
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0);
 
