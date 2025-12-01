@@ -1,308 +1,324 @@
-# AI Agent Instructions for pacabench
+# AI Agent Instructions
 
-> **Target Audience**: AI coding agents (Cursor, Copilot, Aider, etc.)
+Universal Python patterns for AI coding agents. Project-specific details are in CLAUDE.md.
 
-## Critical: Code Quality Gates
+Follows [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html).
 
-### Run Ruff on EVERY Change
+## Code Quality Gate
 
-Before marking any task complete, you MUST run these commands:
-
-```bash
-uv run ruff check pacabench/ --fix
-uv run ruff format pacabench/
-uv run ruff check pacabench/
-```
-
-**If ruff fails, the task is not complete.** Fix all issues before proceeding.
-
-**CI/CD**: GitHub Actions will automatically run ruff on PRs.
-
-## Quick Reference
-
-### Project Commands
+Before completing any task, run:
 
 ```bash
-# Code quality
-uv run ruff check pacabench/ --fix  # Fix issues
-uv run ruff format pacabench/       # Format code
-uv run ruff check pacabench/        # Check only
-
-# Run benchmark (quick test)
-uv run pacabench run --limit 10
-
-# Check results
-uv run pacabench              # Show latest run
-uv run pacabench show         # List all runs
-uv run pacabench show <run>   # Show specific run
-uv run pacabench show <run> --cases     # Show case results
-uv run pacabench show <run> --failures  # Show failures only
-
-# Retry failures
-uv run pacabench retry <run>
-
-# Export results
-uv run pacabench export <run>
-
-# Install dependencies (all extras)
-uv sync --all-extras
+uv run ruff check . --fix
+uv run ruff format .
+uv run ruff check .
 ```
 
-### File Structure
+If ruff fails, the task is not complete.
 
-```
-pacabench/
-├── cli.py             # CLI wrapper around library
-├── pipeline.py        # Main evaluation pipeline orchestration
-├── proxy.py           # FastAPI LLM proxy (token/latency/cost tracking)
-├── metrics.py         # AggregatedMetrics and aggregation logic
-├── results.py         # Results container and JSON serialization
-├── types.py           # Shared type definitions (Case, Runner, etc.)
-├── datasets/          # Dataset abstractions and loaders
-│   ├── base.py        # Abstract Dataset class
-│   ├── membench.py    # MemBench loader
-│   ├── longmemeval.py # LongMemEval loader
-│   └── gaia.py        # GAIA loader
-└── runners/           # Runner implementations
-    ├── qa_long_context.py
-    ├── qa_mem0.py
-    ├── agentic_long_context.py
-    └── agentic_mem0.py
-```
+## Google Style Conventions
 
-## Code Style Rules (Enforced by Ruff)
+### Imports
 
-### 1. Type Hints Required
-```python
-# ✅ Good
-def compute_metrics(cases: list[CaseResult]) -> dict[str, float]:
-    return {"p50": 0.5}
-
-# ❌ Bad - missing type hints
-def compute_metrics(cases):
-    return {"p50": 0.5}
-```
-
-### 2. No Redundant Comments
-```python
-# ❌ Bad - comment just restates code
-# Load dataset
-cases = load_membench(limit=limit)
-
-# ✅ Good - no comment needed, code is self-explanatory
-cases = load_membench(limit=limit)
-```
-
-### 3. Extract Magic Numbers
-```python
-# ❌ Bad
-timeout = 300.0
-
-# ✅ Good
-_REQUEST_TIMEOUT_SECONDS = 300.0
-timeout = _REQUEST_TIMEOUT_SECONDS
-```
-
-### 4. Direct Attribute Access
-```python
-# ❌ Bad - unnecessary getattr for known fields
-duration = getattr(result, "runner_duration_ms", 0)
-
-# ✅ Good - direct access, will fail fast if field missing
-duration = result.runner_duration_ms
-```
-
-### 5. No Pointless Abstraction
-```python
-# ❌ Bad - dictionary lookup to get a number back
-PERCENTILES = {"p50": 0.50}
-p50 = _calculate_percentile(values, PERCENTILES["p50"])
-
-# ✅ Good - just use the number
-p50 = _calculate_percentile(values, 0.50)
-```
-
-## Common Modifications
-
-### Adding a Dataset
-
-Datasets own both loading and evaluation strategy:
-
-1. **Create a loader function** (e.g., in `pacabench/datasets/my_dataset.py`):
-   ```python
-   def load_my_dataset(limit: int | None = None) -> list[Case]:
-       # Load and return Case objects
-       return cases
-   ```
-
-2. **Create a Dataset subclass** (e.g., `pacabench/datasets/my_dataset.py`):
-   ```python
-   from pacabench.datasets.base import Dataset
-   from pacabench.datasets.qa_dataset import QaDataset  # or create custom
-   
-   # For QA-style datasets, reuse QaDataset:
-   my_dataset = QaDataset(name="my_dataset", loader_func=load_my_dataset)
-   ```
-
-3. **Register in `pacabench/datasets/__init__.py`**:
-   ```python
-   def get_dataset(dataset: DatasetEnum | str, ...) -> Dataset:
-       # Add your dataset to the registry
-   ```
-
-The Dataset's `evaluate_case()` method defines how correctness is judged. QA datasets use F1 + LLM judge; GAIA uses LLM-as-judge only.
-
-### Adding or Updating Runners
-
-Runners can be implemented in two ways:
-
-#### 1. External Command Runners
-
-*Not currently implemented in CLI, but architecture supports it.*
-
-
-#### 2. Python Library Runners
-
-For Python users, implement the `Runner` protocol:
+Order imports in three groups separated by blank lines:
+1. Standard library
+2. Third-party packages
+3. Local modules
 
 ```python
-from pacabench.runners.base import Runner
-from pacabench.stages.case import Case
-from pacabench.stages.runner import RunnerOutput
-from pacabench.context import EvalContext
+import os
+import sys
+from pathlib import Path
 
-class MyRunner:
-    async def run_case(self, case: Case, ctx: EvalContext) -> RunnerOutput:
-        # Your implementation
-        return RunnerOutput(result="...", error=None, duration_ms=123.0)
+import httpx
+from pydantic import BaseModel
+
+from myproject.models import User
+from myproject.utils import helpers
 ```
 
-Use `CommandRunner` for external command execution, or implement custom logic directly.
+Do not use relative imports. Do not use `from module import *`.
 
-### Modifying Metrics Display
+### Naming
 
-Update `_print_metrics_table()` in `pacabench/cli.py` when adding/removing displayed metrics. Never drop latency rows (avg/p50/p95) or token/cost visibility. Aggregation lives in `pacabench/metrics.py`; extend `CaseResult`/`AggregatedMetrics` first, then plumb fields into the table.
+| Type | Convention | Example |
+|------|------------|---------|
+| Modules | `lowercase_underscores` | `user_service.py` |
+| Classes | `CapWords` | `UserService` |
+| Functions | `lowercase_underscores` | `get_user_by_id` |
+| Variables | `lowercase_underscores` | `user_count` |
+| Constants | `ALL_CAPS` | `MAX_RETRIES` |
+| Private | `_leading_underscore` | `_internal_cache` |
 
-## Testing Your Changes
+### Docstrings
 
-### Minimal Test
-```bash
-cd examples/membench_qa_test
-uv run pacabench run --limit 2 --agents long-context-baseline
+Use Google-style docstrings for public functions:
+
+```python
+def fetch_user(user_id: str, include_deleted: bool = False) -> User | None:
+    """Fetch a user by ID from the database.
+
+    Args:
+        user_id: The unique identifier of the user.
+        include_deleted: Whether to include soft-deleted users.
+
+    Returns:
+        The User object if found, None otherwise.
+
+    Raises:
+        DatabaseError: If the database connection fails.
+    """
 ```
 
-### Verify Output
-```bash
-# Check latest run
-uv run pacabench
+Skip docstrings for private functions, simple getters, and obvious one-liners.
 
-# View cases
-uv run pacabench show <run-id> --cases
+### Exceptions
 
-# Export and inspect
-uv run pacabench export <run-id> | jq .
+Be specific with exception types. Never use bare `except:`.
+
+```python
+# BAD
+try:
+    value = data["key"]
+except:
+    value = default
+
+# BAD - Too broad
+try:
+    value = data["key"]
+except Exception:
+    value = default
+
+# GOOD - Specific exception
+try:
+    value = data["key"]
+except KeyError:
+    value = default
 ```
 
-## Architecture Patterns
+### Comparisons
 
-### Library-First Design
-- **Core models** (`Case`, `RunnerOutput`, `EvaluationOutput`, `CaseResult`, `AggregatedMetrics`) are Pydantic BaseModel subclasses for validation and serialization.
-- **Datasets** own loading (`load_cases()`) and evaluation (`evaluate_case()`).
-- **Runners** implement the `Runner` protocol; `CommandRunner` handles external processes.
-- **Pipeline** (`pipeline.run()`) orchestrates: load dataset → run cases → evaluate → aggregate.
+Use `is` for None, True, False. Use implicit truthiness for sequences.
 
-### Process-Based Runners + Proxy
-- `pacabench.pipeline` spawns `ProxyServer` (FastAPI) to intercept OpenAI traffic.
-- `CommandRunner` executes runner scripts per case using JSON stdin/stdout protocol.
-- Proxy metrics accumulate per case and are flushed after each result (`proxy.metrics.clear_metrics("_current")`).
+```python
+# BAD
+if x == None:
+if len(items) == 0:
+if len(items) > 0:
+if valid == True:
 
-### Runner Spec Resolution
-- Built-in shorthand (e.g., `qa/long_context`) → Resolved via `RUNNERS` map in `pacabench/cli.py`.
-- Maps to runner implementations in `pacabench/runners/`.
-
-### Metrics Collection
-- Capture runner duration (`runner_duration_ms`) plus proxy metrics (`llm_latency_ms`, token counts, cost).
-- `CaseResult` stores evaluator outcomes (`f1_score`, `judge_passed`) so `aggregate_results()` can derive accuracy, precision, percentiles, and judge token totals.
-
-### Results Schema
-
-**results.jsonl** (per-case):
-```json
-{
-  "case_id": "string",
-  "passed": true,
-  "output": "model output",
-  "error": null,
-  "runner_duration_ms": 1234.0,
-  "llm_metrics": {"llm_call_count": 2, "llm_latency_ms": [530.0, 410.0]},
-  "f1_score": 0.84,
-  "f1_passed": true,
-  "judge_passed": true,
-  "judge_metrics": {"input_tokens": 750, "output_tokens": 120}
-}
+# GOOD
+if x is None:
+if not items:
+if items:
+if valid:
 ```
 
-**metrics.json** (aggregated):
-```json
-{
-  "accuracy": 0.85,
-  "precision": 0.82,
-  "total_cases": 100,
-  "p50_duration_s": 1.2,
-  "p95_duration_s": 2.1,
-  "avg_llm_latency_ms": 550.0,
-  "p50_llm_latency_ms": 510.0,
-  "p95_llm_latency_ms": 760.0,
-  "total_input_tokens": 500000,
-  "total_output_tokens": 52000,
-  "total_cost_usd": 12.34,
-  "total_judge_input_tokens": 8500
-}
+### Default Arguments
+
+Never use mutable default arguments.
+
+```python
+# BAD - Mutable default shared across calls
+def append_item(item, items=[]):
+    items.append(item)
+    return items
+
+# GOOD - Use None and create new list
+def append_item(item, items: list | None = None) -> list:
+    if items is None:
+        items = []
+    items.append(item)
+    return items
 ```
 
-## Debugging
+### Comprehensions
 
-### Issue: Latency shows 0.0 ms
-- Ensure runners call the proxy URL (`OPENAI_BASE_URL`) for every OpenAI request.
-- Check that `proxy.metrics.get_metrics("_current")` is used when building the `CaseResult`.
+Use comprehensions for simple transformations. Use loops for complex logic.
 
-### Issue: Ruff failing
-```bash
-uv run ruff check pacabench/        # Inspect failures
-uv run ruff check pacabench/ --fix  # Auto-fix
-uv run ruff format pacabench/       # Format
+```python
+# GOOD - Simple transformation
+names = [user.name for user in users]
+active = {u.id: u for u in users if u.active}
+
+# BAD - Too complex for comprehension
+result = [
+    transform(x) 
+    for x in items 
+    if x.valid and x.type == "special" 
+    for y in x.children 
+    if y.enabled
+]
+
+# GOOD - Use explicit loop for complex logic
+result = []
+for x in items:
+    if not (x.valid and x.type == "special"):
+        continue
+    for y in x.children:
+        if y.enabled:
+            result.append(transform(x))
 ```
 
-### Issue: Missing dependencies
-```bash
-uv sync --all-extras
+## Pydantic Patterns
+
+### 1. Models End-to-End
+
+When a Pydantic model exists, use it for serialization and deserialization. Never convert to dict just to serialize.
+
+```python
+# BAD - Model exists but we use dict
+def update_metadata(self, data: dict[str, Any]) -> None:
+    current = json.load(f)
+    current.update(data)
+    json.dump(current, f)
+
+def read_metadata(self) -> dict[str, Any]:
+    return json.load(f)
+
+# GOOD - Use the model
+def save_metadata(self, metadata: RunMetadata) -> None:
+    self.path.write_text(metadata.model_dump_json(indent=2))
+
+def load_metadata(self) -> RunMetadata:
+    return RunMetadata.model_validate_json(self.path.read_text())
 ```
 
-## Performance Notes
+### 2. Fail Fast on Required Fields
 
-- Default proxy port: 8000 (keep free or update `ProxyServer`/runner env).
-- HTTP concurrency + timeouts inherit from the OpenAI Python client; adjust `ProxyServer` initialization if stricter limits or retries are required.
-- Runner subprocess duration drives duration metrics—long tool chains will inflate `runner_duration_ms`, so keep expensive work minimal.
-- One proxy per evaluation run; avoid spawning additional agents inside runners unless required.
+Do not use `.get()` with defaults for required fields. Let validation fail early.
 
-## Non-Negotiables
+```python
+# BAD - Silent failures, invalid data propagates
+agent = data.get("agent_name", "")
+dataset = data.get("dataset_name", "")
+count = int(data.get("count", 0) or 0)
 
-1. 🚨 **ALWAYS** run ruff before completing tasks
-2. 🚨 **NEVER** remove latency metrics from CLI or JSON outputs
-3. 🚨 **NEVER** add redundant comments
-4. 🚨 **NEVER** skip type hints
-5. 🚨 **NEVER** commit code that doesn't pass `ruff check`
+# GOOD - Validation fails immediately if data is malformed
+result = CaseResult.model_validate(data)
+agent = result.agent_name
+dataset = result.dataset_name
+count = result.count
+```
 
-## Workflow
+### 3. Return Types, Not Dicts
 
-1. Make your code changes
-2. Run `uv run ruff check pacabench/ --fix`
-3. Run `uv run ruff format pacabench/`
-4. Verify `uv run ruff check pacabench/` passes
-5. Test in examples folder: `cd examples/membench_qa_test && uv run pacabench run --limit 2`
-6. Verify results: `uv run pacabench show <run-id> --cases`
-7. Task complete ✅
+Functions should return typed models, not dictionaries.
 
----
+```python
+# BAD - Type erasure
+def load_results(path: Path) -> list[dict]:
+    return [json.loads(line) for line in f]
 
-**Remember**: PacaBench prioritizes simplicity, explicit control of runners, and accurate performance data. When in doubt, keep abstractions thin and ensure every LLM call flows through the proxy for auditable metrics.
+# GOOD - Typed returns
+def load_results(path: Path) -> list[CaseResult]:
+    return [CaseResult.model_validate_json(line) for line in f]
+```
+
+### 4. Single Source of Truth
+
+Do not duplicate utility functions across modules.
+
+```python
+# BAD - Same function in two files
+# manager.py
+def _read_metadata_file(path: Path) -> dict: ...
+# discovery.py
+def _read_metadata_file(path: Path) -> dict: ...
+
+# GOOD - Single location, imported everywhere
+# storage.py
+def load_metadata(path: Path) -> RunMetadata: ...
+```
+
+### 5. Direct Attribute Access
+
+Do not use defensive getattr or dict.get for known model fields.
+
+```python
+# BAD - Unnecessary indirection
+duration = getattr(result, "duration_ms", 0)
+name = result.__dict__.get("name", "")
+
+# GOOD - Direct access, fails fast if field missing
+duration = result.duration_ms
+name = result.name
+```
+
+### 6. Type Hints Required
+
+Every function must have complete type hints.
+
+```python
+# BAD
+def process(items):
+    return [x.name for x in items]
+
+# GOOD
+def process(items: list[Item]) -> list[str]:
+    return [x.name for x in items]
+```
+
+### 7. Minimal Context Objects
+
+Do not create god objects that hold everything. Pass parameters directly.
+
+```python
+# BAD - Context as a dumping ground
+class Context:
+    db: Database
+    cache: Cache
+    config: Config
+    user: User
+    request: Request
+    logger: Logger
+    metrics: Metrics
+
+def process(ctx: Context) -> None: ...
+
+# GOOD - Pass what you need
+def process(db: Database, user: User) -> Result: ...
+```
+
+### 8. No TYPE_CHECKING Guards
+
+Using `if TYPE_CHECKING:` is a code smell indicating circular dependencies. Fix the architecture instead.
+
+```python
+# BAD - Hiding circular imports
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from myapp.models import User
+
+# GOOD - Fix the dependency structure
+# Move shared types to a base module that both can import
+```
+
+## Anti-Pattern Reference
+
+| Anti-Pattern | Correct Pattern |
+|--------------|-----------------|
+| `dict[str, Any]` when model exists | Use the model type |
+| `json.dumps(obj.__dict__)` | `obj.model_dump_json()` |
+| `Model(**json.loads(s))` | `Model.model_validate_json(s)` |
+| `data.get("field", default)` for required fields | `model.field` after validation |
+| Return `dict` from functions | Return typed model |
+| `if TYPE_CHECKING:` import guards | Fix circular dependencies |
+| Duplicate utility functions | Single canonical location |
+| `getattr(obj, "field", default)` | `obj.field` |
+| Bare `except:` | Specific exception type |
+| `if x == None` | `if x is None` |
+| `if len(items) == 0` | `if not items` |
+| Mutable default arguments | `None` with conditional init |
+| `from module import *` | Explicit imports |
+
+## Do Not
+
+1. Add redundant comments that restate the code
+2. Create abstractions for one-time operations
+3. Use magic numbers without named constants
+4. Commit code that fails ruff check
+5. Skip type hints on any function
+6. Use bare except clauses
+7. Use mutable default arguments
+8. Use relative imports
