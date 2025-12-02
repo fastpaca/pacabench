@@ -7,11 +7,12 @@
 //! - [`WorkResult`]: Result from processing a work item
 
 use crate::config::{AgentConfig, Config};
+use crate::error::{PacabenchError, Result};
 use crate::evaluators::{get_evaluator, Evaluator};
 use crate::proxy::{ProxyConfig, ProxyServer};
 use crate::runner::{CommandRunner, RunnerOutput};
 use crate::types::{Case, CaseKey, CaseResult, ErrorType, EvaluationResult, Event, LlmMetrics};
-use anyhow::Result;
+use anyhow::anyhow;
 use async_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -135,16 +136,18 @@ impl WorkerPool {
         let (work_tx, work_rx) = async_channel::unbounded();
         let (result_tx, result_rx) = mpsc::unbounded_channel();
 
-        let evaluators: Vec<(String, Arc<dyn Evaluator>)> = config
-            .datasets
-            .iter()
-            .filter_map(|ds| {
-                ds.evaluator
-                    .as_ref()
-                    .and_then(|cfg| get_evaluator(cfg).ok())
-                    .map(|e| (ds.name.clone(), e))
-            })
-            .collect();
+        let mut evaluators: Vec<(String, Arc<dyn Evaluator>)> = Vec::new();
+        for ds in &config.datasets {
+            if let Some(cfg) = ds.evaluator.as_ref() {
+                let evaluator = get_evaluator(cfg).map_err(|e| {
+                    PacabenchError::evaluation(anyhow!(
+                        "building evaluator for dataset {}: {e}",
+                        ds.name
+                    ))
+                })?;
+                evaluators.push((ds.name.clone(), evaluator));
+            }
+        }
         let evaluators = Arc::new(evaluators);
 
         let mut workers = Vec::with_capacity(concurrency);

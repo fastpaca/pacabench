@@ -1,5 +1,6 @@
 //! OpenAI-compatible proxy server for metrics collection.
 
+use crate::error::Result;
 use crate::types::LlmMetrics;
 use axum::{
     extract::State,
@@ -117,7 +118,7 @@ pub struct ProxyServer {
 }
 
 impl ProxyServer {
-    pub async fn start(cfg: ProxyConfig) -> anyhow::Result<Self> {
+    pub async fn start(cfg: ProxyConfig) -> Result<Self> {
         let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], cfg.port))).await?;
         let addr = listener.local_addr()?;
         let metrics = MetricsCollector::new();

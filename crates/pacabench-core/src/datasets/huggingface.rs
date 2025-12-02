@@ -1,7 +1,8 @@
 use super::{prepare_case, DatasetContext, DatasetLoader};
 use crate::config::DatasetConfig;
+use crate::error::{PacabenchError, Result};
 use crate::types::Case;
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::fs::File;
@@ -83,7 +84,8 @@ impl HuggingFaceDataset {
             return Err(anyhow!(
                 "failed to download dataset {repo_id} split {split}: http {}",
                 resp.status()
-            ));
+            )
+            .into());
         }
         let bytes = resp.bytes().map_err(|e| anyhow!("read body: {e}"))?;
         std::fs::write(&target_file, bytes)?;
@@ -116,7 +118,8 @@ impl DatasetLoader for HuggingFaceDataset {
             files.push(split_file);
         } else {
             for entry in globwalk::GlobWalkerBuilder::from_patterns(&repo_dir, &["**/*.jsonl"])
-                .build()?
+                .build()
+                .map_err(|e| PacabenchError::Internal(e.into()))?
                 .filter_map(|e| e.ok())
             {
                 if entry.path().is_file() {
@@ -126,10 +129,7 @@ impl DatasetLoader for HuggingFaceDataset {
         }
 
         if files.is_empty() {
-            return Err(anyhow!(
-                "no JSONL files found in HF dataset {}",
-                self.repo_id()
-            ));
+            return Err(anyhow!("no JSONL files found in HF dataset {}", self.repo_id()).into());
         }
 
         let mut cases = Vec::new();

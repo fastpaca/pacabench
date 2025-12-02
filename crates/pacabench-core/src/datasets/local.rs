@@ -1,7 +1,7 @@
 use super::{prepare_case, resolve_path, DatasetContext, DatasetLoader};
 use crate::config::DatasetConfig;
+use crate::error::{PacabenchError, Result};
 use crate::types::Case;
-use anyhow::Result;
 use globwalk::GlobWalkerBuilder;
 use serde_json::Value;
 use std::fs::File;
@@ -52,7 +52,8 @@ impl DatasetLoader for LocalDataset {
                     .map(|os| os.to_string_lossy().to_string())
                     .unwrap_or_else(|| "*.jsonl".to_string())],
             )
-            .build()?;
+            .build()
+            .map_err(|e| PacabenchError::Internal(e.into()))?;
             for entry in walker.into_iter().filter_map(|e| e.ok()) {
                 if entry.path().is_file() {
                     files.push(entry.path().to_path_buf());
@@ -61,7 +62,9 @@ impl DatasetLoader for LocalDataset {
         } else {
             let p = resolve_path(source, &self.root);
             if p.is_dir() {
-                let walker = GlobWalkerBuilder::from_patterns(&p, &["*.jsonl"]).build()?;
+                let walker = GlobWalkerBuilder::from_patterns(&p, &["*.jsonl"])
+                    .build()
+                    .map_err(|e| PacabenchError::Internal(e.into()))?;
                 for entry in walker.into_iter().filter_map(|e| e.ok()) {
                     if entry.path().is_file() {
                         files.push(entry.path().to_path_buf());

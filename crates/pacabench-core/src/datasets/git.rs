@@ -1,7 +1,8 @@
 use super::{prepare_case, DatasetContext, DatasetLoader};
 use crate::config::DatasetConfig;
+use crate::error::{PacabenchError, Result};
 use crate::types::Case;
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use git2::Repository;
 use serde_json::Value;
 use std::fs::File;
@@ -41,12 +42,16 @@ impl GitDataset {
         std::fs::create_dir_all(repo_dir.parent().unwrap_or_else(|| Path::new(".")))?;
         if repo_dir.join(".git").exists() {
             if let Ok(repo) = Repository::open(&repo_dir) {
-                let mut origin = repo.find_remote("origin")?;
-                origin.fetch(&["main"], None, None).ok(); // best-effort
+                let mut origin = repo
+                    .find_remote("origin")
+                    .map_err(|e| PacabenchError::Internal(e.into()))?;
+                origin
+                    .fetch(&["main"], None, None)
+                    .map_err(|e| PacabenchError::Internal(e.into()))?;
                 return Ok(repo_dir);
             }
         }
-        Repository::clone(repo_url, &repo_dir)?;
+        Repository::clone(repo_url, &repo_dir).map_err(|e| PacabenchError::Internal(e.into()))?;
         Ok(repo_dir)
     }
 
@@ -59,7 +64,7 @@ impl GitDataset {
                 .env("PACABENCH_DATASET_PATH", repo_dir)
                 .status()?;
             if !status.success() {
-                return Err(anyhow!("prepare command failed with status {status}"));
+                return Err(anyhow!("prepare command failed with status {status}").into());
             }
         }
         Ok(())
@@ -88,7 +93,8 @@ impl DatasetLoader for GitDataset {
 
         let mut files = Vec::new();
         for entry in globwalk::GlobWalkerBuilder::from_patterns(&repo_dir, &["**/*.jsonl"])
-            .build()?
+            .build()
+            .map_err(|e| PacabenchError::Internal(e.into()))?
             .filter_map(|e| e.ok())
         {
             if entry.path().is_file() {
