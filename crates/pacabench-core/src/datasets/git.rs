@@ -3,12 +3,13 @@ use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
 use anyhow::anyhow;
+use async_trait::async_trait;
 use git2::Repository;
 use serde_json::Value;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 
 pub struct GitDataset {
     config: DatasetConfig,
@@ -55,14 +56,15 @@ impl GitDataset {
         Ok(repo_dir)
     }
 
-    fn run_prepare(&self, repo_dir: &Path) -> Result<()> {
+    async fn run_prepare(&self, repo_dir: &Path) -> Result<()> {
         if let Some(cmd) = &self.config.prepare {
             let status = Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
                 .current_dir(&self.ctx.root_dir)
                 .env("PACABENCH_DATASET_PATH", repo_dir)
-                .status()?;
+                .status()
+                .await?;
             if !status.success() {
                 return Err(anyhow!("prepare command failed with status {status}").into());
             }
@@ -71,11 +73,12 @@ impl GitDataset {
     }
 }
 
+#[async_trait]
 impl DatasetLoader for GitDataset {
-    fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
+    async fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
         let repo_url = self.normalize_repo_url();
         let repo_dir = self.ensure_repo(&repo_url)?;
-        self.run_prepare(&repo_dir)?;
+        self.run_prepare(&repo_dir).await?;
 
         let input_key = self
             .config
@@ -125,15 +128,18 @@ impl DatasetLoader for GitDataset {
         let mut cases = Vec::new();
         let mut count = 0usize;
         for file in files {
-            let f = File::open(&file)?;
+            let f = File::open(&file).await?;
             let reader = BufReader::new(f);
-            for (idx, line) in reader.lines().enumerate() {
+            let mut lines = reader.lines();
+            let mut idx = 0usize;
+            while let Some(line) = lines.next_line().await? {
+                let current_idx = idx;
+                idx += 1;
                 if let Some(limit) = limit {
                     if count >= limit {
                         return Ok(cases);
                     }
                 }
-                let line = line?;
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -141,7 +147,7 @@ impl DatasetLoader for GitDataset {
                     let fallback = format!(
                         "{}-{}",
                         file.file_stem().unwrap_or_default().to_string_lossy(),
-                        idx
+                        current_idx
                     );
                     if let Some(case) =
                         prepare_case(&map, &self.config.name, &fallback, input_key, expected_key)

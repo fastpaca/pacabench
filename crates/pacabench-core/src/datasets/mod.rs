@@ -3,6 +3,7 @@
 use crate::config::DatasetConfig;
 use crate::error::Result;
 use crate::types::Case;
+use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -22,8 +23,9 @@ pub struct DatasetContext {
     pub cache_dir: PathBuf,
 }
 
-pub trait DatasetLoader {
-    fn load(&self, limit: Option<usize>) -> Result<Vec<Case>>;
+#[async_trait]
+pub trait DatasetLoader: Send + Sync {
+    async fn load(&self, limit: Option<usize>) -> Result<Vec<Case>>;
 }
 
 pub fn get_dataset_loader(

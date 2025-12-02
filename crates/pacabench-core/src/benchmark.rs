@@ -73,7 +73,7 @@ impl Benchmark {
         let store = RunStore::new(&run_dir)?;
 
         // Phase 2: Load datasets
-        let datasets = self.load_datasets(limit)?;
+        let datasets = self.load_datasets(limit).await?;
         let agent_names: Vec<String> = self.config.agents.iter().map(|a| a.name.clone()).collect();
         let dataset_names: Vec<String> = self
             .config
@@ -227,15 +227,19 @@ impl Benchmark {
         self.finalize_run(state, metadata, store, aborted).await
     }
 
-    fn load_datasets(&self, limit: Option<usize>) -> Result<Vec<(String, Vec<Case>)>> {
+    async fn load_datasets(&self, limit: Option<usize>) -> Result<Vec<(String, Vec<Case>)>> {
         let mut out = Vec::new();
         for ds in &self.config.datasets {
             let ctx = DatasetContext {
                 root_dir: self.config.root_dir.clone(),
                 cache_dir: self.config.cache_dir.clone(),
             };
-            let loader = get_dataset_loader(ds.clone(), ctx).map_err(|e| anyhow!(e))?;
-            let cases = loader.load(limit)?;
+            let loader = get_dataset_loader(ds.clone(), ctx)
+                .map_err(|e| PacabenchError::dataset(ds.name.clone(), e))?;
+            let cases = loader
+                .load(limit)
+                .await
+                .map_err(|e| PacabenchError::dataset(ds.name.clone(), e))?;
             out.push((ds.name.clone(), cases));
         }
         Ok(out)
