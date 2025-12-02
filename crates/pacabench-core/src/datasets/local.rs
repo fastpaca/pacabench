@@ -2,11 +2,12 @@ use super::{prepare_case, resolve_path, DatasetContext, DatasetLoader};
 use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
+use async_trait::async_trait;
 use globwalk::GlobWalkerBuilder;
 use serde_json::Value;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub struct LocalDataset {
     config: DatasetConfig,
@@ -22,8 +23,9 @@ impl LocalDataset {
     }
 }
 
+#[async_trait]
 impl DatasetLoader for LocalDataset {
-    fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
+    async fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
         let source = &self.config.source;
         let split = self.config.split.clone();
         let input_key = self
@@ -98,15 +100,18 @@ impl DatasetLoader for LocalDataset {
         let mut cases = Vec::new();
         let mut count = 0usize;
         for file in files {
-            let f = File::open(&file)?;
+            let f = File::open(&file).await?;
             let reader = BufReader::new(f);
-            for (idx, line) in reader.lines().enumerate() {
+            let mut lines = reader.lines();
+            let mut idx = 0usize;
+            while let Some(line) = lines.next_line().await? {
+                let current_idx = idx;
+                idx += 1;
                 if let Some(limit) = limit {
                     if count >= limit {
                         return Ok(cases);
                     }
                 }
-                let line = line?;
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -114,7 +119,7 @@ impl DatasetLoader for LocalDataset {
                     if let Some(case) = prepare_case(
                         &map,
                         &self.config.name,
-                        &format!("{}-{}", file.display(), idx),
+                        &format!("{}-{}", file.display(), current_idx),
                         input_key,
                         expected_key,
                     ) {

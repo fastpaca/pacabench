@@ -3,12 +3,13 @@ use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
 use anyhow::anyhow;
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use reqwest::Client;
 use serde_json::Value;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::fs::{self, File};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Minimal Hugging Face dataset loader.
 ///
@@ -46,7 +47,7 @@ impl HuggingFaceDataset {
         None
     }
 
-    fn download(&self) -> Result<PathBuf> {
+    async fn download(&self) -> Result<PathBuf> {
         if let Some(local) = self.resolve_local_repo() {
             return Ok(local);
         }
@@ -57,11 +58,11 @@ impl HuggingFaceDataset {
             .cache_dir
             .join("hf")
             .join(repo_id.replace('/', "_"));
-        std::fs::create_dir_all(&cache_dir)?;
+        fs::create_dir_all(&cache_dir).await?;
 
         let split = self.config.split.clone().unwrap_or_else(|| "train".into());
         let target_file = cache_dir.join(format!("{split}.jsonl"));
-        if target_file.exists() {
+        if fs::try_exists(&target_file).await? {
             return Ok(cache_dir);
         }
 
@@ -79,7 +80,10 @@ impl HuggingFaceDataset {
         if let Some(t) = token {
             req = req.bearer_auth(t);
         }
-        let resp = req.send().map_err(|e| anyhow!("download failed: {e}"))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| anyhow!("download failed: {e}"))?;
         if !resp.status().is_success() {
             return Err(anyhow!(
                 "failed to download dataset {repo_id} split {split}: http {}",
@@ -87,15 +91,16 @@ impl HuggingFaceDataset {
             )
             .into());
         }
-        let bytes = resp.bytes().map_err(|e| anyhow!("read body: {e}"))?;
-        std::fs::write(&target_file, bytes)?;
+        let bytes = resp.bytes().await.map_err(|e| anyhow!("read body: {e}"))?;
+        fs::write(&target_file, bytes).await?;
         Ok(cache_dir)
     }
 }
 
+#[async_trait]
 impl DatasetLoader for HuggingFaceDataset {
-    fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
-        let repo_dir = self.download()?;
+    async fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
+        let repo_dir = self.download().await?;
         let split = self.config.split.as_deref().unwrap_or("train");
 
         let input_key = self
@@ -135,15 +140,18 @@ impl DatasetLoader for HuggingFaceDataset {
         let mut cases = Vec::new();
         let mut count = 0usize;
         for file in files {
-            let f = File::open(&file)?;
+            let f = File::open(&file).await?;
             let reader = BufReader::new(f);
-            for (idx, line) in reader.lines().enumerate() {
+            let mut lines = reader.lines();
+            let mut idx = 0usize;
+            while let Some(line) = lines.next_line().await? {
+                let current_idx = idx;
+                idx += 1;
                 if let Some(limit) = limit {
                     if count >= limit {
                         return Ok(cases);
                     }
                 }
-                let line = line?;
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -151,7 +159,7 @@ impl DatasetLoader for HuggingFaceDataset {
                     let fallback = format!(
                         "{}-{}",
                         file.file_stem().unwrap_or_default().to_string_lossy(),
-                        idx
+                        current_idx
                     );
                     if let Some(case) =
                         prepare_case(&map, &self.config.name, &fallback, input_key, expected_key)

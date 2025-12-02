@@ -10,8 +10,8 @@ use std::io::Write;
 use std::path::Path;
 use tempfile::tempdir;
 
-#[test]
-fn local_dataset_loads_records() {
+#[tokio::test]
+async fn local_dataset_loads_records() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
@@ -43,14 +43,14 @@ fn local_dataset_loads_records() {
         cache_dir: dir.path().join("cache"),
     };
     let loader = LocalDataset::new(cfg, ctx);
-    let cases = loader.load(None).unwrap();
+    let cases = loader.load(None).await.unwrap();
     assert_eq!(cases.len(), 2);
     assert_eq!(cases[0].input, "hi");
     assert_eq!(cases[1].case_id, "2");
 }
 
-#[test]
-fn local_dataset_honors_split_file() {
+#[tokio::test]
+async fn local_dataset_honors_split_file() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
@@ -80,7 +80,7 @@ fn local_dataset_honors_split_file() {
         cache_dir: dir.path().join("cache"),
     };
     let loader = LocalDataset::new(cfg, ctx);
-    let cases = loader.load(None).unwrap();
+    let cases = loader.load(None).await.unwrap();
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case_id, "test1");
 }
@@ -108,8 +108,8 @@ fn commit_repo(repo_path: &Path) {
     }
 }
 
-#[test]
-fn git_dataset_runs_prepare_with_env() {
+#[tokio::test]
+async fn git_dataset_runs_prepare_with_env() {
     let dir = tempdir().unwrap();
     let repo_src = dir.path().join("remote");
     std::fs::create_dir_all(&repo_src).unwrap();
@@ -149,7 +149,7 @@ echo "$PACABENCH_DATASET_PATH" > prepare_marker.txt
         cache_dir: dir.path().join("cache"),
     };
     let loader = GitDataset::new(cfg, ctx.clone());
-    let cases = loader.load(None).unwrap();
+    let cases = loader.load(None).await.unwrap();
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case_id, "g1");
 
@@ -162,8 +162,8 @@ echo "$PACABENCH_DATASET_PATH" > prepare_marker.txt
     );
 }
 
-#[test]
-fn huggingface_loader_handles_local_split() {
+#[tokio::test]
+async fn huggingface_loader_handles_local_split() {
     let dir = tempdir().unwrap();
     let hf_dir = dir.path().join("hfdata");
     std::fs::create_dir_all(&hf_dir).unwrap();
@@ -191,7 +191,7 @@ fn huggingface_loader_handles_local_split() {
         cache_dir: dir.path().join("cache"),
     };
     let loader = HuggingFaceDataset::new(cfg, ctx);
-    let cases = loader.load(None).unwrap();
+    let cases = loader.load(None).await.unwrap();
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case_id, "h2");
 }
