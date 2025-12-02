@@ -144,6 +144,8 @@ impl Benchmark {
             completed_cases: state.completed_cases(),
             agents: agent_names.clone(),
             datasets: dataset_names.clone(),
+            agent_totals: state.agent_totals(),
+            agent_completed: state.agent_completed(),
         });
 
         // Handle empty run

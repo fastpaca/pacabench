@@ -202,10 +202,7 @@ async fn forward_request(
     // Force non-streaming for simplicity
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".to_string(), Value::Bool(false));
-        obj.insert(
-            "stream_options".to_string(),
-            serde_json::json!({"include_usage": true}),
-        );
+        obj.remove("stream_options");
     }
 
     let url = format!("{}{}", state.upstream_base, path);

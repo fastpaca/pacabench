@@ -6,15 +6,22 @@
 
 use crate::pricing::calculate_cost_from_metrics;
 use console::style;
+use dashmap::DashMap;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use pacabench_core::Event;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::broadcast;
 
 const MICRODOLLARS_PER_USD: f64 = 1_000_000.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaseOutcome {
+    Passed,
+    Failed,
+    Error,
+}
 
 struct AgentState {
     bar: ProgressBar,
@@ -22,6 +29,7 @@ struct AgentState {
     failed: AtomicU64,
     errors: AtomicU64,
     cost_micros: AtomicU64,
+    cases: DashMap<String, CaseOutcome>,
 }
 
 impl AgentState {
@@ -32,6 +40,7 @@ impl AgentState {
             failed: AtomicU64::new(0),
             errors: AtomicU64::new(0),
             cost_micros: AtomicU64::new(0),
+            cases: DashMap::new(),
         }
     }
 
@@ -71,12 +80,50 @@ impl AgentState {
         );
         self.bar.set_message(msg);
     }
+
+    fn adjust_counters(&self, from: Option<CaseOutcome>, to: CaseOutcome) -> bool {
+        if from == Some(to) {
+            return false;
+        }
+
+        match from {
+            Some(CaseOutcome::Passed) => {
+                self.passed.fetch_sub(1, Ordering::Relaxed);
+            }
+            Some(CaseOutcome::Failed) => {
+                self.failed.fetch_sub(1, Ordering::Relaxed);
+            }
+            Some(CaseOutcome::Error) => {
+                self.errors.fetch_sub(1, Ordering::Relaxed);
+            }
+            None => {}
+        }
+
+        match to {
+            CaseOutcome::Passed => self.passed.fetch_add(1, Ordering::Relaxed),
+            CaseOutcome::Failed => self.failed.fetch_add(1, Ordering::Relaxed),
+            CaseOutcome::Error => self.errors.fetch_add(1, Ordering::Relaxed),
+        };
+
+        true
+    }
+
+    fn record_case(&self, key: &str, outcome: CaseOutcome) {
+        let prev = self.cases.get(key).map(|v| *v.value());
+        let changed = self.adjust_counters(prev, outcome);
+        if prev.is_none() {
+            self.bar.inc(1);
+        }
+        if changed {
+            self.cases.insert(key.to_string(), outcome);
+        }
+    }
 }
 
 /// Progress display using indicatif for rich terminal output.
 pub struct ProgressDisplay {
     multi: MultiProgress,
-    agents: Mutex<HashMap<String, AgentState>>,
+    agents: DashMap<String, AgentState>,
     start_time: Mutex<Option<Instant>>,
 }
 
@@ -90,7 +137,7 @@ impl ProgressDisplay {
     pub fn new() -> Self {
         Self {
             multi: MultiProgress::new(),
-            agents: Mutex::new(HashMap::new()),
+            agents: DashMap::new(),
             start_time: Mutex::new(None),
         }
     }
@@ -115,59 +162,80 @@ impl ProgressDisplay {
                 completed_cases,
                 agents,
                 datasets: _,
+                agent_totals,
+                agent_completed,
             } => {
                 *self.start_time.lock() = Some(Instant::now());
 
-                if resuming {
-                    println!(
-                        "{} Resuming {} ({} already done)",
-                        style("→").cyan().bold(),
-                        style(&run_id).bold(),
-                        completed_cases
-                    );
-                } else {
-                    println!(
-                        "{} Starting {} ({} cases)",
-                        style("→").cyan().bold(),
-                        style(&run_id).bold(),
-                        total_cases
-                    );
-                }
-
-                let max_name_len = agents.iter().map(|n| n.len()).max().unwrap_or(10);
                 let cases_per_agent = if agents.is_empty() {
                     total_cases
                 } else {
                     total_cases / agents.len() as u64
                 };
-                let completed_per_agent = if agents.is_empty() {
-                    completed_cases
+                let run_scope = if agents.is_empty() {
+                    format!("{total_cases} cases")
                 } else {
-                    completed_cases / agents.len() as u64
+                    format!(
+                        "{total_cases} tasks = {cases_per_agent} cases x {} agents",
+                        agents.len()
+                    )
                 };
 
-                let mut agents_guard = self.agents.lock();
+                if resuming {
+                    println!(
+                        "{} Resuming {} ({} already done, {})",
+                        style("→").cyan().bold(),
+                        style(&run_id).bold(),
+                        completed_cases,
+                        run_scope
+                    );
+                } else {
+                    println!(
+                        "{} Starting {} ({})",
+                        style("→").cyan().bold(),
+                        style(&run_id).bold(),
+                        run_scope
+                    );
+                }
+
+                let max_name_len = agents.iter().map(|n| n.len()).max().unwrap_or(10);
+
                 let mut agent_names = agents.clone();
                 agent_names.sort();
 
                 for agent_name in agent_names {
+                    let total_for_agent = agent_totals
+                        .get(&agent_name)
+                        .copied()
+                        .unwrap_or(cases_per_agent);
+                    let completed_for_agent = agent_completed
+                        .get(&agent_name)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            if agents.is_empty() {
+                                completed_cases
+                            } else {
+                                completed_cases / agents.len() as u64
+                            }
+                        });
+
                     let bar_style = ProgressStyle::with_template(&format!(
                         "{{spinner:.green}} {{prefix:<{max_name_len}}} [{{bar:30.cyan/blue}}] {{pos}}/{{len}} {{msg}}"
                     ))
                     .unwrap()
                     .progress_chars("█▓▒░  ");
 
-                    let bar = self.multi.add(ProgressBar::new(cases_per_agent));
+                    let bar = self.multi.add(ProgressBar::new(total_for_agent));
                     bar.set_style(bar_style);
                     bar.set_prefix(agent_name.clone());
-                    bar.set_position(completed_per_agent);
+                    bar.set_position(completed_for_agent.min(total_for_agent));
 
                     let state = AgentState::new(bar);
                     state.update_message(*self.start_time.lock());
                     state
                         .bar
                         .enable_steady_tick(std::time::Duration::from_millis(100));
-                    agents_guard.insert(agent_name, state);
+                    self.agents.insert(agent_name, state);
                 }
             }
 
@@ -175,33 +243,35 @@ impl ProgressDisplay {
 
             Event::CaseCompleted {
                 agent,
+                dataset,
+                case_id,
                 passed,
                 is_error,
                 input_tokens,
                 output_tokens,
                 ..
             } => {
-                let agents_guard = self.agents.lock();
-                if let Some(state) = agents_guard.get(&agent) {
-                    if is_error {
-                        state.errors.fetch_add(1, Ordering::Relaxed);
+                if let Some(state) = self.agents.get(&agent) {
+                    let outcome = if is_error {
+                        CaseOutcome::Error
                     } else if passed {
-                        state.passed.fetch_add(1, Ordering::Relaxed);
+                        CaseOutcome::Passed
                     } else {
-                        state.failed.fetch_add(1, Ordering::Relaxed);
-                    }
+                        CaseOutcome::Failed
+                    };
+
+                    let key = format!("{dataset}:{case_id}");
+                    state.value().record_case(&key, outcome);
 
                     let cost_usd = calculate_cost_from_metrics(input_tokens, output_tokens, 0);
-                    state.add_cost(cost_usd);
-                    state.bar.inc(1);
-                    state.update_message(*self.start_time.lock());
+                    state.value().add_cost(cost_usd);
+                    state.value().update_message(*self.start_time.lock());
                 }
             }
 
             Event::CircuitTripped { error_ratio } => {
-                let agents_guard = self.agents.lock();
-                if let Some((_, state)) = agents_guard.iter().next() {
-                    state.bar.println(format!(
+                if let Some(state) = self.agents.iter().next() {
+                    state.value().bar.println(format!(
                         "{} Circuit breaker tripped at {:.1}% error rate",
                         style("⚠").yellow().bold(),
                         error_ratio * 100.0
@@ -229,11 +299,8 @@ impl ProgressDisplay {
                     0,
                 );
 
-                {
-                    let mut agents_guard = self.agents.lock();
-                    for (_, state) in agents_guard.drain() {
-                        state.bar.finish_and_clear();
-                    }
+                for entry in self.agents.iter() {
+                    entry.value().bar.finish_and_clear();
                 }
 
                 let elapsed = self

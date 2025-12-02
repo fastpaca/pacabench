@@ -1,6 +1,6 @@
-//! Worker pool with work-stealing MPMC queue.
+//! Worker pool with agent-scoped queues.
 //!
-//! Workers pop from a shared async_channel, process cases, and send results back.
+//! Each agent has its own async_channel, ensuring cases are handled by the correct runner.
 //!
 //! Internal types:
 //! - [`WorkItem`]: Unit of work dispatched to workers
@@ -15,6 +15,7 @@ use crate::types::{Case, CaseKey, CaseResult, ErrorType, EvaluationResult, Event
 use anyhow::anyhow;
 use async_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -120,7 +121,7 @@ impl WorkResult {
 // ============================================================================
 
 pub struct WorkerPool {
-    work_tx: Sender<WorkItem>,
+    work_txs: HashMap<String, Sender<WorkItem>>,
     result_rx: mpsc::UnboundedReceiver<WorkResult>,
     #[allow(dead_code)]
     event_tx: broadcast::Sender<Event>,
@@ -133,7 +134,6 @@ impl WorkerPool {
         config: &Config,
         event_tx: broadcast::Sender<Event>,
     ) -> Result<Self> {
-        let (work_tx, work_rx) = async_channel::unbounded();
         let (result_tx, result_rx) = mpsc::unbounded_channel();
 
         let mut evaluators: Vec<(String, Arc<dyn Evaluator>)> = Vec::new();
@@ -150,35 +150,55 @@ impl WorkerPool {
         }
         let evaluators = Arc::new(evaluators);
 
-        let mut workers = Vec::with_capacity(concurrency);
+        let mut work_txs = HashMap::new();
+        let mut work_rxs = HashMap::new();
+        for agent in &config.agents {
+            let (tx, rx) = async_channel::unbounded();
+            work_txs.insert(agent.name.clone(), tx);
+            work_rxs.insert(agent.name.clone(), rx);
+        }
 
-        for i in 0..concurrency {
-            let agent_idx = i % config.agents.len();
-            let agent = config.agents[agent_idx].clone();
+        let agent_count = config.agents.len().max(1);
+        let total_workers = concurrency.max(agent_count);
+        let mut distribution = vec![1usize; agent_count];
+        for i in 0..(total_workers - agent_count) {
+            distribution[i % agent_count] += 1;
+        }
 
-            let worker_cfg = WorkerConfig {
-                id: i as u64,
-                agent,
-                proxy_enabled: config.global.proxy.enabled,
-                proxy_base_url: config.global.proxy.base_url.clone(),
-                timeout_seconds: config.global.timeout_seconds,
-                root_dir: config.root_dir.clone(),
+        let mut workers = Vec::with_capacity(total_workers);
+        let mut worker_id = 0u64;
+
+        for (idx, agent) in config.agents.iter().enumerate() {
+            let Some(rx) = work_rxs.get(&agent.name) else {
+                continue;
             };
 
-            let handle = spawn_worker(
-                worker_cfg,
-                work_rx.clone(),
-                result_tx.clone(),
-                event_tx.clone(),
-                evaluators.clone(),
-            )
-            .await?;
+            for _ in 0..distribution[idx] {
+                let worker_cfg = WorkerConfig {
+                    id: worker_id,
+                    agent: agent.clone(),
+                    proxy_enabled: config.global.proxy.enabled,
+                    proxy_base_url: config.global.proxy.base_url.clone(),
+                    timeout_seconds: config.global.timeout_seconds,
+                    root_dir: config.root_dir.clone(),
+                };
 
-            workers.push(handle);
+                let handle = spawn_worker(
+                    worker_cfg,
+                    rx.clone(),
+                    result_tx.clone(),
+                    event_tx.clone(),
+                    evaluators.clone(),
+                )
+                .await?;
+
+                workers.push(handle);
+                worker_id += 1;
+            }
         }
 
         Ok(Self {
-            work_tx,
+            work_txs,
             result_rx,
             event_tx,
             workers,
@@ -187,14 +207,20 @@ impl WorkerPool {
 
     /// Push a work item to the queue.
     pub async fn push(&self, item: WorkItem) {
-        // Unbounded channel - send never fails unless closed
-        let _ = self.work_tx.send(item).await;
+        if let Some(tx) = self.work_txs.get(&item.agent_name) {
+            let _ = tx.send(item).await;
+        } else {
+            warn!(
+                agent = %item.agent_name,
+                "no worker queue found for agent"
+            );
+        }
     }
 
     /// Push all work items to the queue.
     pub async fn push_batch(&self, items: Vec<WorkItem>) {
         for item in items {
-            let _ = self.work_tx.send(item).await;
+            self.push(item).await;
         }
     }
 
@@ -212,12 +238,14 @@ impl WorkerPool {
     /// Check if work queue is empty.
     #[allow(dead_code)]
     pub fn is_work_queue_empty(&self) -> bool {
-        self.work_tx.is_empty()
+        self.work_txs.values().all(Sender::is_empty)
     }
 
     /// Close the work queue and wait for workers to finish.
     pub async fn shutdown(self) {
-        self.work_tx.close();
+        for tx in self.work_txs.values() {
+            tx.close();
+        }
         for handle in self.workers {
             let _ = handle.await;
         }
