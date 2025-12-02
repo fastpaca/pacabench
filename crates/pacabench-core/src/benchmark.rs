@@ -6,11 +6,10 @@ use crate::metrics::aggregate_results;
 use crate::persistence::{
     compute_config_fingerprint, generate_run_id, iso_timestamp_now, RunMetadata, RunStore,
 };
-use crate::protocol::{Command, Event, WorkItem};
 use crate::retry::RetryPolicy;
 use crate::state::RunState;
-use crate::types::{AggregatedMetrics, Case, RunStatus};
-use crate::worker::WorkerPool;
+use crate::types::{AggregatedMetrics, Case, Command, Event, RunStatus};
+use crate::worker::{WorkItem, WorkerPool};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc};

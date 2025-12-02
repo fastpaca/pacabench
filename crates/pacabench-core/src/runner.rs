@@ -11,8 +11,9 @@
 //! orchestrator manages concurrency at a higher level using semaphores and task spawning.
 
 use crate::config::AgentConfig;
-use crate::types::{Case, ErrorType, RunnerOutput};
+use crate::types::{Case, ErrorType};
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,6 +22,51 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::task::JoinHandle;
 use tracing::warn;
+
+// ============================================================================
+// RUNNER OUTPUT
+// ============================================================================
+
+/// Output from running a case through an agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RunnerOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub error_type: ErrorType,
+    #[serde(default)]
+    pub duration_ms: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_traceback: Option<String>,
+}
+
+impl RunnerOutput {
+    pub fn success(output: String, duration_ms: f64) -> Self {
+        Self {
+            output: Some(output),
+            error: None,
+            error_type: ErrorType::None,
+            duration_ms,
+            error_traceback: None,
+        }
+    }
+
+    pub fn failure(error: String, error_type: ErrorType, duration_ms: f64) -> Self {
+        Self {
+            output: None,
+            error: Some(error),
+            error_type,
+            duration_ms,
+            error_traceback: None,
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.output.is_some() && self.error.is_none()
+    }
+}
 
 /// Manages an agent subprocess for running benchmark cases.
 ///

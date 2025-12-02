@@ -1,15 +1,19 @@
 //! Worker pool with work-stealing MPMC queue.
 //!
 //! Workers pop from a shared async_channel, process cases, and send results back.
+//!
+//! Internal types:
+//! - [`WorkItem`]: Unit of work dispatched to workers
+//! - [`WorkResult`]: Result from processing a work item
 
 use crate::config::{AgentConfig, Config};
 use crate::evaluators::{get_evaluator, Evaluator};
-use crate::protocol::{Event, WorkItem, WorkResult};
 use crate::proxy::{ProxyConfig, ProxyServer};
-use crate::runner::CommandRunner;
-use crate::types::{ErrorType, EvaluationResult, RunnerOutput};
+use crate::runner::{CommandRunner, RunnerOutput};
+use crate::types::{Case, CaseKey, CaseResult, ErrorType, EvaluationResult, Event, LlmMetrics};
 use anyhow::Result;
 use async_channel::{Receiver, Sender};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,6 +21,98 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, info, warn};
+
+// ============================================================================
+// WORK ITEM
+// ============================================================================
+
+/// A single unit of work: run a case through an agent.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkItem {
+    pub run_id: String,
+    pub agent_name: String,
+    pub dataset_name: String,
+    pub case_id: String,
+    pub case: Case,
+    pub attempt: u32,
+}
+
+impl WorkItem {
+    pub fn new(run_id: String, agent_name: String, case: Case) -> Self {
+        Self {
+            run_id,
+            agent_name,
+            dataset_name: case.dataset_name.clone(),
+            case_id: case.case_id.clone(),
+            case,
+            attempt: 1,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn retry(&self) -> Self {
+        Self {
+            run_id: self.run_id.clone(),
+            agent_name: self.agent_name.clone(),
+            dataset_name: self.dataset_name.clone(),
+            case_id: self.case_id.clone(),
+            case: self.case.clone(),
+            attempt: self.attempt + 1,
+        }
+    }
+
+    pub fn key(&self) -> CaseKey {
+        CaseKey::new(&self.agent_name, &self.dataset_name, &self.case_id)
+    }
+}
+
+// ============================================================================
+// WORK RESULT
+// ============================================================================
+
+/// Result from processing a work item.
+#[derive(Clone, Debug)]
+pub struct WorkResult {
+    pub item: WorkItem,
+    pub passed: bool,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub error_type: ErrorType,
+    pub duration_ms: f64,
+    pub llm_metrics: LlmMetrics,
+    pub evaluation: Option<EvaluationResult>,
+}
+
+impl WorkResult {
+    #[allow(dead_code)]
+    pub fn is_error(&self) -> bool {
+        self.error_type.is_error()
+    }
+
+    pub fn to_case_result(&self, timestamp: String) -> CaseResult {
+        CaseResult {
+            case_id: self.item.case_id.clone(),
+            dataset_name: self.item.dataset_name.clone(),
+            agent_name: self.item.agent_name.clone(),
+            passed: self.passed,
+            attempt: self.item.attempt,
+            output: self.output.clone(),
+            error: self.error.clone(),
+            error_type: self.error_type,
+            runner_duration_ms: self.duration_ms,
+            llm_metrics: self.llm_metrics.clone(),
+            timestamp: Some(timestamp),
+            f1_score: self.evaluation.as_ref().and_then(|e| e.f1_score),
+            f1_passed: self.evaluation.as_ref().map(|e| e.passed),
+            judge_passed: self.evaluation.as_ref().map(|e| e.passed),
+            judge_reason: self.evaluation.as_ref().and_then(|e| e.reason.clone()),
+            judge_metrics: self
+                .evaluation
+                .as_ref()
+                .and_then(|e| e.judge_metrics.clone()),
+        }
+    }
+}
 
 // ============================================================================
 // WORKER POOL
@@ -308,4 +404,29 @@ async fn run_evaluation(
     };
 
     Some(evaluator.evaluate(&item.case, &runner_output).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_work_item_retry() {
+        let case = Case {
+            case_id: "test-1".into(),
+            dataset_name: "test-ds".into(),
+            input: "question".into(),
+            expected: Some("answer".into()),
+            history: vec![],
+            metadata: HashMap::new(),
+        };
+
+        let item = WorkItem::new("run-123".into(), "agent-1".into(), case);
+        assert_eq!(item.attempt, 1);
+
+        let retry = item.retry();
+        assert_eq!(retry.attempt, 2);
+        assert_eq!(retry.case_id, "test-1");
+    }
 }

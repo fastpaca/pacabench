@@ -5,7 +5,8 @@ use pacabench_core::config::MultipleChoiceFallback;
 use pacabench_core::evaluators::{
     Evaluator, ExactMatchEvaluator, F1Evaluator, LlmJudgeEvaluator, MultipleChoiceEvaluator,
 };
-use pacabench_core::types::{Case, ErrorType, RunnerOutput};
+use pacabench_core::runner::RunnerOutput;
+use pacabench_core::types::{Case, ErrorType};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},

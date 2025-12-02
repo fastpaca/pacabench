@@ -3,7 +3,6 @@
 //! This module defines the data structures used throughout the benchmark:
 //!
 //! - [`Case`]: A single benchmark case to evaluate
-//! - [`RunnerOutput`]: Output from running a case through an agent
 //! - [`EvaluationResult`]: Result of evaluating a runner output
 //! - [`CaseResult`]: Combined result of running and evaluating a case
 //! - [`LlmMetrics`]: Metrics from LLM API calls (tokens, latency)
@@ -11,6 +10,8 @@
 //! - [`AggregatedMetrics`]: Aggregated metrics across all cases
 //! - [`RunStatus`]: Explicit state for benchmark runs
 //! - [`ErrorType`]: Classification of errors
+//! - [`Event`]: Events emitted during benchmark execution
+//! - [`Command`]: Commands to control benchmark execution
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -142,51 +143,6 @@ pub struct Case {
     pub history: Vec<Value>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: Metadata,
-}
-
-// ============================================================================
-// RUNNER OUTPUT
-// ============================================================================
-
-/// Output from running a case through an agent.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct RunnerOutput {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub error_type: ErrorType,
-    #[serde(default)]
-    pub duration_ms: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error_traceback: Option<String>,
-}
-
-impl RunnerOutput {
-    pub fn success(output: String, duration_ms: f64) -> Self {
-        Self {
-            output: Some(output),
-            error: None,
-            error_type: ErrorType::None,
-            duration_ms,
-            error_traceback: None,
-        }
-    }
-
-    pub fn failure(error: String, error_type: ErrorType, duration_ms: f64) -> Self {
-        Self {
-            output: None,
-            error: Some(error),
-            error_type,
-            duration_ms,
-            error_traceback: None,
-        }
-    }
-
-    pub fn is_success(&self) -> bool {
-        self.output.is_some() && self.error.is_none()
-    }
 }
 
 // ============================================================================
@@ -325,4 +281,77 @@ pub struct AggregatedMetrics {
     pub total_attempts: u64,
     pub avg_attempts: f64,
     pub max_attempts: u32,
+}
+
+// ============================================================================
+// EVENTS
+// ============================================================================
+
+/// Events emitted during benchmark execution.
+///
+/// Subscribe to these events to observe progress, display UI, or log results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Event {
+    /// Benchmark run started.
+    RunStarted {
+        run_id: String,
+        total_cases: u64,
+        resuming: bool,
+        completed_cases: u64,
+        agents: Vec<String>,
+        datasets: Vec<String>,
+    },
+
+    /// A case started processing.
+    CaseStarted {
+        run_id: String,
+        case_id: String,
+        agent: String,
+        dataset: String,
+        attempt: u32,
+    },
+
+    /// A case completed (pass or fail).
+    CaseCompleted {
+        run_id: String,
+        case_id: String,
+        agent: String,
+        dataset: String,
+        passed: bool,
+        is_error: bool,
+        attempt: u32,
+        duration_ms: f64,
+        input_tokens: u64,
+        output_tokens: u64,
+    },
+
+    /// Benchmark run finished.
+    RunCompleted {
+        run_id: String,
+        total_cases: u64,
+        passed_cases: u64,
+        failed_cases: u64,
+        aborted: bool,
+        metrics: AggregatedMetrics,
+        agent_metrics: HashMap<String, AggregatedMetrics>,
+    },
+
+    /// Circuit breaker tripped due to high error rate.
+    CircuitTripped { error_ratio: f64 },
+
+    /// System error occurred.
+    Error { message: String },
+}
+
+// ============================================================================
+// COMMANDS
+// ============================================================================
+
+/// Commands to control benchmark execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Command {
+    /// Graceful stop: finish current cases, then exit.
+    Stop { reason: String },
+    /// Immediate abort: cancel in-flight work.
+    Abort { reason: String },
 }

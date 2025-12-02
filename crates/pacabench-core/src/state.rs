@@ -2,8 +2,8 @@
 //!
 //! Provides explicit state tracking for benchmark runs with proper state transitions.
 
-use crate::protocol::WorkItem;
 use crate::types::{CaseKey, CaseResult, RunStatus};
+use crate::worker::WorkItem;
 use std::collections::{HashMap, HashSet};
 
 /// Tracks state for a benchmark run.
