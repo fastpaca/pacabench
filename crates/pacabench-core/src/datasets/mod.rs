@@ -1,8 +1,8 @@
 //! Dataset loaders.
 
 use crate::config::DatasetConfig;
+use crate::error::Result;
 use crate::types::Case;
-use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

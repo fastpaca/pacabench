@@ -64,6 +64,18 @@ pub enum PacabenchError {
 /// Result type alias using `PacabenchError`.
 pub type Result<T> = std::result::Result<T, PacabenchError>;
 
+impl From<std::io::Error> for PacabenchError {
+    fn from(err: std::io::Error) -> Self {
+        PacabenchError::Persistence(err)
+    }
+}
+
+impl From<serde_json::Error> for PacabenchError {
+    fn from(err: serde_json::Error) -> Self {
+        PacabenchError::Internal(err.into())
+    }
+}
+
 impl PacabenchError {
     /// Create a dataset error with context.
     pub fn dataset(name: impl Into<String>, source: impl Into<anyhow::Error>) -> Self {

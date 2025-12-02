@@ -2,6 +2,7 @@
 
 use crate::config::Config;
 use crate::datasets::{get_dataset_loader, DatasetContext};
+use crate::error::{PacabenchError, Result};
 use crate::metrics::aggregate_results;
 use crate::persistence::{
     compute_config_fingerprint, generate_run_id, iso_timestamp_now, RunMetadata, RunStore,
@@ -10,7 +11,7 @@ use crate::retry::RetryPolicy;
 use crate::state::RunState;
 use crate::types::{AggregatedMetrics, Case, Command, Event, RunStatus};
 use crate::worker::{WorkItem, WorkerPool};
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
@@ -60,7 +61,10 @@ impl Benchmark {
 
     /// Run the benchmark.
     pub async fn run(mut self, run_id: Option<String>, limit: Option<usize>) -> Result<RunResult> {
-        let mut cmd_rx = self.cmd_rx.take().expect("run() can only be called once");
+        let mut cmd_rx = self
+            .cmd_rx
+            .take()
+            .ok_or_else(|| PacabenchError::Internal(anyhow!("run() can only be called once")))?;
 
         // Phase 1: Initialize
         let run_id = run_id.unwrap_or_else(|| generate_run_id(&self.config.name));
@@ -253,7 +257,7 @@ impl Benchmark {
         metadata.completed_cases = state.completed_cases();
         store.write_metadata(&metadata)?;
 
-        let results = store.load_results().unwrap_or_default();
+        let results = store.load_results()?;
         let metrics = aggregate_results(&results);
         let agent_metrics = aggregate_by_agent(&results);
 

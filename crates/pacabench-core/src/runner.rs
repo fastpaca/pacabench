@@ -11,8 +11,9 @@
 //! orchestrator manages concurrency at a higher level using semaphores and task spawning.
 
 use crate::config::AgentConfig;
+use crate::error::{PacabenchError, Result};
 use crate::types::{Case, ErrorType};
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -135,9 +136,9 @@ impl CommandRunner {
                     setup_cmd.current_dir(dir);
                 }
             }
-            let status = setup_cmd.status().await?;
+            let status = setup_cmd.status().await.map_err(PacabenchError::Process)?;
             if !status.success() {
-                return Err(anyhow!("setup command failed: {status}"));
+                return Err(anyhow!("setup command failed: {status}").into());
             }
         }
 
@@ -161,7 +162,7 @@ impl CommandRunner {
         }
         cmd.envs(env);
 
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.spawn().map_err(PacabenchError::Process)?;
         let stdout = child
             .stdout
             .take()
@@ -209,7 +210,10 @@ impl CommandRunner {
                     teardown_cmd.current_dir(dir);
                 }
             }
-            let status = teardown_cmd.status().await?;
+            let status = teardown_cmd
+                .status()
+                .await
+                .map_err(PacabenchError::Process)?;
             if !status.success() {
                 warn!(agent = %self.config.name, "teardown command failed: {}", status);
             }
