@@ -1,7 +1,8 @@
 //! Evaluator implementations (exact match, F1, multiple choice, LLM judge).
 
 use crate::config::{EvaluatorConfig, MultipleChoiceFallback};
-use crate::types::{Case, EvaluationResult, JudgeMetrics, RunnerOutput};
+use crate::runner::RunnerOutput;
+use crate::types::{Case, EvaluationResult, JudgeMetrics};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use regex::Regex;

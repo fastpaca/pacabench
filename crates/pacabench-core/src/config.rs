@@ -21,9 +21,15 @@ pub enum ConfigError {
     #[error("failed to read config: {0}")]
     Io(#[from] std::io::Error),
     #[error("failed to parse config: {0}")]
-    Figment(#[from] figment::Error),
+    Figment(#[source] Box<figment::Error>),
     #[error("invalid config: {0}")]
     Invalid(String),
+}
+
+impl From<figment::Error> for ConfigError {
+    fn from(err: figment::Error) -> Self {
+        ConfigError::Figment(Box::new(err))
+    }
 }
 
 // ============================================================================

@@ -41,14 +41,14 @@ pub use benchmark::{Benchmark, RunResult};
 pub mod config;
 pub use config::Config;
 
-pub mod protocol;
-pub use protocol::{Command, Event};
-
 pub mod types;
 pub use types::{
-    AggregatedMetrics, Case, CaseKey, CaseResult, ErrorType, EvaluationResult, JudgeMetrics,
-    LlmMetrics, RunStatus, RunnerOutput,
+    AggregatedMetrics, Case, CaseKey, CaseResult, Command, ErrorType, EvaluationResult, Event,
+    JudgeMetrics, LlmMetrics, RunStatus,
 };
+
+// Re-export RunnerOutput from runner module (where it's defined)
+pub use runner::RunnerOutput;
 
 pub mod error;
 pub mod metrics;
