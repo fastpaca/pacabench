@@ -73,7 +73,7 @@ impl RunState {
             .iter()
             .filter_map(|key| self.cases.get(key).cloned())
             .map(|mut item| {
-                // Set attempt based on previous attempts
+                // Set attempt based on previous attempts so retry backoff continues across resumes.
                 if let Some(&prev) = self.attempt_counts.get(&item.key()) {
                     item.attempt = prev + 1;
                 }

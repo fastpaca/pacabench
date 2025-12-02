@@ -29,6 +29,7 @@ struct AgentState {
     failed: AtomicU64,
     errors: AtomicU64,
     cost_micros: AtomicU64,
+    // Tracks dataset:case_id so retries/resumes don't double-increment the bar.
     cases: DashMap<String, CaseOutcome>,
 }
 
@@ -112,6 +113,8 @@ impl AgentState {
         let prev = self.cases.get(key).map(|v| *v.value());
         let changed = self.adjust_counters(prev, outcome);
         if prev.is_none() {
+            // Only move the bar forward on the first observation of a case; retries just refresh
+            // the outcome and message.
             self.bar.inc(1);
         }
         if changed {

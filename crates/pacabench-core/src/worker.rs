@@ -160,6 +160,7 @@ impl WorkerPool {
 
         let agent_count = config.agents.len().max(1);
         let total_workers = concurrency.max(agent_count);
+        // Ensure at least one worker per agent, then fan out remaining capacity round-robin.
         let mut distribution = vec![1usize; agent_count];
         for i in 0..(total_workers - agent_count) {
             distribution[i % agent_count] += 1;
