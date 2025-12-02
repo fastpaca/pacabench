@@ -4,6 +4,7 @@ use crate::config::DatasetConfig;
 use crate::error::Result;
 use crate::types::Case;
 use async_trait::async_trait;
+use futures_util::stream::BoxStream;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -25,7 +26,11 @@ pub struct DatasetContext {
 
 #[async_trait]
 pub trait DatasetLoader: Send + Sync {
-    async fn load(&self, limit: Option<usize>) -> Result<Vec<Case>>;
+    /// Count how many cases are available, respecting an optional limit.
+    async fn count_cases(&self, limit: Option<usize>) -> Result<usize>;
+
+    /// Stream cases without materializing the entire dataset in memory.
+    async fn stream_cases(&self, limit: Option<usize>) -> Result<BoxStream<'static, Result<Case>>>;
 }
 
 pub fn get_dataset_loader(

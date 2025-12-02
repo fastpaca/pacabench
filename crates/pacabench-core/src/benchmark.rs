@@ -9,10 +9,12 @@ use crate::persistence::{
 };
 use crate::retry::RetryPolicy;
 use crate::state::RunState;
-use crate::types::{AggregatedMetrics, Case, Command, Event, RunStatus};
+use crate::types::{AggregatedMetrics, CaseKey, Command, Event, RunStatus};
 use crate::worker::{WorkItem, WorkerPool};
 use anyhow::anyhow;
-use std::collections::HashMap;
+use futures_util::StreamExt;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tracing::info;
 
@@ -72,8 +74,6 @@ impl Benchmark {
         std::fs::create_dir_all(&run_dir)?;
         let store = RunStore::new(&run_dir)?;
 
-        // Phase 2: Load datasets
-        let datasets = self.load_datasets(limit).await?;
         let agent_names: Vec<String> = self.config.agents.iter().map(|a| a.name.clone()).collect();
         let dataset_names: Vec<String> = self
             .config
@@ -82,35 +82,66 @@ impl Benchmark {
             .map(|d| d.name.clone())
             .collect();
 
-        // Build work items
-        let mut work_items = Vec::new();
-        for agent in &self.config.agents {
-            for (_ds_name, cases) in &datasets {
-                for case in cases {
-                    work_items.push(WorkItem::new(
-                        run_id.clone(),
-                        agent.name.clone(),
-                        case.clone(),
-                    ));
-                }
-            }
+        // Build dataset loaders up front.
+        let mut dataset_loaders = Vec::new();
+        for ds in &self.config.datasets {
+            let ctx = DatasetContext {
+                root_dir: self.config.root_dir.clone(),
+                cache_dir: self.config.cache_dir.clone(),
+            };
+            let loader = get_dataset_loader(ds.clone(), ctx)
+                .map_err(|e| PacabenchError::dataset(ds.name.clone(), e))?;
+            dataset_loaders.push((ds.name.clone(), loader));
         }
 
-        // Initialize state
         let retry_policy = RetryPolicy::new(self.config.global.max_retries as u32, 100);
-        let mut state = RunState::new(run_id.clone(), work_items, retry_policy.max_retries);
 
-        // Check for resume
+        // Check for resume and pull prior results.
+        let mut existing_results = Vec::new();
         if let Some(meta) = store.read_metadata()? {
             if !meta.status.is_terminal() {
-                let existing = store.load_results()?;
-                state.resume_from(existing);
-                info!(
-                    "Resuming run with {} completed cases",
-                    state.completed_cases()
-                );
+                existing_results = store.load_results()?;
+                let completed = existing_results.iter().filter(|r| r.passed).count();
+                info!("Resuming run with {} completed cases", completed);
             }
         }
+
+        // Count dataset cases without materializing them.
+        let mut dataset_case_counts: HashMap<String, u64> = HashMap::new();
+        for (name, loader) in dataset_loaders.iter() {
+            let count = loader
+                .count_cases(limit)
+                .await
+                .map_err(|e| PacabenchError::dataset(name.clone(), e))?;
+            dataset_case_counts.insert(name.clone(), count as u64);
+        }
+
+        let total_per_agent: u64 = dataset_case_counts.values().copied().sum();
+        let total_cases = total_per_agent * agent_names.len() as u64;
+
+        let mut agent_totals: HashMap<String, u64> = HashMap::new();
+        for agent in &agent_names {
+            agent_totals.insert(agent.clone(), total_per_agent);
+        }
+
+        let attempt_counts: HashMap<CaseKey, u32> = existing_results
+            .iter()
+            .map(|r| (r.key(), r.attempt))
+            .collect();
+        let passed: HashSet<CaseKey> = existing_results
+            .iter()
+            .filter(|r| r.passed)
+            .map(|r| r.key())
+            .collect();
+
+        // Initialize state
+        let mut state = RunState::new(
+            run_id.clone(),
+            retry_policy.max_retries,
+            total_cases,
+            agent_totals.clone(),
+            existing_results.clone(),
+        );
 
         // Initialize metadata
         let config_fingerprint = compute_config_fingerprint(&self.config)?;
@@ -149,7 +180,7 @@ impl Benchmark {
         });
 
         // Handle empty run
-        if state.is_done() {
+        if state.total_cases() == 0 {
             return self.finalize_run(state, metadata, store, false).await;
         }
 
@@ -157,16 +188,71 @@ impl Benchmark {
         state.transition(RunStatus::Running);
 
         let concurrency = self.config.global.concurrency.max(1);
-        let mut pool = WorkerPool::start(concurrency, &self.config, self.event_tx.clone()).await?;
+        let queue_capacity = concurrency.saturating_mul(4).max(1);
+        let mut pool = WorkerPool::start(
+            concurrency,
+            queue_capacity,
+            &self.config,
+            self.event_tx.clone(),
+        )
+        .await?;
 
-        // Push initial work
-        pool.push_batch(state.initial_work_items()).await;
+        // Producer: stream cases from disk and feed work items via bounded channel.
+        let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<WorkItem>(
+            queue_capacity * self.config.agents.len().max(1),
+        );
+
+        let producer_handle = {
+            let mut dataset_loaders = dataset_loaders;
+            let agents = self.config.agents.clone();
+            let run_id = run_id.clone();
+            let passed = Arc::new(passed);
+            let attempts = Arc::new(attempt_counts);
+
+            tokio::spawn(async move {
+                for (dataset_name, loader) in dataset_loaders.drain(..) {
+                    let mut stream = loader
+                        .stream_cases(limit)
+                        .await
+                        .map_err(|e| PacabenchError::dataset(dataset_name.clone(), e))?;
+
+                    while let Some(case) = stream.next().await {
+                        let case =
+                            case.map_err(|e| PacabenchError::dataset(dataset_name.clone(), e))?;
+
+                        for agent in &agents {
+                            let key = CaseKey::new(&agent.name, &case.dataset_name, &case.case_id);
+                            if passed.contains(&key) {
+                                continue;
+                            }
+
+                            let attempt = attempts.get(&key).copied().unwrap_or(0) + 1;
+                            let item = WorkItem {
+                                run_id: run_id.clone(),
+                                agent_name: agent.name.clone(),
+                                dataset_name: case.dataset_name.clone(),
+                                case_id: case.case_id.clone(),
+                                case: case.clone(),
+                                attempt,
+                            };
+
+                            if work_tx.send(item).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                Ok::<(), PacabenchError>(())
+            })
+        };
 
         let mut aborted = false;
+        let mut production_done = false;
         let mut pending_count = state.pending_count();
 
-        // Process results
-        while pending_count > 0 && !aborted {
+        // Process results and incoming work concurrently.
+        while (!production_done || pending_count > 0) && !aborted {
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {
@@ -181,9 +267,7 @@ impl Benchmark {
                     }
                 }
 
-                Some(result) = pool.recv() => {
-                    let key = result.item.key();
-
+                Some(result) = pool.recv(), if pending_count > 0 => {
                     self.emit(Event::CaseCompleted {
                         run_id: run_id.clone(),
                         case_id: result.item.case_id.clone(),
@@ -197,21 +281,19 @@ impl Benchmark {
                         output_tokens: result.llm_metrics.output_tokens,
                     });
 
-                    let needs_retry = state.mark_completed(key.clone(), result.to_case_result(iso_timestamp_now()));
+                    let case_result = result.to_case_result(iso_timestamp_now());
+                    let needs_retry = state.mark_completed(case_result.clone());
 
                     if needs_retry {
                         let backoff = retry_policy.backoff_duration(result.item.attempt);
                         tokio::time::sleep(backoff).await;
 
-                        if let Some(retry_item) = state.retry_item(&key) {
-                            pool.push(retry_item).await;
-                        }
+                        let mut retry_item = result.item.clone();
+                        retry_item.attempt += 1;
+                        pool.push(retry_item).await;
                     } else {
                         pending_count = state.pending_count();
-
-                        if let Some(case_result) = state.results().iter().find(|r| r.key() == key) {
-                            store.append_result(case_result)?;
-                        }
+                        store.append_result(&case_result)?;
 
                         metadata.completed_cases = state.completed_cases();
                         if result.error_type.is_error() {
@@ -221,30 +303,37 @@ impl Benchmark {
                     }
                 }
 
-                else => break,
+                recv = work_rx.recv(), if !production_done => {
+                    match recv {
+                        Some(item) => {
+                            let attempt = item.attempt;
+                            let key = item.key();
+                            state.register_case(key, attempt);
+                            pending_count = state.pending_count();
+                            pool.push(item).await;
+                        }
+                        None => {
+                            production_done = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        drop(work_rx);
+
+        match producer_handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(e) => {
+                return Err(PacabenchError::Internal(anyhow!(
+                    "case production task failed: {e}"
+                )))
             }
         }
 
         pool.shutdown().await;
         self.finalize_run(state, metadata, store, aborted).await
-    }
-
-    async fn load_datasets(&self, limit: Option<usize>) -> Result<Vec<(String, Vec<Case>)>> {
-        let mut out = Vec::new();
-        for ds in &self.config.datasets {
-            let ctx = DatasetContext {
-                root_dir: self.config.root_dir.clone(),
-                cache_dir: self.config.cache_dir.clone(),
-            };
-            let loader = get_dataset_loader(ds.clone(), ctx)
-                .map_err(|e| PacabenchError::dataset(ds.name.clone(), e))?;
-            let cases = loader
-                .load(limit)
-                .await
-                .map_err(|e| PacabenchError::dataset(ds.name.clone(), e))?;
-            out.push((ds.name.clone(), cases));
-        }
-        Ok(out)
     }
 
     async fn finalize_run(
