@@ -3,56 +3,62 @@
 //! Provides explicit state tracking for benchmark runs with proper state transitions.
 
 use crate::types::{CaseKey, CaseResult, RunStatus};
-use crate::worker::WorkItem;
 use std::collections::{HashMap, HashSet};
 
 /// Tracks state for a benchmark run.
 pub struct RunState {
     pub run_id: String,
     pub status: RunStatus,
-    cases: HashMap<CaseKey, WorkItem>,
     pending: HashSet<CaseKey>,
     completed: HashMap<CaseKey, CaseResult>,
     attempt_counts: HashMap<CaseKey, u32>,
     max_retries: u32,
+    total_cases: u64,
+    agent_totals: HashMap<String, u64>,
+    agent_completed: HashMap<String, u64>,
 }
 
 impl RunState {
-    pub fn new(run_id: String, work_items: Vec<WorkItem>, max_retries: u32) -> Self {
-        let mut cases = HashMap::new();
-        let mut pending = HashSet::new();
+    pub fn new(
+        run_id: String,
+        max_retries: u32,
+        total_cases: u64,
+        agent_totals: HashMap<String, u64>,
+        existing_results: Vec<CaseResult>,
+    ) -> Self {
+        let mut completed = HashMap::new();
+        let mut attempt_counts = HashMap::new();
+        let mut agent_completed = HashMap::new();
 
-        for item in work_items {
-            let key = item.key();
-            cases.insert(key.clone(), item);
-            pending.insert(key);
+        for result in existing_results {
+            let key = result.key();
+            attempt_counts.insert(key.clone(), result.attempt);
+            if result.passed {
+                completed.insert(key.clone(), result.clone());
+                *agent_completed.entry(key.agent.clone()).or_insert(0) += 1;
+            }
         }
 
         Self {
             run_id,
             status: RunStatus::Pending,
-            cases,
-            pending,
-            completed: HashMap::new(),
-            attempt_counts: HashMap::new(),
+            pending: HashSet::new(),
+            completed,
+            attempt_counts,
             max_retries,
+            total_cases,
+            agent_totals,
+            agent_completed,
         }
     }
 
-    /// Resume from existing results - mark completed cases.
-    pub fn resume_from(&mut self, existing_results: Vec<CaseResult>) {
-        for result in existing_results {
-            let key = result.key();
-            if result.passed {
-                self.pending.remove(&key);
-                self.completed.insert(key.clone(), result.clone());
-            }
-            self.attempt_counts.insert(key, result.attempt);
-        }
+    pub fn register_case(&mut self, key: CaseKey, attempt: u32) {
+        self.pending.insert(key.clone());
+        self.attempt_counts.insert(key, attempt);
     }
 
     pub fn total_cases(&self) -> u64 {
-        self.cases.len() as u64
+        self.total_cases
     }
 
     pub fn completed_cases(&self) -> u64 {
@@ -63,27 +69,9 @@ impl RunState {
         self.pending.len()
     }
 
-    pub fn is_done(&self) -> bool {
-        self.pending.is_empty()
-    }
-
-    /// Get initial work items (those not yet completed).
-    pub fn initial_work_items(&self) -> Vec<WorkItem> {
-        self.pending
-            .iter()
-            .filter_map(|key| self.cases.get(key).cloned())
-            .map(|mut item| {
-                // Set attempt based on previous attempts so retry backoff continues across resumes.
-                if let Some(&prev) = self.attempt_counts.get(&item.key()) {
-                    item.attempt = prev + 1;
-                }
-                item
-            })
-            .collect()
-    }
-
     /// Record a case completion. Returns true if a retry should be scheduled.
-    pub fn mark_completed(&mut self, key: CaseKey, result: CaseResult) -> bool {
+    pub fn mark_completed(&mut self, result: CaseResult) -> bool {
+        let key = result.key();
         let attempt = result.attempt;
         self.attempt_counts.insert(key.clone(), attempt);
 
@@ -92,47 +80,22 @@ impl RunState {
 
         if !needs_retry {
             self.pending.remove(&key);
-            self.completed.insert(key, result);
+            self.completed.insert(key.clone(), result);
+            *self.agent_completed.entry(key.agent.clone()).or_insert(0) += 1;
         }
 
         needs_retry
-    }
-
-    /// Get the retry work item for a case.
-    pub fn retry_item(&self, key: &CaseKey) -> Option<WorkItem> {
-        let item = self.cases.get(key)?;
-        let attempt = self.attempt_counts.get(key).copied().unwrap_or(0) + 1;
-        Some(WorkItem {
-            run_id: item.run_id.clone(),
-            agent_name: item.agent_name.clone(),
-            dataset_name: item.dataset_name.clone(),
-            case_id: item.case_id.clone(),
-            case: item.case.clone(),
-            attempt,
-        })
-    }
-
-    pub fn results(&self) -> Vec<CaseResult> {
-        self.completed.values().cloned().collect()
     }
 
     pub fn transition(&mut self, to: RunStatus) {
         self.status = to;
     }
 
-    pub fn agent_totals(&self) -> std::collections::HashMap<String, u64> {
-        let mut counts = std::collections::HashMap::new();
-        for item in self.cases.values() {
-            *counts.entry(item.agent_name.clone()).or_insert(0) += 1;
-        }
-        counts
+    pub fn agent_totals(&self) -> HashMap<String, u64> {
+        self.agent_totals.clone()
     }
 
-    pub fn agent_completed(&self) -> std::collections::HashMap<String, u64> {
-        let mut counts = std::collections::HashMap::new();
-        for result in self.completed.values() {
-            *counts.entry(result.agent_name.clone()).or_insert(0) += 1;
-        }
-        counts
+    pub fn agent_completed(&self) -> HashMap<String, u64> {
+        self.agent_completed.clone()
     }
 }

@@ -4,12 +4,15 @@ use crate::error::{PacabenchError, Result};
 use crate::types::Case;
 use anyhow::anyhow;
 use async_trait::async_trait;
+use futures_util::stream::{self, BoxStream, StreamExt, TryStreamExt};
+use parking_lot::Mutex;
 use reqwest::Client;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_stream::wrappers::LinesStream;
 
 /// Minimal Hugging Face dataset loader.
 ///
@@ -19,11 +22,16 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 pub struct HuggingFaceDataset {
     config: DatasetConfig,
     ctx: DatasetContext,
+    prepared_path: Mutex<Option<PathBuf>>,
 }
 
 impl HuggingFaceDataset {
     pub fn new(config: DatasetConfig, ctx: DatasetContext) -> Self {
-        Self { config, ctx }
+        Self {
+            config,
+            ctx,
+            prepared_path: Mutex::new(None),
+        }
     }
 
     fn repo_id(&self) -> String {
@@ -48,7 +56,12 @@ impl HuggingFaceDataset {
     }
 
     async fn download(&self) -> Result<PathBuf> {
+        if let Some(existing) = self.prepared_path.lock().clone() {
+            return Ok(existing);
+        }
+
         if let Some(local) = self.resolve_local_repo() {
+            *self.prepared_path.lock() = Some(local.clone());
             return Ok(local);
         }
 
@@ -63,6 +76,7 @@ impl HuggingFaceDataset {
         let split = self.config.split.clone().unwrap_or_else(|| "train".into());
         let target_file = cache_dir.join(format!("{split}.jsonl"));
         if fs::try_exists(&target_file).await? {
+            *self.prepared_path.lock() = Some(cache_dir.clone());
             return Ok(cache_dir);
         }
 
@@ -93,28 +107,17 @@ impl HuggingFaceDataset {
         }
         let bytes = resp.bytes().await.map_err(|e| anyhow!("read body: {e}"))?;
         fs::write(&target_file, bytes).await?;
+
+        *self.prepared_path.lock() = Some(cache_dir.clone());
         Ok(cache_dir)
     }
 }
 
 #[async_trait]
 impl DatasetLoader for HuggingFaceDataset {
-    async fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
+    async fn count_cases(&self, limit: Option<usize>) -> Result<usize> {
         let repo_dir = self.download().await?;
         let split = self.config.split.as_deref().unwrap_or("train");
-
-        let input_key = self
-            .config
-            .input_map
-            .get("input")
-            .map(String::as_str)
-            .unwrap_or("input");
-        let expected_key = self
-            .config
-            .input_map
-            .get("expected")
-            .map(String::as_str)
-            .unwrap_or("expected");
 
         // Try split-specific file first, then all jsonl files.
         let mut files: Vec<PathBuf> = Vec::new();
@@ -137,7 +140,19 @@ impl DatasetLoader for HuggingFaceDataset {
             return Err(anyhow!("no JSONL files found in HF dataset {}", self.repo_id()).into());
         }
 
-        let mut cases = Vec::new();
+        let input_key = self
+            .config
+            .input_map
+            .get("input")
+            .map(String::as_str)
+            .unwrap_or("input");
+        let expected_key = self
+            .config
+            .input_map
+            .get("expected")
+            .map(String::as_str)
+            .unwrap_or("expected");
+
         let mut count = 0usize;
         for file in files {
             let f = File::open(&file).await?;
@@ -145,13 +160,13 @@ impl DatasetLoader for HuggingFaceDataset {
             let mut lines = reader.lines();
             let mut idx = 0usize;
             while let Some(line) = lines.next_line().await? {
-                let current_idx = idx;
-                idx += 1;
                 if let Some(limit) = limit {
                     if count >= limit {
-                        return Ok(cases);
+                        return Ok(count);
                     }
                 }
+                let current_idx = idx;
+                idx += 1;
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -161,16 +176,110 @@ impl DatasetLoader for HuggingFaceDataset {
                         file.file_stem().unwrap_or_default().to_string_lossy(),
                         current_idx
                     );
-                    if let Some(case) =
-                        prepare_case(&map, &self.config.name, &fallback, input_key, expected_key)
+                    if prepare_case(&map, &self.config.name, &fallback, input_key, expected_key)
+                        .is_some()
                     {
-                        cases.push(case);
                         count += 1;
                     }
                 }
             }
         }
 
-        Ok(cases)
+        Ok(count)
+    }
+
+    async fn stream_cases(&self, limit: Option<usize>) -> Result<BoxStream<'static, Result<Case>>> {
+        let repo_dir = self.download().await?;
+        let split = self.config.split.as_deref().unwrap_or("train");
+        let dataset_name = self.config.name.clone();
+
+        let mut files: Vec<PathBuf> = Vec::new();
+        let split_file = repo_dir.join(format!("{split}.jsonl"));
+        if split_file.exists() {
+            files.push(split_file);
+        } else {
+            for entry in globwalk::GlobWalkerBuilder::from_patterns(&repo_dir, &["**/*.jsonl"])
+                .build()
+                .map_err(|e| PacabenchError::Internal(e.into()))?
+                .filter_map(|e| e.ok())
+            {
+                if entry.path().is_file() {
+                    files.push(entry.path().to_path_buf());
+                }
+            }
+        }
+
+        if files.is_empty() {
+            return Err(anyhow!("no JSONL files found in HF dataset {}", self.repo_id()).into());
+        }
+
+        let input_key = self
+            .config
+            .input_map
+            .get("input")
+            .map(String::as_str)
+            .unwrap_or("input")
+            .to_string();
+        let expected_key = self
+            .config
+            .input_map
+            .get("expected")
+            .map(String::as_str)
+            .unwrap_or("expected")
+            .to_string();
+
+        let stream = stream::iter(files)
+            .then(move |file| {
+                let dataset_name = dataset_name.clone();
+                let input_key = input_key.clone();
+                let expected_key = expected_key.clone();
+                async move {
+                    let file_clone = file.clone();
+                    let f = File::open(&file).await?;
+                    let reader = BufReader::new(f);
+                    let lines = LinesStream::new(reader.lines()).enumerate().filter_map(
+                        move |(idx, line)| {
+                            let file = file_clone.clone();
+                            let dataset_name = dataset_name.clone();
+                            let input_key = input_key.clone();
+                            let expected_key = expected_key.clone();
+                            async move {
+                                match line {
+                                    Ok(line) if !line.trim().is_empty() => {
+                                        match serde_json::from_str::<Value>(&line) {
+                                            Ok(Value::Object(map)) => {
+                                                let fallback = format!(
+                                                    "{}-{}",
+                                                    file.file_stem()
+                                                        .unwrap_or_default()
+                                                        .to_string_lossy(),
+                                                    idx
+                                                );
+                                                prepare_case(
+                                                    &map,
+                                                    &dataset_name,
+                                                    &fallback,
+                                                    &input_key,
+                                                    &expected_key,
+                                                )
+                                                .map(Ok)
+                                            }
+                                            _ => None,
+                                        }
+                                    }
+                                    Ok(_) => None,
+                                    Err(e) => Some(Err(PacabenchError::Internal(e.into()))),
+                                }
+                            }
+                        },
+                    );
+
+                    Ok::<_, PacabenchError>(lines)
+                }
+            })
+            .try_flatten()
+            .take(limit.unwrap_or(usize::MAX));
+
+        Ok(Box::pin(stream))
     }
 }

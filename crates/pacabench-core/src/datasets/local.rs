@@ -3,9 +3,10 @@ use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
 use async_trait::async_trait;
+use futures_util::stream::{self, BoxStream, StreamExt, TryStreamExt};
 use globwalk::GlobWalkerBuilder;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -21,25 +22,9 @@ impl LocalDataset {
             root: ctx.root_dir,
         }
     }
-}
 
-#[async_trait]
-impl DatasetLoader for LocalDataset {
-    async fn load(&self, limit: Option<usize>) -> Result<Vec<Case>> {
+    fn resolve_files(&self) -> Result<Vec<PathBuf>> {
         let source = &self.config.source;
-        let split = self.config.split.clone();
-        let input_key = self
-            .config
-            .input_map
-            .get("input")
-            .map(String::as_str)
-            .unwrap_or("input");
-        let expected_key = self
-            .config
-            .input_map
-            .get("expected")
-            .map(String::as_str)
-            .unwrap_or("expected");
 
         let mut files: Vec<PathBuf> = Vec::new();
         if source.contains('*') {
@@ -77,7 +62,7 @@ impl DatasetLoader for LocalDataset {
             }
         }
 
-        if let Some(s) = split {
+        if let Some(s) = self.config.split.clone() {
             let filtered: Vec<PathBuf> = files
                 .iter()
                 .filter(|p| {
@@ -93,11 +78,48 @@ impl DatasetLoader for LocalDataset {
                 .cloned()
                 .collect();
             if !filtered.is_empty() {
-                files = filtered;
+                return Ok(filtered);
             }
         }
 
-        let mut cases = Vec::new();
+        Ok(files)
+    }
+
+    fn parse_case(
+        &self,
+        map: &serde_json::Map<String, Value>,
+        file: &Path,
+        idx: usize,
+        input_key: &str,
+        expected_key: &str,
+    ) -> Option<Case> {
+        prepare_case(
+            map,
+            &self.config.name,
+            &format!("{}-{}", file.display(), idx),
+            input_key,
+            expected_key,
+        )
+    }
+}
+
+#[async_trait]
+impl DatasetLoader for LocalDataset {
+    async fn count_cases(&self, limit: Option<usize>) -> Result<usize> {
+        let files = self.resolve_files()?;
+        let input_key = self
+            .config
+            .input_map
+            .get("input")
+            .map(String::as_str)
+            .unwrap_or("input");
+        let expected_key = self
+            .config
+            .input_map
+            .get("expected")
+            .map(String::as_str)
+            .unwrap_or("expected");
+
         let mut count = 0usize;
         for file in files {
             let f = File::open(&file).await?;
@@ -105,31 +127,91 @@ impl DatasetLoader for LocalDataset {
             let mut lines = reader.lines();
             let mut idx = 0usize;
             while let Some(line) = lines.next_line().await? {
-                let current_idx = idx;
-                idx += 1;
                 if let Some(limit) = limit {
                     if count >= limit {
-                        return Ok(cases);
+                        return Ok(count);
                     }
                 }
+                let current_idx = idx;
+                idx += 1;
                 if line.trim().is_empty() {
                     continue;
                 }
                 if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&line) {
-                    if let Some(case) = prepare_case(
-                        &map,
-                        &self.config.name,
-                        &format!("{}-{}", file.display(), current_idx),
-                        input_key,
-                        expected_key,
-                    ) {
-                        cases.push(case);
+                    if self
+                        .parse_case(&map, file.as_path(), current_idx, input_key, expected_key)
+                        .is_some()
+                    {
                         count += 1;
                     }
                 }
             }
         }
 
-        Ok(cases)
+        Ok(count)
+    }
+
+    async fn stream_cases(&self, limit: Option<usize>) -> Result<BoxStream<'static, Result<Case>>> {
+        let files = self.resolve_files()?;
+        let dataset_name = self.config.name.clone();
+        let input_key = self
+            .config
+            .input_map
+            .get("input")
+            .map(String::as_str)
+            .unwrap_or("input")
+            .to_string();
+        let expected_key = self
+            .config
+            .input_map
+            .get("expected")
+            .map(String::as_str)
+            .unwrap_or("expected")
+            .to_string();
+
+        let stream = stream::iter(files)
+            .then(move |file| {
+                let dataset_name = dataset_name.clone();
+                let input_key = input_key.clone();
+                let expected_key = expected_key.clone();
+                async move {
+                    let file_clone = file.clone();
+                    let f = File::open(&file).await?;
+                    let reader = BufReader::new(f);
+                    let lines = tokio_stream::wrappers::LinesStream::new(reader.lines())
+                        .enumerate()
+                        .filter_map(move |(idx, line)| {
+                            let file = file_clone.clone();
+                            let dataset_name = dataset_name.clone();
+                            let input_key = input_key.clone();
+                            let expected_key = expected_key.clone();
+                            async move {
+                                match line {
+                                    Ok(line) if !line.trim().is_empty() => {
+                                        match serde_json::from_str::<Value>(&line) {
+                                            Ok(Value::Object(map)) => prepare_case(
+                                                &map,
+                                                &dataset_name,
+                                                &format!("{}-{}", file.display(), idx),
+                                                &input_key,
+                                                &expected_key,
+                                            )
+                                            .map(Ok),
+                                            _ => None,
+                                        }
+                                    }
+                                    Ok(_) => None,
+                                    Err(e) => Some(Err(PacabenchError::Internal(e.into()))),
+                                }
+                            }
+                        });
+
+                    Ok::<_, PacabenchError>(lines)
+                }
+            })
+            .try_flatten()
+            .take(limit.unwrap_or(usize::MAX));
+
+        Ok(Box::pin(stream))
     }
 }

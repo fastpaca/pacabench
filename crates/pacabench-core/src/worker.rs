@@ -40,17 +40,6 @@ pub struct WorkItem {
 }
 
 impl WorkItem {
-    pub fn new(run_id: String, agent_name: String, case: Case) -> Self {
-        Self {
-            run_id,
-            agent_name,
-            dataset_name: case.dataset_name.clone(),
-            case_id: case.case_id.clone(),
-            case,
-            attempt: 1,
-        }
-    }
-
     #[allow(dead_code)]
     pub fn retry(&self) -> Self {
         Self {
@@ -131,6 +120,7 @@ pub struct WorkerPool {
 impl WorkerPool {
     pub async fn start(
         concurrency: usize,
+        queue_capacity: usize,
         config: &Config,
         event_tx: broadcast::Sender<Event>,
     ) -> Result<Self> {
@@ -153,7 +143,7 @@ impl WorkerPool {
         let mut work_txs = HashMap::new();
         let mut work_rxs = HashMap::new();
         for agent in &config.agents {
-            let (tx, rx) = async_channel::unbounded();
+            let (tx, rx) = async_channel::bounded(queue_capacity.max(1));
             work_txs.insert(agent.name.clone(), tx);
             work_rxs.insert(agent.name.clone(), rx);
         }
@@ -219,13 +209,6 @@ impl WorkerPool {
     }
 
     /// Push all work items to the queue.
-    pub async fn push_batch(&self, items: Vec<WorkItem>) {
-        for item in items {
-            self.push(item).await;
-        }
-    }
-
-    /// Receive the next result (or None if channel closed).
     pub async fn recv(&mut self) -> Option<WorkResult> {
         self.result_rx.recv().await
     }
@@ -454,7 +437,14 @@ mod tests {
             metadata: HashMap::new(),
         };
 
-        let item = WorkItem::new("run-123".into(), "agent-1".into(), case);
+        let item = WorkItem {
+            run_id: "run-123".into(),
+            agent_name: "agent-1".into(),
+            dataset_name: case.dataset_name.clone(),
+            case_id: case.case_id.clone(),
+            case,
+            attempt: 1,
+        };
         assert_eq!(item.attempt, 1);
 
         let retry = item.retry();

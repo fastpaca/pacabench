@@ -1,5 +1,6 @@
 //! Tests for the datasets module.
 
+use futures_util::TryStreamExt;
 use git2::Repository;
 use pacabench_core::config::DatasetConfig;
 use pacabench_core::datasets::{
@@ -43,7 +44,13 @@ async fn local_dataset_loads_records() {
         cache_dir: dir.path().join("cache"),
     };
     let loader = LocalDataset::new(cfg, ctx);
-    let cases = loader.load(None).await.unwrap();
+    let cases: Vec<_> = loader
+        .stream_cases(None)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
     assert_eq!(cases.len(), 2);
     assert_eq!(cases[0].input, "hi");
     assert_eq!(cases[1].case_id, "2");
@@ -80,7 +87,13 @@ async fn local_dataset_honors_split_file() {
         cache_dir: dir.path().join("cache"),
     };
     let loader = LocalDataset::new(cfg, ctx);
-    let cases = loader.load(None).await.unwrap();
+    let cases: Vec<_> = loader
+        .stream_cases(None)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case_id, "test1");
 }
@@ -149,7 +162,13 @@ echo "$PACABENCH_DATASET_PATH" > prepare_marker.txt
         cache_dir: dir.path().join("cache"),
     };
     let loader = GitDataset::new(cfg, ctx.clone());
-    let cases = loader.load(None).await.unwrap();
+    let cases: Vec<_> = loader
+        .stream_cases(None)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case_id, "g1");
 
@@ -191,7 +210,13 @@ async fn huggingface_loader_handles_local_split() {
         cache_dir: dir.path().join("cache"),
     };
     let loader = HuggingFaceDataset::new(cfg, ctx);
-    let cases = loader.load(None).await.unwrap();
+    let cases: Vec<_> = loader
+        .stream_cases(None)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case_id, "h2");
 }
