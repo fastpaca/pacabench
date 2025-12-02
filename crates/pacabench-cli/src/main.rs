@@ -14,7 +14,7 @@ use pacabench_core::types::ErrorType;
 use pacabench_core::{Benchmark, CaseResult, Config};
 use pricing::calculate_cost_from_metrics;
 use progress::ProgressDisplay;
-use serde_json::json;
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -592,13 +592,31 @@ fn collect_failures(results: &[CaseResult], errors: &[ErrorEntry]) -> Vec<String
     failures
 }
 
+#[derive(Debug, Serialize)]
+struct ExportAgent {
+    metrics: pacabench_core::types::AggregatedMetrics,
+    results: Vec<CaseResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExportRun {
+    run_id: String,
+    status: String,
+    start_time: Option<String>,
+    completed_time: Option<String>,
+    total_cases: u64,
+    completed_cases: u64,
+    agents: BTreeMap<String, ExportAgent>,
+    system_errors: Vec<ErrorEntry>,
+}
+
 fn build_export_json(
     run_id: &str,
     metadata: Option<&RunMetadata>,
     results: &[CaseResult],
     errors: &[ErrorEntry],
 ) -> serde_json::Value {
-    let mut agents_map = serde_json::Map::new();
+    let mut agents = BTreeMap::new();
     let mut agent_names: Vec<String> = results.iter().map(|r| r.agent_name.clone()).collect();
     agent_names.sort();
     agent_names.dedup();
@@ -610,26 +628,33 @@ fn build_export_json(
             .cloned()
             .collect();
         let metrics = aggregate_results(&agent_results);
-        let res_entries: Vec<serde_json::Value> = agent_results.iter().map(|r| json!(r)).collect();
-        agents_map.insert(
+        agents.insert(
             agent.clone(),
-            json!({
-                "metrics": metrics,
-                "results": res_entries,
-            }),
+            ExportAgent {
+                metrics,
+                results: agent_results,
+            },
         );
     }
 
-    json!({
-        "run_id": run_id,
-        "status": metadata.map(|m| format!("{:?}", m.status).to_lowercase()).unwrap_or_else(|| "unknown".to_string()),
-        "start_time": metadata.and_then(|m| m.start_time.clone()),
-        "completed_time": metadata.and_then(|m| m.completed_time.clone()),
-        "total_cases": metadata.map(|m| m.total_cases).unwrap_or(results.len() as u64),
-        "completed_cases": metadata.map(|m| m.completed_cases).unwrap_or(results.len() as u64),
-        "agents": agents_map,
-        "system_errors": errors,
-    })
+    let export = ExportRun {
+        run_id: run_id.to_string(),
+        status: metadata
+            .map(|m| format!("{:?}", m.status).to_lowercase())
+            .unwrap_or_else(|| "unknown".to_string()),
+        start_time: metadata.and_then(|m| m.start_time.clone()),
+        completed_time: metadata.and_then(|m| m.completed_time.clone()),
+        total_cases: metadata
+            .map(|m| m.total_cases)
+            .unwrap_or(results.len() as u64),
+        completed_cases: metadata
+            .map(|m| m.completed_cases)
+            .unwrap_or(results.len() as u64),
+        agents,
+        system_errors: errors.to_vec(),
+    };
+
+    serde_json::to_value(export).expect("export serialization should succeed")
 }
 
 fn build_export_markdown(

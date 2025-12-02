@@ -235,6 +235,13 @@ impl CommandRunner {
         self.stdout = None;
     }
 
+    fn runner_error<T>(&self, err: T) -> PacabenchError
+    where
+        T: Into<anyhow::Error>,
+    {
+        PacabenchError::runner(self.config.name.clone(), err)
+    }
+
     /// Execute a single case and return the runner output.
     ///
     /// If the runner process is not started, it will be started automatically.
@@ -253,6 +260,10 @@ impl CommandRunner {
             self.start().await?;
         }
 
+        let request = RunnerRequest::from_case(case);
+        let line = serde_json::to_vec(&request)
+            .map_err(|e| self.runner_error(anyhow!("serialize request: {e}")))?;
+
         let stdin = self
             .stdin
             .as_mut()
@@ -262,26 +273,8 @@ impl CommandRunner {
             .as_mut()
             .ok_or_else(|| anyhow!("runner stdout unavailable"))?;
 
-        let mut payload = serde_json::Map::new();
-        payload.insert("case_id".into(), Value::String(case.case_id.clone()));
-        payload.insert(
-            "dataset_name".into(),
-            Value::String(case.dataset_name.clone()),
-        );
-        payload.insert("input".into(), Value::String(case.input.clone()));
-        payload.insert("history".into(), Value::Array(case.history.clone()));
-        // Flatten metadata fields to top level for agent compatibility
-        // (agents expect fields like "choices" at root, not nested in metadata)
-        for (k, v) in &case.metadata {
-            payload.insert(k.clone(), v.clone());
-        }
-        payload.insert(
-            "metadata".into(),
-            Value::Object(case.metadata.clone().into_iter().collect()),
-        );
-
-        let line = serde_json::to_string(&payload)? + "\n";
-        stdin.write_all(line.as_bytes()).await?;
+        stdin.write_all(&line).await?;
+        stdin.write_all(b"\n").await?;
         stdin.flush().await?;
 
         loop {
@@ -297,20 +290,12 @@ impl CommandRunner {
             if buf.trim().is_empty() {
                 continue;
             }
-            let val: Value = match serde_json::from_str(&buf) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if let Value::Object(map) = val {
-                if map.get("output").is_some() || map.get("error").is_some() {
-                    let mut ro: RunnerOutput = serde_json::from_value(Value::Object(map.clone()))?;
-                    // If no error_type but error present, mark as system failure.
-                    if ro.error_type == ErrorType::None && ro.error.is_some() {
-                        ro.error_type = ErrorType::SystemFailure;
-                    }
-                    return Ok(ro);
-                }
-            }
+            let response: RunnerResponse =
+                serde_json::from_str(&buf).map_err(|e| self.runner_error(anyhow!(e)))?;
+            let output = response
+                .into_output()
+                .map_err(|e| self.runner_error(anyhow!(e)))?;
+            return Ok(output);
         }
     }
 }
@@ -319,5 +304,92 @@ impl CommandRunner {
 impl Drop for CommandRunner {
     fn drop(&mut self) {
         self.kill_process();
+    }
+}
+
+// ============================================================================
+// REQUEST/RESPONSE TYPES
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize)]
+struct RunnerRequest {
+    case_id: String,
+    dataset_name: String,
+    input: String,
+    history: Vec<Value>,
+    metadata: HashMap<String, Value>,
+    #[serde(flatten)]
+    flattened: HashMap<String, Value>,
+}
+
+impl RunnerRequest {
+    fn from_case(case: &Case) -> Self {
+        let mut flattened = HashMap::new();
+        for (k, v) in &case.metadata {
+            if RESERVED_REQUEST_KEYS.iter().any(|&r| r == k) {
+                continue;
+            }
+            flattened.insert(k.clone(), v.clone());
+        }
+
+        Self {
+            case_id: case.case_id.clone(),
+            dataset_name: case.dataset_name.clone(),
+            input: case.input.clone(),
+            history: case.history.clone(),
+            metadata: case.metadata.clone(),
+            flattened,
+        }
+    }
+}
+
+static RESERVED_REQUEST_KEYS: &[&str] = &[
+    "case_id",
+    "dataset_name",
+    "input",
+    "history",
+    "metadata",
+    "output",
+    "error",
+];
+
+#[derive(Debug, Clone, Deserialize)]
+struct RunnerResponse {
+    #[serde(default)]
+    output: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    error_type: Option<ErrorType>,
+    #[serde(default)]
+    duration_ms: Option<f64>,
+    #[serde(default)]
+    error_traceback: Option<String>,
+}
+
+impl RunnerResponse {
+    fn into_output(self) -> anyhow::Result<RunnerOutput> {
+        let has_output = self.output.is_some();
+        let has_error = self.error.is_some();
+
+        if !has_output && !has_error {
+            return Err(anyhow!(
+                "runner response missing both output and error fields"
+            ));
+        }
+
+        let error_type = match (self.error_type, has_error) {
+            (Some(t), _) => t,
+            (None, true) => ErrorType::SystemFailure,
+            (None, false) => ErrorType::None,
+        };
+
+        Ok(RunnerOutput {
+            output: self.output,
+            error: self.error,
+            error_type,
+            duration_ms: self.duration_ms.unwrap_or(0.0),
+            error_traceback: self.error_traceback,
+        })
     }
 }
