@@ -366,7 +366,7 @@ impl LlmJudgeEvaluator {
             return Err(anyhow!("Judge HTTP {status}: {text}"));
         }
 
-        let latency_ms = start.elapsed().as_millis() as f64;
+        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
         let json: serde_json::Value = resp.json().await.unwrap_or_default();
 
         let content = json

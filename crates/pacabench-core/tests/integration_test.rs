@@ -362,3 +362,122 @@ for line in sys.stdin:
     );
     assert_eq!(result["output"].as_str(), Some("test"));
 }
+
+#[tokio::test]
+async fn worker_pool_routes_cases_to_matching_agent() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let runs = root.join("runs");
+    let data_dir = root.join("data");
+
+    fs::create_dir_all(&runs).unwrap();
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let agent_a = root.join("agent_a.py");
+    let agent_b = root.join("agent_b.py");
+
+    let agent_script = |path: &std::path::Path, label: &str| {
+        let script = format!(
+            r#"
+import sys, json
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    try:
+        json.loads(line)
+        print(json.dumps({{"output": "{label}", "error": None}}), flush=True)
+    except Exception as e:
+        print(json.dumps({{"output": None, "error": str(e)}}), flush=True)
+"#
+        );
+        fs::write(path, script).unwrap();
+    };
+
+    agent_script(&agent_a, "agent-a");
+    agent_script(&agent_b, "agent-b");
+
+    let dataset_file = data_dir.join("cases.jsonl");
+    let cases = [
+        r#"{"case_id":"1","input":"foo"}"#,
+        r#"{"case_id":"2","input":"bar"}"#,
+    ];
+    fs::write(&dataset_file, cases.join("\n")).unwrap();
+
+    let config = Config {
+        name: "agent-routing".into(),
+        description: None,
+        version: "0.1.0".into(),
+        author: None,
+        global: GlobalConfig {
+            concurrency: 4,
+            timeout_seconds: 5.0,
+            max_retries: 0,
+            proxy: ProxyConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        agents: vec![
+            AgentConfig {
+                name: "agent-a".into(),
+                command: format!("python {}", agent_a.display()),
+                setup: None,
+                teardown: None,
+                env: Default::default(),
+            },
+            AgentConfig {
+                name: "agent-b".into(),
+                command: format!("python {}", agent_b.display()),
+                setup: None,
+                teardown: None,
+                env: Default::default(),
+            },
+        ],
+        datasets: vec![DatasetConfig {
+            name: "routing-ds".into(),
+            source: data_dir.to_string_lossy().to_string(),
+            split: None,
+            prepare: None,
+            input_map: Default::default(),
+            evaluator: None,
+        }],
+        output: OutputConfig {
+            directory: runs.to_string_lossy().to_string(),
+        },
+        root_dir: root.clone(),
+        cache_dir: root.join("cache"),
+        runs_dir: runs.clone(),
+        config_path: None,
+    };
+
+    let bench = Benchmark::new(config);
+    bench.run(None, Some(2)).await.unwrap();
+
+    let run_dirs: Vec<_> = fs::read_dir(&runs).unwrap().collect();
+    assert_eq!(run_dirs.len(), 1);
+    let run_dir = run_dirs[0].as_ref().unwrap().path();
+    let results = RunStore::new(run_dir).unwrap().load_results().unwrap();
+
+    assert_eq!(results.len(), 4);
+    for result in results {
+        if result.agent_name == "agent-a" {
+            assert_eq!(result.output.as_deref(), Some("agent-a"));
+            assert!(
+                result.error.is_none(),
+                "agent-a should not error: {:?}",
+                result.error
+            );
+        } else if result.agent_name == "agent-b" {
+            assert_eq!(result.output.as_deref(), Some("agent-b"));
+            assert!(
+                result.error.is_none(),
+                "agent-b should not error: {:?}",
+                result.error
+            );
+        } else {
+            panic!("unexpected agent {}", result.agent_name);
+        }
+    }
+}

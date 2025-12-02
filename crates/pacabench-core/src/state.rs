@@ -119,4 +119,20 @@ impl RunState {
     pub fn transition(&mut self, to: RunStatus) {
         self.status = to;
     }
+
+    pub fn agent_totals(&self) -> std::collections::HashMap<String, u64> {
+        let mut counts = std::collections::HashMap::new();
+        for item in self.cases.values() {
+            *counts.entry(item.agent_name.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    pub fn agent_completed(&self) -> std::collections::HashMap<String, u64> {
+        let mut counts = std::collections::HashMap::new();
+        for result in self.completed.values() {
+            *counts.entry(result.agent_name.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
 }

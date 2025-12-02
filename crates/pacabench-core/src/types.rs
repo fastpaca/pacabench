@@ -300,6 +300,10 @@ pub enum Event {
         completed_cases: u64,
         agents: Vec<String>,
         datasets: Vec<String>,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        agent_totals: HashMap<String, u64>,
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        agent_completed: HashMap<String, u64>,
     },
 
     /// A case started processing.
