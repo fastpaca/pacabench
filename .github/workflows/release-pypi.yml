@@ -54,7 +54,6 @@ jobs:
         with:
           target: ${{ matrix.target }}
           args: --release --out dist
-          manylinux: auto
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -108,4 +107,3 @@ jobs:
           # For first-time setup, you may need to use password auth:
           # password: ${{ secrets.PYPI_API_TOKEN }}
           # After that, switch to trusted publishing (no token needed)
-
