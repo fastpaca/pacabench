@@ -295,19 +295,10 @@ pub fn build_export_json(
     errors: &[ErrorEntry],
 ) -> serde_json::Value {
     let mut agents = BTreeMap::new();
-    let mut agent_names: Vec<String> = results.iter().map(|r| r.agent_name.clone()).collect();
-    agent_names.sort();
-    agent_names.dedup();
-
-    for agent in agent_names {
-        let agent_results: Vec<CaseResult> = results
-            .iter()
-            .filter(|r| r.agent_name == agent)
-            .cloned()
-            .collect();
+    for (agent, agent_results) in group_results_by_agent(results) {
         let metrics = aggregate_results(&agent_results);
         agents.insert(
-            agent.clone(),
+            agent,
             ExportAgent {
                 metrics,
                 results: agent_results,
@@ -401,15 +392,7 @@ pub fn build_export_markdown(
         agg.avg_attempts, agg.max_attempts
     ));
 
-    let mut grouped: BTreeMap<(String, String), Vec<CaseResult>> = BTreeMap::new();
-    for r in results {
-        grouped
-            .entry((r.agent_name.clone(), r.dataset_name.clone()))
-            .or_default()
-            .push(r.clone());
-    }
-
-    if !grouped.is_empty() {
+    if let Some(grouped) = grouped_by_agent_and_dataset(results) {
         md.push_str("\n## Agent/Dataset\n\n");
         md.push_str("| Agent | Dataset | Passed/Total | Accuracy | Cost |\n");
         md.push_str("|-------|---------|--------------|----------|------|\n");
@@ -449,4 +432,31 @@ pub fn build_export_markdown(
     }
 
     md
+}
+
+fn group_results_by_agent(results: &[CaseResult]) -> BTreeMap<String, Vec<CaseResult>> {
+    let mut grouped: BTreeMap<String, Vec<CaseResult>> = BTreeMap::new();
+    for r in results {
+        grouped
+            .entry(r.agent_name.clone())
+            .or_default()
+            .push(r.clone());
+    }
+    grouped
+}
+
+fn grouped_by_agent_and_dataset(
+    results: &[CaseResult],
+) -> Option<BTreeMap<(String, String), Vec<CaseResult>>> {
+    if results.is_empty() {
+        return None;
+    }
+    let mut grouped: BTreeMap<(String, String), Vec<CaseResult>> = BTreeMap::new();
+    for r in results {
+        grouped
+            .entry((r.agent_name.clone(), r.dataset_name.clone()))
+            .or_default()
+            .push(r.clone());
+    }
+    Some(grouped)
 }

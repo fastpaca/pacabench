@@ -5,7 +5,7 @@ mod init;
 mod pricing;
 mod progress;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use formatting::{
     build_export_json, build_export_markdown, print_cases, print_run_details, print_run_list,
@@ -46,9 +46,6 @@ enum Command {
         runs_dir: Option<String>,
         #[arg(long)]
         cache_dir: Option<String>,
-        /// Force a new run even if run_id exists with different config.
-        #[arg(long)]
-        force_new: bool,
         /// Comma-separated list of agents to run (e.g. --agents agent1,agent2).
         #[arg(long, short = 'a')]
         agents: Option<String>,
@@ -246,18 +243,7 @@ fn cmd_run(
     }
 
     let bench = Benchmark::new(config.clone());
-    let events = bench.subscribe();
-
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let display = ProgressDisplay::new();
-        let display_handle = tokio::spawn(display.run(events));
-        let result = bench.run(run_id, limit).await;
-        let _ = display_handle.await;
-        result
-    })?;
-
-    Ok(())
+    run_benchmark_with_progress(bench, run_id, limit)
 }
 
 fn cmd_show(
@@ -268,22 +254,28 @@ fn cmd_show(
     failures: bool,
     limit: usize,
 ) -> Result<()> {
-    let runs_dir = runs_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config.runs_dir.clone());
+    let runs_dir = resolve_runs_dir(config, runs_dir);
+    let summaries = list_run_summaries(&runs_dir)
+        .with_context(|| format!("listing runs in {}", runs_dir.display()))?;
 
     if run_id.is_none() {
-        let runs = list_run_summaries(&runs_dir)?;
-        print_run_list(&runs, limit);
+        print_run_list(&summaries, limit);
         return Ok(());
     }
 
     let partial = run_id.as_ref().expect("guarded above");
-    let resolved_id = resolve_run_id(&runs_dir, partial)?;
-    let store = RunStore::new(runs_dir.join(&resolved_id))?;
-    let results = store.load_results()?;
-    let errors = store.load_errors()?;
-    let metadata = store.read_metadata()?;
+    let resolved_id = resolve_run_id_from_summaries(&summaries, partial)?;
+    let store = RunStore::new(runs_dir.join(&resolved_id))
+        .with_context(|| format!("opening run {}", resolved_id))?;
+    let results = store
+        .load_results()
+        .with_context(|| format!("loading results for {}", resolved_id))?;
+    let errors = store
+        .load_errors()
+        .with_context(|| format!("loading errors for {}", resolved_id))?;
+    let metadata = store
+        .read_metadata()
+        .with_context(|| format!("reading metadata for {}", resolved_id))?;
 
     print_run_details(&resolved_id, metadata, &results, &errors);
     if cases {
@@ -304,8 +296,11 @@ fn cmd_retry(
     }
 
     let resolved_id = resolve_run_id(&config.runs_dir, run_id)?;
-    let store = RunStore::new(config.runs_dir.join(&resolved_id))?;
-    let results = store.load_results()?;
+    let store = RunStore::new(config.runs_dir.join(&resolved_id))
+        .with_context(|| format!("opening run {}", resolved_id))?;
+    let results = store
+        .load_results()
+        .with_context(|| format!("loading results for {}", resolved_id))?;
     let failed_count = results.iter().filter(|r| !r.passed).count();
 
     if failed_count == 0 {
@@ -319,18 +314,7 @@ fn cmd_retry(
     );
 
     let bench = Benchmark::new(config.clone());
-    let events = bench.subscribe();
-
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let display = ProgressDisplay::new();
-        let display_handle = tokio::spawn(display.run(events));
-        let result = bench.run(Some(resolved_id), limit).await;
-        let _ = display_handle.await;
-        result
-    })?;
-
-    Ok(())
+    run_benchmark_with_progress(bench, Some(resolved_id), limit)
 }
 
 fn cmd_export(
@@ -340,14 +324,19 @@ fn cmd_export(
     output: Option<String>,
     runs_dir: Option<String>,
 ) -> Result<()> {
-    let runs_dir = runs_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config.runs_dir.clone());
+    let runs_dir = resolve_runs_dir(config, runs_dir);
     let resolved_id = resolve_run_id(&runs_dir, run_id)?;
-    let store = RunStore::new(runs_dir.join(&resolved_id))?;
-    let results = store.load_results()?;
-    let errors = store.load_errors()?;
-    let metadata = store.read_metadata()?;
+    let store = RunStore::new(runs_dir.join(&resolved_id))
+        .with_context(|| format!("opening run {}", resolved_id))?;
+    let results = store
+        .load_results()
+        .with_context(|| format!("loading results for {}", resolved_id))?;
+    let errors = store
+        .load_errors()
+        .with_context(|| format!("loading errors for {}", resolved_id))?;
+    let metadata = store
+        .read_metadata()
+        .with_context(|| format!("reading metadata for {}", resolved_id))?;
 
     let content = match format {
         "json" => serde_json::to_string_pretty(&build_export_json(
@@ -403,4 +392,56 @@ fn resolve_run_id(runs_dir: &std::path::Path, partial: &str) -> Result<String> {
             ))
         }
     }
+}
+
+fn resolve_run_id_from_summaries(summaries: &[RunSummary], partial: &str) -> Result<String> {
+    if summaries.is_empty() {
+        return Err(anyhow!("no runs available"));
+    }
+
+    if let Some(exact) = summaries.iter().find(|s| s.run_id == partial) {
+        return Ok(exact.run_id.clone());
+    }
+
+    let matches: Vec<&RunSummary> = summaries
+        .iter()
+        .filter(|s| s.run_id.starts_with(partial) || s.run_id.contains(partial))
+        .collect();
+
+    match matches.len() {
+        0 => Err(anyhow!("no run found matching '{partial}'")),
+        1 => Ok(matches[0].run_id.clone()),
+        _ => {
+            let options: Vec<_> = matches.iter().map(|s| s.run_id.clone()).collect();
+            Err(anyhow!(
+                "ambiguous run ID '{partial}', matches: {}",
+                options.join(", ")
+            ))
+        }
+    }
+}
+
+fn resolve_runs_dir(config: &Config, override_dir: Option<String>) -> PathBuf {
+    override_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.runs_dir.clone())
+}
+
+fn run_benchmark_with_progress(
+    bench: Benchmark,
+    run_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<()> {
+    let events = bench.subscribe();
+    let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
+    rt.block_on(async {
+        let display = ProgressDisplay::new();
+        let display_handle = tokio::spawn(display.run(events));
+        let result = bench.run(run_id, limit).await;
+        let _ = display_handle.await;
+        result
+    })
+    .context("running benchmark")?;
+
+    Ok(())
 }
