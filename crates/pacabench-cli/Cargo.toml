@@ -1,9 +1,18 @@
 [package]
 name = "pacabench-cli"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
-description = "CLI wrapper for PacaBench (Rust rewrite)"
+description = "A benchmarking framework for LLM-powered agents"
 license = "Apache-2.0"
+repository = "https://github.com/fastpaca/pacabench"
+homepage = "https://github.com/fastpaca/pacabench"
+keywords = ["llm", "benchmark", "agents", "evaluation"]
+categories = ["command-line-utilities", "development-tools"]
+
+# The binary name that users will invoke
+[[bin]]
+name = "pacabench"
+path = "src/main.rs"
 
 [dependencies]
 pacabench-core = { path = "../pacabench-core" }
