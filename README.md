@@ -5,15 +5,18 @@
 </p>
 
 <p align="center">
-  <i>Stop playing script whack-a-mole with your benchmarks & start looking at reproducable results.</i>
+  <i>Stop playing script whack-a-mole with your benchmarks & start looking at reproducible results.</i>
 </p>
 
 <p align="center">
   <a href="https://opensource.org/license/apache-2-0">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
   </a>
-  <a href="https://www.python.org/downloads/">
-    <img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+">
+  <a href="https://www.rust-lang.org/">
+    <img src="https://img.shields.io/badge/rust-%23000000.svg?logo=rust&logoColor=white" alt="Built with Rust">
+  </a>
+  <a href="https://pypi.org/project/pacabench/">
+    <img src="https://img.shields.io/badge/pypi-pacabench-3775A9?logo=pypi&logoColor=white" alt="PyPI">
   </a>
 </p>
 
@@ -60,9 +63,19 @@ PacaBench is a harness built for the reality of agentic LLM development. It hand
 
 ## Quick Start
 
+### Installation
+
 ```bash
 pip install pacabench
 ```
+
+Or run directly without installing:
+
+```bash
+uvx pacabench@latest --help
+```
+
+### Usage
 
 Initialize a new project:
 
@@ -201,7 +214,7 @@ PacaBench exists because I wanted to stop fighting my tools and start getting ac
 
 ## Architecture
 
-PacaBench isolates your code from the harness.
+PacaBench is built in Rust for speed and reliability, while remaining easy to install via pip/uvx. It isolates your code from the harness.
 
 ```mermaid
 graph LR
