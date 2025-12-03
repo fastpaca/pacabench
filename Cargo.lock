@@ -1528,7 +1528,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "once_cell",
- "openssl",
  "parking_lot",
  "regex",
  "reqwest",
