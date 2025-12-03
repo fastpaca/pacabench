@@ -33,7 +33,7 @@ fn show_without_run_id_handles_empty_runs_dir() {
     let runs_dir = dir.path().join("runs");
     fs::create_dir_all(&runs_dir).unwrap();
 
-    Command::new(assert_cmd::cargo::cargo_bin!("pacabench-cli"))
+    Command::new(assert_cmd::cargo::cargo_bin!("pacabench"))
         .arg("--config")
         .arg(&config_path)
         .arg("show")
@@ -104,7 +104,7 @@ fn export_json_includes_judge_fields_and_precision() {
     let mut results_file = fs::File::create(run_dir.join("results.jsonl")).unwrap();
     writeln!(results_file, "{}", result).unwrap();
 
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("pacabench-cli"))
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("pacabench"))
         .arg("--config")
         .arg(&config_path)
         .arg("export")
