@@ -1,4 +1,4 @@
-//! Thin CLI wrapper for the Rust rewrite of PacaBench.
+//! CLI for PacaBench - a local-first benchmark harness for LLM agents.
 
 mod pricing;
 mod progress;
@@ -20,7 +20,10 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "pacabench", about = "Rust rewrite of the PacaBench CLI")]
+#[command(
+    name = "pacabench",
+    about = "A local-first benchmark harness for LLM agents"
+)]
 struct Cli {
     /// Path to the benchmark configuration file.
     #[arg(short, long, default_value = "pacabench.yaml")]
