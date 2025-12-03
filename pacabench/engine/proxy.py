@@ -144,7 +144,7 @@ class ProxyServer:
         self._beta_chat_url = f"{self._upstream_api_url}/beta/chat/completions"
         self._server_thread: threading.Thread | None = None
         self._should_stop = False
-        self._server = None
+        self._server: uvicorn.Server | None = None
         self._active_case_id = "_current"
 
         @asynccontextmanager
@@ -176,8 +176,6 @@ class ProxyServer:
 
             start_time = time.time()
             try:
-                # If key is missing, try to use env var or what was passed to init
-                # OpenAI client will look for env var OPENAI_API_KEY
                 response = await self.openai_client.chat.completions.create(**body)
                 latency_ms = (time.time() - start_time) * 1000
 
@@ -227,14 +225,10 @@ class ProxyServer:
             x_case_id: str | None = Header(None, alias="X-Case-ID"),
         ) -> JSONResponse:
             """Proxy beta chat completions (structured outputs) to OpenAI."""
-
             body = await request.json()
             model = body.get("model", "gpt-4o-mini")
             case_id = x_case_id or case_id or self._active_case_id
             self._log_request("/v1/beta/chat/completions", body, case_id)
-
-            # Manual fetch using httpx because openai python client might not fully support beta paths via same client easily
-            # Actually new client does, but let's keep the logic if it works.
 
             api_key = self._openai_api_key or os.environ.get("OPENAI_API_KEY")
             if not api_key:
@@ -312,7 +306,6 @@ class ProxyServer:
             body = await request.json()
             model = body.get("model", "gpt-4o-mini")
 
-            # Sanitize body: fix verbosity for gpt-4o-mini if needed
             if (
                 "text" in body
                 and isinstance(body["text"], dict)
@@ -469,7 +462,6 @@ class ProxyServer:
         self._server_thread = threading.Thread(target=run_server, daemon=True)
         self._server_thread.start()
 
-        # Wait for server to be ready
         for _ in range(30):
             try:
                 response = httpx.get(f"http://127.0.0.1:{self.port}/health", timeout=1.0)

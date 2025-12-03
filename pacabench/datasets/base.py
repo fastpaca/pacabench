@@ -1,10 +1,10 @@
+"""Base dataset interface."""
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from pacabench.config import DatasetConfig
-from pacabench.context import EvalContext
-from pacabench.types import Case
+from pacabench.models import Case, DatasetConfig
 
 # Common fields to exclude from metadata to prevent leakage
 _COMMON_EXCLUDE_KEYS = {
@@ -23,11 +23,17 @@ _COMMON_EXCLUDE_KEYS = {
 
 
 class BaseDataset(ABC):
-    def __init__(self, config: DatasetConfig, ctx: EvalContext):
+    def __init__(
+        self,
+        config: DatasetConfig,
+        root_dir: Path,
+        datasets_cache_dir: Path,
+        env: dict[str, str] | None = None,
+    ):
         self.config = config
-        self.ctx = ctx
-        self.root_dir = ctx.root_dir
-        self.datasets_cache_dir = ctx.datasets_cache_dir
+        self.root_dir = root_dir
+        self.datasets_cache_dir = datasets_cache_dir
+        self.env = env or {}
 
     @abstractmethod
     def load(self, limit: int | None = None) -> list[Case]:
@@ -41,7 +47,6 @@ class BaseDataset(ABC):
         return (self.root_dir / path).resolve()
 
     def resolve_pattern(self, pattern: str) -> str:
-        # Helper for glob patterns which need string paths
         return str(self.resolve_path(pattern))
 
     def _prepare_case(
@@ -56,15 +61,12 @@ class BaseDataset(ABC):
             return None
 
         expected = record.get(expected_key)
-        # Prioritize case_id, then id, then fallback
         case_id = str(record.get("case_id") or record.get("id") or fallback_id)
 
         history = record.get("history", [])
         if not isinstance(history, list):
-            # Fallback or error? We'll coerce to empty list to be safe but strictly typed
             history = []
 
-        # Combine dynamic keys with static exclude list
         exclude_keys = _COMMON_EXCLUDE_KEYS | {input_key, expected_key}
         metadata = {k: v for k, v in record.items() if k not in exclude_keys}
 

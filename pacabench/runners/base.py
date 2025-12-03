@@ -1,7 +1,8 @@
+"""Base runner interface."""
+
 from abc import ABC, abstractmethod
 
-from pacabench.config import AgentConfig
-from pacabench.types import Case, RunnerOutput
+from pacabench.models import AgentConfig, Case, RunnerOutput
 
 
 class BaseRunner(ABC):
@@ -9,7 +10,7 @@ class BaseRunner(ABC):
         self.config = config
 
     @abstractmethod
-    async def start(self):
+    async def start(self) -> None:
         """Start the runner process/resources."""
         pass
 
@@ -19,6 +20,6 @@ class BaseRunner(ABC):
         pass
 
     @abstractmethod
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the runner process/resources."""
         pass

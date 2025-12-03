@@ -1,7 +1,8 @@
+"""Base evaluator interface."""
+
 from abc import ABC, abstractmethod
 
-from pacabench.config import EvaluatorConfig
-from pacabench.types import Case, EvaluationResult, RunnerOutput
+from pacabench.models import Case, EvaluationResult, EvaluatorConfig, RunnerOutput
 
 
 class BaseEvaluator(ABC):

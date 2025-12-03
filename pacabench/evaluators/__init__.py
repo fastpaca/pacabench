@@ -1,10 +1,13 @@
-from pacabench.config import EvaluatorConfig
+"""Evaluators for PacaBench."""
+
 from pacabench.evaluators.base import BaseEvaluator
 from pacabench.evaluators.judge import LLMJudgeEvaluator
 from pacabench.evaluators.matchers import ExactMatchEvaluator, F1Evaluator, MultipleChoiceEvaluator
+from pacabench.models import EvaluatorConfig
 
 
 def get_evaluator(config: EvaluatorConfig) -> BaseEvaluator:
+    """Create an evaluator based on the config type."""
     if config.type == "exact_match":
         return ExactMatchEvaluator(config)
     elif config.type == "f1":

@@ -1,40 +1,46 @@
+"""Run management and discovery."""
+
 import contextlib
 import hashlib
 import json
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pacabench.config import BenchmarkConfig
-from pacabench.context import EvalContext
-from pacabench.types import CaseResult, ErrorType
+import yaml
 
-
-@dataclass
-class RunSummary:
-    run_id: str
-    path: Path
-    status: str
-    start_time: str | None
-    elapsed_seconds: float | None
-    completed_cases: int
-    total_cases: int
-    progress: float | None
-    datasets: list[str]
-    agents: list[str]
-    models: list[str]
-    total_cost_usd: float | None
+from pacabench.models import (
+    AgentMetadata,
+    BenchmarkConfig,
+    CaseResult,
+    DatasetMetadata,
+    ErrorType,
+    RunMetadata,
+    RunStatus,
+    RunSummary,
+)
 
 
 class RunManager:
-    def __init__(self, ctx: EvalContext, run_id: str | None = None, force_new_run: bool = False):
-        self.ctx = ctx
-        self.config = ctx.runtime_config
-        self.base_config = ctx.base_config
-        self.base_dir = ctx.runs_dir
-        self._config_fingerprint = _compute_config_fingerprint(self.config)
+    """Manages run state and persistence."""
+
+    def __init__(
+        self,
+        config: BenchmarkConfig,
+        base_config: BenchmarkConfig,
+        runs_dir: Path,
+        config_path: Path,
+        overrides: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        force_new_run: bool = False,
+    ):
+        self.config = config
+        self.base_config = base_config
+        self.base_dir = runs_dir
+        self.config_path = config_path
+        self.overrides = overrides or {}
+        self._config_fingerprint = _compute_config_fingerprint(config)
         self.resuming = False
         self._force_new_run = force_new_run
 
@@ -42,9 +48,9 @@ class RunManager:
             self.run_dir = self._resolve_run_dir(run_id)
             self.run_dir.parent.mkdir(parents=True, exist_ok=True)
             self.run_id = run_id
-            metadata = self._read_metadata_file(self.run_dir / "metadata.json")
-            if self.run_dir.exists():
-                fingerprint = metadata.get("config_fingerprint")
+            metadata = self._load_metadata_file(self.run_dir / "metadata.json")
+            if self.run_dir.exists() and metadata:
+                fingerprint = metadata.config_fingerprint
                 if fingerprint and fingerprint == self._config_fingerprint:
                     if force_new_run:
                         raise ValueError(
@@ -60,7 +66,7 @@ class RunManager:
                 self.run_dir.mkdir(parents=True, exist_ok=True)
                 self.resuming = False
         else:
-            resume_dir = None if force_new_run else self._find_incomplete_run()
+            resume_dir = None if force_new_run else self.find_incomplete_run()
             if resume_dir:
                 self.run_dir = resume_dir
                 self.run_id = resume_dir.name
@@ -72,7 +78,7 @@ class RunManager:
         self.results_path = self.run_dir / "results.jsonl"
         self.errors_path = self.run_dir / "system_errors.jsonl"
         self.metadata_path = self.run_dir / "metadata.json"
-        self.config_path = self.run_dir / "pacabench.yaml"
+        self.saved_config_path = self.run_dir / "pacabench.yaml"
         self._completed_entries: set[tuple[str, str, str]] = set()
         self._case_attempts: dict[tuple[str, str, str], int] = defaultdict(int)
         self._load_completed_entries()
@@ -81,9 +87,6 @@ class RunManager:
         self.system_error_count = self._load_system_error_count()
 
     def _generate_run_id(self) -> str:
-        # format: dataset-agent-timestamp
-        # But config has multiple datasets/agents.
-        # Use config name + timestamp
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         return f"{self.config.name}-{ts}"
 
@@ -94,14 +97,18 @@ class RunManager:
         return self.base_dir / run_id
 
     def _load_total_cases(self) -> int:
-        metadata = self._read_metadata()
-        return int(metadata.get("total_cases", 0))
+        metadata = self._load_metadata()
+        return metadata.total_cases if metadata else 0
 
     def _load_system_error_count(self) -> int:
-        metadata = self._read_metadata()
-        return int(metadata.get("system_error_count", 0))
+        metadata = self._load_metadata()
+        return metadata.system_error_count if metadata else 0
 
-    def _find_incomplete_run(self) -> Path | None:
+    def find_incomplete_run(self) -> Path | None:
+        """Find an incomplete run that can be resumed."""
+        if not self.base_dir.exists():
+            return None
+
         candidates = sorted(
             [
                 p
@@ -111,72 +118,68 @@ class RunManager:
             reverse=True,
         )
         for run_path in candidates:
-            metadata_path = run_path / "metadata.json"
-            if not metadata_path.exists():
+            metadata = self._load_metadata_file(run_path / "metadata.json")
+            if not metadata:
                 continue
-            data = {}
-            with contextlib.suppress(json.JSONDecodeError), open(metadata_path) as f:
-                data = json.load(f)
-            if data.get("status") == "completed":
+            if metadata.status == RunStatus.COMPLETED:
                 continue
-            if data.get("config_fingerprint") != self._config_fingerprint:
+            if metadata.config_fingerprint != self._config_fingerprint:
                 continue
             return run_path
         return None
 
-    def initialize(self):
+    def initialize(self) -> None:
+        """Initialize or resume a run."""
         agent_meta = [
-            {
-                "name": a.name,
-                "command": a.command,
-                "env_keys": sorted(a.env.keys()),
-                "model": a.env.get("OPENAI_MODEL"),
-            }
+            AgentMetadata(
+                name=a.name,
+                command=a.command,
+                env_keys=sorted(a.env.keys()),
+                model=a.env.get("OPENAI_MODEL"),
+            )
             for a in self.config.agents
         ]
         dataset_meta = [
-            {"name": d.name, "source": d.source, "split": d.split} for d in self.config.datasets
+            DatasetMetadata(name=d.name, source=d.source, split=d.split)
+            for d in self.config.datasets
         ]
 
         if not self.metadata_path.exists():
             self.run_dir.mkdir(parents=True, exist_ok=True)
+
             # Save config
             config_dict = self.base_config.model_dump()
-            import yaml
-
-            with open(self.config_path, "w") as f:
+            with open(self.saved_config_path, "w") as f:
                 yaml.dump(config_dict, f)
 
             # Init metadata
-            self.update_metadata(
-                {
-                    "run_id": self.run_id,
-                    "start_time": datetime.now().isoformat(),
-                    "status": "running",
-                    "config_name": self.config.name,
-                    "config_description": self.config.description,
-                    "config_version": self.config.version,
-                    "config_path": str(self.ctx.config_path),
-                    "agents": agent_meta,
-                    "datasets": dataset_meta,
-                    "overrides": self.ctx.overrides,
-                    "config_fingerprint": self._config_fingerprint,
-                    "completed_cases": 0,
-                    "system_error_count": 0,
-                }
+            metadata = RunMetadata(
+                run_id=self.run_id,
+                start_time=datetime.now().isoformat(),
+                status=RunStatus.RUNNING,
+                config_name=self.config.name,
+                config_description=self.config.description,
+                config_version=self.config.version,
+                config_path=str(self.config_path),
+                config_fingerprint=self._config_fingerprint,
+                agents=[m.model_dump() for m in agent_meta],
+                datasets=[m.model_dump() for m in dataset_meta],
+                overrides=self.overrides,
+                completed_cases=0,
+                system_error_count=0,
             )
+            self._save_metadata(metadata)
         else:
             # Resume/Retry
-            self.update_metadata(
-                {
-                    "last_resumed": datetime.now().isoformat(),
-                    "status": "running",
-                    "completed_cases": self.completed_cases,
-                    "system_error_count": self.system_error_count,
-                    "agents": agent_meta,
-                    "datasets": dataset_meta,
-                }
-            )
+            metadata = self._load_metadata()
+            if metadata:
+                metadata.last_resumed = datetime.now().isoformat()
+                metadata.status = RunStatus.RUNNING
+                metadata.completed_cases = self.completed_cases
+                metadata.system_error_count = self.system_error_count
+                metadata.agents = [m.model_dump() for m in agent_meta]
+                metadata.datasets = [m.model_dump() for m in dataset_meta]
+                self._save_metadata(metadata)
 
     def get_next_attempt(self, agent: str, dataset: str, case_id: str) -> int:
         """Get the next attempt number for a case."""
@@ -186,7 +189,8 @@ class RunManager:
         """Get the current attempt count for a case."""
         return self._case_attempts.get((agent, dataset, case_id), 0)
 
-    def save_result(self, result: CaseResult):
+    def save_result(self, result: CaseResult) -> None:
+        """Save a case result to the results file."""
         entry = (result.agent_name, result.dataset_name, result.case_id)
 
         if result.timestamp is None:
@@ -200,10 +204,12 @@ class RunManager:
             self.completed_cases = len(self._completed_entries)
             self._write_progress()
 
-        # Update attempts
         self._case_attempts[entry] = result.attempt
 
-    def save_error(self, error_data: dict[str, Any], error_type: ErrorType = ErrorType.SYSTEM):
+    def save_error(
+        self, error_data: dict[str, Any], error_type: ErrorType = ErrorType.SYSTEM
+    ) -> None:
+        """Save an error to the errors file."""
         payload = {
             "timestamp": datetime.now().isoformat(),
             "error_type": error_type.value,
@@ -213,43 +219,34 @@ class RunManager:
             f.write(json.dumps(payload) + "\n")
         if error_type == ErrorType.SYSTEM:
             self.system_error_count += 1
-            self.update_metadata({"system_error_count": self.system_error_count})
+            self._update_metadata_field("system_error_count", self.system_error_count)
 
-    def save_dashboard_state(self, state_json: str):
+    def save_dashboard_state(self, state_json: str) -> None:
+        """Save dashboard state for UI consumption."""
         path = self.run_dir / "status.json"
         with open(path, "w") as f:
             f.write(state_json)
 
-    def update_metadata(self, data: dict[str, Any]):
-        # Read existing
-        current = {}
-        if self.metadata_path.exists():
-            with open(self.metadata_path) as f, contextlib.suppress(json.JSONDecodeError):
-                current = json.load(f)
-
-        current.update(data)
-
-        with open(self.metadata_path, "w") as f:
-            json.dump(current, f, indent=2)
-
-    def set_total_cases(self, total_cases: int):
+    def set_total_cases(self, total_cases: int) -> None:
+        """Set the total number of cases for progress tracking."""
         self.total_cases = total_cases
         self._write_progress()
 
-    def mark_completed(self, failed: bool = False):
-        status = "failed" if failed else "completed"
-        self.update_metadata(
-            {
-                "status": status,
-                "completed_time": datetime.now().isoformat(),
-                "completed_cases": self.completed_cases,
-            }
-        )
+    def mark_completed(self, failed: bool = False) -> None:
+        """Mark the run as completed or failed."""
+        status = RunStatus.FAILED if failed else RunStatus.COMPLETED
+        metadata = self._load_metadata()
+        if metadata:
+            metadata.status = status
+            metadata.completed_time = datetime.now().isoformat()
+            metadata.completed_cases = self.completed_cases
+            self._save_metadata(metadata)
 
     def load_existing_results(self) -> set[tuple[str, str, str]]:
+        """Get the set of completed (agent, dataset, case_id) tuples."""
         return set(self._completed_entries)
 
-    def _load_completed_entries(self):
+    def _load_completed_entries(self) -> None:
         if not self.results_path.exists():
             return
         with open(self.results_path) as f:
@@ -262,36 +259,48 @@ class RunManager:
                     if agent and dataset and cid:
                         key = (agent, dataset, cid)
                         self._completed_entries.add(key)
-                        # Track attempts
                         attempt = data.get("attempt")
                         if attempt:
                             self._case_attempts[key] = max(self._case_attempts[key], int(attempt))
                         else:
-                            # Fallback: count occurrences
                             self._case_attempts[key] += 1
 
-    def _write_progress(self):
-        progress = None
-        if self.total_cases:
-            progress = self.completed_cases / self.total_cases
-        payload = {"total_cases": self.total_cases, "completed_cases": self.completed_cases}
-        if progress is not None:
-            payload["progress"] = progress
-        self.update_metadata(payload)
+    def _write_progress(self) -> None:
+        metadata = self._load_metadata()
+        if metadata:
+            metadata.total_cases = self.total_cases
+            metadata.completed_cases = self.completed_cases
+            if self.total_cases:
+                metadata.progress = self.completed_cases / self.total_cases
+            self._save_metadata(metadata)
 
-    def _read_metadata(self) -> dict[str, Any]:
-        return self._read_metadata_file(self.metadata_path)
+    def _load_metadata(self) -> RunMetadata | None:
+        return self._load_metadata_file(self.metadata_path)
+
+    def _save_metadata(self, metadata: RunMetadata) -> None:
+        with open(self.metadata_path, "w") as f:
+            f.write(metadata.model_dump_json(indent=2))
+
+    def _update_metadata_field(self, field: str, value: Any) -> None:
+        metadata = self._load_metadata()
+        if metadata:
+            setattr(metadata, field, value)
+            self._save_metadata(metadata)
 
     @staticmethod
-    def _read_metadata_file(path: Path) -> dict[str, Any]:
+    def _load_metadata_file(path: Path) -> RunMetadata | None:
         if not path.exists():
-            return {}
-        with open(path) as f, contextlib.suppress(json.JSONDecodeError):
-            return json.load(f)
-        return {}
+            return None
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            return RunMetadata.model_validate(data)
+        except (json.JSONDecodeError, ValueError):
+            return None
 
 
 def _compute_config_fingerprint(config: BenchmarkConfig) -> str:
+    """Compute a fingerprint for config comparison."""
     normalized = json.dumps(config.model_dump(mode="json"), sort_keys=True)
     return hashlib.sha256(normalized.encode()).hexdigest()
 
@@ -308,15 +317,10 @@ def find_latest_run(runs_dir: Path) -> Path | None:
     )
 
     for run_path in candidates:
-        metadata_path = run_path / "metadata.json"
-        if not metadata_path.exists():
+        metadata = RunManager._load_metadata_file(run_path / "metadata.json")
+        if not metadata:
             continue
-
-        data = RunManager._read_metadata_file(metadata_path)
-        status = data.get("status")
-        if status in ("completed", "failed", "running"):
-            return run_path
-        if status is None and data:
+        if metadata.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.RUNNING):
             return run_path
 
     return None
@@ -327,7 +331,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return None
     try:
         return datetime.fromisoformat(value)
-    except Exception:
+    except ValueError:
         return None
 
 
@@ -342,47 +346,24 @@ def get_run_summaries(runs_dir: Path) -> list[RunSummary]:
         if not run_path.is_dir():
             continue
 
-        metadata_path = run_path / "metadata.json"
-        metadata = RunManager._read_metadata_file(metadata_path)
+        metadata = RunManager._load_metadata_file(run_path / "metadata.json")
         if not metadata:
             continue
 
-        status = metadata.get("status", "unknown")
-        start_str = metadata.get("start_time")
-        end_str = metadata.get("completed_time") or metadata.get("last_resumed")
-        start_dt = _parse_datetime(start_str)
-        end_dt = _parse_datetime(end_str) or (datetime.now() if status == "running" else None)
+        start_dt = _parse_datetime(metadata.start_time)
+        end_str = metadata.completed_time or metadata.last_resumed
+        end_dt = _parse_datetime(end_str) or (
+            datetime.now() if metadata.status == RunStatus.RUNNING else None
+        )
         elapsed = (end_dt - start_dt).total_seconds() if start_dt and end_dt else None
 
-        completed = int(metadata.get("completed_cases", 0) or 0)
-        total_cases = int(metadata.get("total_cases", 0) or 0)
-        progress = metadata.get("progress")
-        if progress is None and total_cases:
-            progress = completed / total_cases
+        progress = metadata.progress
+        if progress is None and metadata.total_cases:
+            progress = metadata.completed_cases / metadata.total_cases
 
-        datasets_field = metadata.get("datasets") or []
-        datasets: list[str] = []
-        if isinstance(datasets_field, list):
-            for entry in datasets_field:
-                if isinstance(entry, dict):
-                    datasets.append(entry.get("name", str(entry)))
-                elif isinstance(entry, str):
-                    datasets.append(entry)
-
-        agents_field = metadata.get("agents") or []
-        models: list[str] = []
-        agents: list[str] = []
-        if isinstance(agents_field, list):
-            for entry in agents_field:
-                if isinstance(entry, dict):
-                    name = entry.get("name")
-                    model = entry.get("model")
-                    if name:
-                        agents.append(name)
-                    if model:
-                        models.append(model)
-                elif isinstance(entry, str):
-                    agents.append(entry)
+        datasets = [d.name for d in metadata.datasets]
+        agents = [a.name for a in metadata.agents]
+        models = [a.model for a in metadata.agents if a.model]
 
         total_cost = None
         status_path = run_path / "status.json"
@@ -396,11 +377,11 @@ def get_run_summaries(runs_dir: Path) -> list[RunSummary]:
             RunSummary(
                 run_id=run_path.name,
                 path=run_path,
-                status=status,
-                start_time=start_str,
+                status=metadata.status,
+                start_time=metadata.start_time,
                 elapsed_seconds=elapsed,
-                completed_cases=completed,
-                total_cases=total_cases,
+                completed_cases=metadata.completed_cases,
+                total_cases=metadata.total_cases,
                 progress=progress,
                 datasets=datasets,
                 agents=agents,
@@ -431,7 +412,7 @@ def get_failed_case_ids(run_dir: Path) -> set[str]:
                     err = json.loads(line)
                     if "case_id" in err:
                         failed_ids.add(err["case_id"])
-                except Exception:
+                except json.JSONDecodeError:
                     pass
 
     # Task failures
@@ -443,7 +424,7 @@ def get_failed_case_ids(run_dir: Path) -> set[str]:
                     res = json.loads(line)
                     if not res.get("passed", False):
                         failed_ids.add(res["case_id"])
-                except Exception:
+                except json.JSONDecodeError:
                     pass
 
     return failed_ids

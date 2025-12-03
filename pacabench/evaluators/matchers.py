@@ -1,3 +1,5 @@
+"""Matcher-based evaluators (exact match, F1, multiple choice)."""
+
 import re
 import time
 from typing import Any
@@ -5,7 +7,7 @@ from typing import Any
 import tiktoken
 
 from pacabench.evaluators.base import BaseEvaluator
-from pacabench.types import Case, EvaluationResult, RunnerOutput
+from pacabench.models import Case, EvaluationResult, EvaluatorConfig, RunnerOutput
 
 
 class ExactMatchEvaluator(BaseEvaluator):
@@ -61,7 +63,6 @@ class F1Evaluator(BaseEvaluator):
                 evaluator_latency_ms=(time.perf_counter() - start) * 1000,
             )
 
-        # Simple token overlap F1
         try:
             encoding = tiktoken.get_encoding("cl100k_base")
         except Exception:
@@ -121,7 +122,7 @@ def _clean_text(text: str) -> str:
 
 
 class MultipleChoiceEvaluator(BaseEvaluator):
-    def __init__(self, config):
+    def __init__(self, config: EvaluatorConfig):
         super().__init__(config)
         fallback = self.config.extra_config.get("fallback", "f1")
         self._fallback_mode = fallback if fallback in {"f1", "judge", "none"} else "f1"
@@ -143,7 +144,6 @@ class MultipleChoiceEvaluator(BaseEvaluator):
         expected_text = (case.expected or "").strip()
         expected_letter = expected_text[0].upper() if expected_text else ""
 
-        # Primary: strict multiple-choice letter check.
         if choices and expected_letter:
             valid_letters = set(choices.keys())
             predicted_letter = _extract_choice_letter(output.output, valid_letters)
@@ -177,9 +177,7 @@ class MultipleChoiceEvaluator(BaseEvaluator):
                 evaluator_latency_ms=(time.perf_counter() - start) * 1000,
             )
 
-        # Fallbacks for cases without choices or expected letter.
         if self._fallback_mode == "judge":
-            from pacabench.config import EvaluatorConfig
             from pacabench.evaluators.judge import LLMJudgeEvaluator
 
             judge = LLMJudgeEvaluator(EvaluatorConfig(type="llm_judge", model=self._judge_model))

@@ -1,3 +1,5 @@
+"""Case-related models for PacaBench."""
+
 from enum import Enum
 from typing import Any
 
@@ -12,7 +14,6 @@ class Case(BaseModel):
     input: str
     expected: str | None = None
     history: list[Any] = Field(default_factory=list)
-    # Allow extra fields for dataset-specific metadata
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -54,7 +55,7 @@ class EvaluationResult(BaseModel):
     score: float  # 0.0 to 1.0
     reason: str | None = None
     evaluator_latency_ms: float = 0.0
-    metrics: dict[str, Any] = Field(default_factory=dict)  # e.g. judge tokens
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class CaseResult(BaseModel):
@@ -70,7 +71,7 @@ class CaseResult(BaseModel):
 
     # Performance metrics
     runner_duration_ms: float = 0.0
-    llm_metrics: dict[str, Any] = Field(default_factory=dict)  # From Proxy or Runner
+    llm_metrics: dict[str, Any] = Field(default_factory=dict)
 
     # Metadata
     attempt: int = 1
@@ -86,24 +87,3 @@ class CaseResult(BaseModel):
 
     # For serialization flexibility
     extra: dict[str, Any] = Field(default_factory=dict)
-
-
-class AggregatedMetrics(BaseModel):
-    """Aggregated metrics for a run or subset."""
-
-    accuracy: float = 0.0
-    precision: float = 0.0  # If applicable
-    total_cases: int = 0
-    failed_cases: int = 0
-
-    p50_duration_ms: float = 0.0
-    p95_duration_ms: float = 0.0
-
-    avg_llm_latency_ms: float = 0.0
-    p50_llm_latency_ms: float = 0.0
-    p95_llm_latency_ms: float = 0.0
-
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    total_cost_usd: float = 0.0
-    total_judge_cost_usd: float = 0.0

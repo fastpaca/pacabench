@@ -1,25 +1,23 @@
 """PacaBench CLI - Kubernetes-style commands."""
 
-import asyncio
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
-from pacabench.config import load_config
-from pacabench.context import build_eval_context, resolve_runs_dir_from_cli
-from pacabench.core import Harness
-from pacabench.persistence import RunManager, get_run_summaries
-from pacabench.report import (
-    get_retry_case_ids,
-    render_run_report,
-    show_no_config,
+from pacabench.models import load_config
+from pacabench.storage import (
+    calculate_metrics,
+    get_run_summaries,
+    load_results,
+    load_results_raw,
 )
-from pacabench.reporters import RichProgressReporter
 
 app = typer.Typer(
     add_completion=False,
@@ -48,18 +46,38 @@ def _find_config(config_path: Path | None) -> Path | None:
     return None
 
 
+def _resolve_runs_dir(config_path: Path | None, override: Path | None = None) -> Path:
+    """Resolve the runs directory from config or defaults."""
+    if override:
+        return override.expanduser()
+
+    if config_path and config_path.exists():
+        try:
+            cfg = load_config(config_path)
+            runs_dir = Path(cfg.output.directory).expanduser()
+            if not runs_dir.is_absolute():
+                runs_dir = (config_path.parent / runs_dir).resolve()
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            return runs_dir
+        except Exception:
+            pass
+
+    env_dir = os.getenv("PACABENCH_RUNS_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser()
+    return Path.cwd() / "runs"
+
+
 def _resolve_run(run_id: str, runs_dir: Path):
     """Resolve a run ID (full or partial) to a RunSummary."""
     summaries = get_run_summaries(runs_dir)
     if not summaries:
         return None
 
-    # Exact match
     for s in summaries:
         if s.run_id == run_id:
             return s
 
-    # Partial match
     matches = [s for s in summaries if run_id in s.run_id]
     if len(matches) == 1:
         return matches[0]
@@ -70,6 +88,14 @@ def _resolve_run(run_id: str, runs_dir: Path):
         return None
 
     return None
+
+
+def _show_no_config() -> None:
+    """Show message when no config file is found."""
+    console.print()
+    console.print("[yellow]No pacabench.yaml found.[/yellow]")
+    console.print("Run [bold]pacabench init[/bold] to get started.")
+    console.print()
 
 
 @app.callback()
@@ -95,19 +121,18 @@ def main(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Default behavior: show latest run
     config_file = _find_config(config)
     if not config_file:
-        show_no_config()
+        _show_no_config()
         raise typer.Exit(0)
 
     try:
         cfg = load_config(config_file)
     except Exception:
-        show_no_config()
+        _show_no_config()
         raise typer.Exit(0) from None
 
-    runs_dir = resolve_runs_dir_from_cli(config_file, None)
+    runs_dir = _resolve_runs_dir(config_file, None)
     summaries = get_run_summaries(runs_dir)
 
     if not summaries:
@@ -118,7 +143,6 @@ def main(
         console.print()
         raise typer.Exit(0)
 
-    # Show latest completed/failed run
     actionable = [s for s in summaries if s.status in ("completed", "failed")]
     if not actionable:
         console.print()
@@ -128,7 +152,7 @@ def main(
 
     latest = actionable[0]
     run_dir = runs_dir / latest.run_id
-    render_run_report(run_dir, latest)
+    _render_run_report(run_dir, latest)
 
 
 @app.command()
@@ -164,10 +188,10 @@ def show(
     """
     config_file = _find_config(config)
     if not config_file:
-        show_no_config()
+        _show_no_config()
         raise typer.Exit(1)
 
-    runs_dir = resolve_runs_dir_from_cli(config_file, None)
+    runs_dir = _resolve_runs_dir(config_file, None)
     summaries = get_run_summaries(runs_dir)
 
     if not summaries:
@@ -175,10 +199,8 @@ def show(
         raise typer.Exit(0)
 
     if run_id is None:
-        # List all runs
         _print_runs_table(summaries[:limit], total=len(summaries))
     else:
-        # Show specific run
         run = _resolve_run(run_id, runs_dir)
         if not run:
             console.print(f"[red]Run not found: {run_id}[/red]")
@@ -187,17 +209,13 @@ def show(
         run_dir = runs_dir / run.run_id
 
         if cases or failures:
-            from pacabench.report import render_cases_table
-
-            render_cases_table(run_dir, run, failures_only=failures, limit=limit)
+            _render_cases_table(run_dir, run, failures_only=failures, limit=limit)
         else:
-            render_run_report(run_dir, run)
+            _render_run_report(run_dir, run)
 
 
 def _print_runs_table(summaries, total: int) -> None:
     """Print runs in a table format."""
-    from datetime import datetime
-
     console.print()
 
     table = Table(box=None, padding=(0, 2))
@@ -304,7 +322,7 @@ def run(
         agents_filter=agents_filter,
         fresh_run=fresh,
         run_id=run_id,
-        runs_dir=runs_dir,
+        runs_dir_override=runs_dir,
         skip_confirm=yes,
     )
 
@@ -332,7 +350,7 @@ def retry(
         console.print("[red]No config file found.[/red]")
         raise typer.Exit(1)
 
-    runs_dir = resolve_runs_dir_from_cli(config_file, None)
+    runs_dir = _resolve_runs_dir(config_file, None)
     run = _resolve_run(run_id, runs_dir)
 
     if not run:
@@ -340,7 +358,7 @@ def retry(
         raise typer.Exit(1)
 
     run_dir = runs_dir / run.run_id
-    retry_ids = get_retry_case_ids(run_dir, include_task_failures=all_failures)
+    retry_ids = _get_retry_case_ids(run_dir, include_task_failures=all_failures)
 
     if not retry_ids:
         console.print("[green]No failures to retry.[/green]")
@@ -350,8 +368,8 @@ def retry(
     _execute_retry(run.run_id, retry_ids, runs_dir)
 
 
-@app.command()
-def export(
+@app.command("export")
+def export_cmd(
     run_id: Annotated[str, typer.Argument(help="Run ID to export (partial match supported)")],
     config: Annotated[
         Path | None,
@@ -372,7 +390,7 @@ def export(
         console.print("[red]No config file found.[/red]", err=True)
         raise typer.Exit(1)
 
-    runs_dir = resolve_runs_dir_from_cli(config_file, None)
+    runs_dir = _resolve_runs_dir(config_file, None)
     run = _resolve_run(run_id, runs_dir)
 
     if not run:
@@ -380,9 +398,7 @@ def export(
         raise typer.Exit(1)
 
     run_dir = runs_dir / run.run_id
-    from pacabench.report import export_run_results
-
-    export_data = export_run_results(run_dir, run)
+    export_data = _export_run_results(run_dir, run)
 
     if output:
         with open(output, "w") as f:
@@ -478,16 +494,24 @@ if __name__ == "__main__":
         console.print("Created data/test.jsonl")
 
 
+# --- Internal helpers ---
+
+
 def _execute_run(
     config_path: Path,
     limit: int | None = None,
     agents_filter: list[str] | None = None,
     fresh_run: bool = False,
     run_id: str | None = None,
-    runs_dir: Path | None = None,
+    runs_dir_override: Path | None = None,
     skip_confirm: bool = False,
 ):
     """Execute a benchmark run."""
+    import asyncio
+
+    from pacabench.engine import Harness, RichProgressReporter
+    from pacabench.storage import RunManager
+
     base_cfg = load_config(config_path)
     runtime_cfg = base_cfg.model_copy(deep=True)
     overrides: dict = {}
@@ -499,7 +523,6 @@ def _execute_run(
             raise typer.Exit(code=1)
         overrides["agents"] = agents_filter
 
-    # Warn for large runs
     estimated = len(runtime_cfg.agents) * len(runtime_cfg.datasets) * 100
     if limit:
         estimated = min(estimated, len(runtime_cfg.agents) * len(runtime_cfg.datasets) * limit)
@@ -511,17 +534,18 @@ def _execute_run(
         if not typer.confirm("Continue?", default=False):
             raise typer.Exit(0)
 
-    ctx = build_eval_context(
-        config_path=config_path,
-        base_config=base_cfg,
-        runtime_config=runtime_cfg,
-        runs_dir_override=runs_dir,
-        overrides=overrides,
-    )
+    runs_dir = _resolve_runs_dir(config_path, runs_dir_override)
+    env = os.environ.copy()
 
     if not run_id and not fresh_run:
-        rm = RunManager(ctx)
-        incomplete = rm._find_incomplete_run()
+        rm = RunManager(
+            config=runtime_cfg,
+            base_config=base_cfg,
+            runs_dir=runs_dir,
+            config_path=config_path,
+            overrides=overrides,
+        )
+        incomplete = rm.find_incomplete_run()
         if incomplete:
             if skip_confirm or typer.confirm(
                 f"Resume incomplete run '{incomplete.name}'?", default=True
@@ -532,7 +556,17 @@ def _execute_run(
 
     try:
         reporter = RichProgressReporter()
-        harness = Harness(ctx, run_id=run_id, force_new_run=fresh_run, reporter=reporter)
+        harness = Harness(
+            config=runtime_cfg,
+            base_config=base_cfg,
+            runs_dir=runs_dir,
+            config_path=config_path,
+            env=env,
+            overrides=overrides,
+            run_id=run_id,
+            force_new_run=fresh_run,
+            reporter=reporter,
+        )
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None
@@ -542,6 +576,10 @@ def _execute_run(
 
 def _execute_retry(run_id: str, retry_ids: set[str], runs_dir: Path):
     """Execute a retry for specific case IDs."""
+    import asyncio
+
+    from pacabench.engine import Harness, RichProgressReporter
+
     run_dir = runs_dir / run_id
     run_config_path = run_dir / "pacabench.yaml"
 
@@ -551,17 +589,309 @@ def _execute_retry(run_id: str, retry_ids: set[str], runs_dir: Path):
 
     cfg = load_config(run_config_path)
     runtime_cfg = cfg.model_copy(deep=True)
-
-    ctx = build_eval_context(
-        config_path=run_config_path,
-        base_config=cfg,
-        runtime_config=runtime_cfg,
-        runs_dir_override=run_dir.parent,
-    )
+    env = os.environ.copy()
 
     reporter = RichProgressReporter()
-    harness = Harness(ctx, run_id=run_id, reporter=reporter)
+    harness = Harness(
+        config=runtime_cfg,
+        base_config=cfg,
+        runs_dir=run_dir.parent,
+        config_path=run_config_path,
+        env=env,
+        run_id=run_id,
+        reporter=reporter,
+    )
     asyncio.run(harness.run(whitelist_ids=retry_ids))
+
+
+def _get_retry_case_ids(run_dir: Path, include_task_failures: bool = False) -> set[str]:
+    """Get case IDs that should be retried."""
+    retry_ids: set[str] = set()
+
+    errors_path = run_dir / "system_errors.jsonl"
+    if errors_path.exists():
+        with open(errors_path) as f:
+            for line in f:
+                try:
+                    err = json.loads(line)
+                    if err.get("case_id"):
+                        retry_ids.add(err["case_id"])
+                except json.JSONDecodeError:
+                    continue
+
+    if include_task_failures:
+        results = load_results(run_dir)
+        for r in results:
+            if not r.passed:
+                retry_ids.add(r.case_id)
+
+    return retry_ids
+
+
+# --- Report rendering ---
+
+
+def _time_ago(dt: datetime) -> str:
+    """Format a datetime as a human-readable 'time ago' string."""
+    now = datetime.now()
+    delta = now - dt
+    seconds = delta.total_seconds()
+
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        mins = int(seconds / 60)
+        return f"{mins}m ago"
+    if seconds < 86400:
+        hours = int(seconds / 3600)
+        return f"{hours}h ago"
+    days = int(seconds / 86400)
+    return f"{days}d ago"
+
+
+def _progress_bar(ratio: float, width: int = 10) -> str:
+    """Create a simple progress bar string."""
+    filled = int(ratio * width)
+    empty = width - filled
+    return "█" * filled + "·" * empty
+
+
+def _format_duration(ms: float) -> str:
+    """Format milliseconds to human readable."""
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    elif ms < 60000:
+        return f"{ms / 1000:.1f}s"
+    else:
+        return f"{ms / 60000:.1f}m"
+
+
+def _format_tokens(tokens: int) -> str:
+    """Format token count."""
+    if tokens < 1000:
+        return str(tokens)
+    elif tokens < 1000000:
+        return f"{tokens / 1000:.1f}k"
+    else:
+        return f"{tokens / 1000000:.2f}M"
+
+
+def _load_system_errors(run_dir: Path) -> list[dict]:
+    """Load system errors from a run directory."""
+    errors_path = run_dir / "system_errors.jsonl"
+    errors = []
+    if errors_path.exists():
+        with open(errors_path) as f:
+            for line in f:
+                try:
+                    errors.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return errors
+
+
+def _render_run_report(run_dir: Path, summary) -> None:
+    """Render a comprehensive run report to the console."""
+    results = load_results_raw(run_dir)
+    system_errors = _load_system_errors(run_dir)
+
+    console.print()
+    status_color = "green" if summary.status == "completed" else "yellow"
+    if summary.status == "failed":
+        status_color = "red"
+
+    time_str = ""
+    if summary.start_time:
+        try:
+            dt = datetime.fromisoformat(summary.start_time)
+            time_str = _time_ago(dt)
+        except Exception:
+            pass
+
+    header = Text()
+    header.append(summary.run_id, style="bold")
+    header.append("  ")
+    header.append(f"{summary.status} {time_str}", style=status_color)
+    console.print(header)
+    console.print()
+
+    if not results:
+        console.print("[dim]No results yet.[/dim]")
+        console.print()
+        return
+
+    grouped: dict[str, list[dict]] = {}
+    for r in results:
+        agent = r.get("agent_name", "unknown")
+        if agent not in grouped:
+            grouped[agent] = []
+        grouped[agent].append(r)
+
+    for agent_name in sorted(grouped.keys()):
+        agent_results = grouped[agent_name]
+        m = calculate_metrics(agent_results)
+
+        total = m.total_cases
+        passed = total - m.failed_cases
+        accuracy = m.accuracy
+        score_color = "green" if accuracy >= 0.8 else "yellow" if accuracy >= 0.5 else "red"
+
+        console.print(f"[bold cyan]{agent_name}[/bold cyan]")
+        console.print()
+
+        bar = _progress_bar(accuracy, width=20)
+        console.print(
+            f"  Score      [{score_color}]{accuracy:>6.1%}[/{score_color}]  {bar}  {passed}/{total} passed"
+        )
+
+        console.print(
+            f"  Latency    [dim]p50[/dim] {_format_duration(m.p50_duration_ms):>6}  "
+            f"[dim]p95[/dim] {_format_duration(m.p95_duration_ms):>6}  "
+            f"[dim]avg[/dim] {_format_duration(m.avg_llm_latency_ms):>6}"
+        )
+
+        total_tokens = m.total_input_tokens + m.total_output_tokens
+        console.print(
+            f"  Tokens     [dim]in[/dim] {_format_tokens(m.total_input_tokens):>6}  "
+            f"[dim]out[/dim] {_format_tokens(m.total_output_tokens):>6}  "
+            f"[dim]total[/dim] {_format_tokens(total_tokens):>6}"
+        )
+
+        total_cost = m.total_cost_usd + m.total_judge_cost_usd
+        if m.total_judge_cost_usd > 0:
+            console.print(
+                f"  Cost       [dim]agent[/dim] ${m.total_cost_usd:>5.3f}  "
+                f"[dim]judge[/dim] ${m.total_judge_cost_usd:>5.3f}  "
+                f"[bold]total[/bold] ${total_cost:.3f}"
+            )
+        else:
+            console.print(f"  Cost       ${total_cost:.4f}")
+
+        console.print()
+
+    task_failures = [
+        r for r in results if not r.get("passed") and r.get("error_type") != "system_failure"
+    ]
+    sys_errors = len(system_errors)
+
+    if task_failures or sys_errors:
+        console.print("[bold]FAILURES[/bold]")
+        if task_failures:
+            console.print(f"  [red]{len(task_failures)} task failures[/red] (wrong answers)")
+        if sys_errors:
+            console.print(f"  [yellow]{sys_errors} system errors[/yellow] (crashes/timeouts)")
+        console.print()
+        console.print("[dim]View with: pacabench show <run> --failures[/dim]")
+        console.print("[dim]Retry with: pacabench retry <run>[/dim]")
+    else:
+        console.print("[green]All cases passed![/green]")
+
+    console.print()
+
+
+def _render_cases_table(
+    run_dir: Path, summary, failures_only: bool = False, limit: int = 50
+) -> None:
+    """Render a table of individual case results."""
+    results = load_results(run_dir)
+    system_errors = _load_system_errors(run_dir)
+
+    sys_error_ids = {e.get("case_id") for e in system_errors}
+
+    if failures_only:
+        results = [r for r in results if not r.passed or r.case_id in sys_error_ids]
+
+    console.print()
+    console.print(f"[bold]{summary.run_id}[/bold]")
+
+    if not results:
+        console.print()
+        if failures_only:
+            console.print("[green]No failures.[/green]")
+        else:
+            console.print("[dim]No cases.[/dim]")
+        console.print()
+        return
+
+    total = len(results)
+    results = results[:limit]
+
+    console.print()
+
+    table = Table(box=None, padding=(0, 2))
+    table.add_column("Case ID", style="dim", ratio=2)
+    table.add_column("Agent", ratio=2)
+    table.add_column("Status", ratio=1)
+    table.add_column("Output", ratio=4)
+    table.add_column("Duration", justify="right", ratio=1)
+
+    for r in results:
+        if r.case_id in sys_error_ids:
+            status = "[red]error[/red]"
+        elif r.passed:
+            status = "[green]pass[/green]"
+        else:
+            status = "[red]fail[/red]"
+
+        output = r.output or r.error or "-"
+        if len(output) > 60:
+            output = output[:57] + "..."
+
+        duration = f"{r.runner_duration_ms:.0f}ms" if r.runner_duration_ms else "-"
+
+        table.add_row(
+            r.case_id,
+            r.agent_name,
+            status,
+            output,
+            duration,
+        )
+
+    console.print(table)
+
+    if len(results) < total:
+        console.print(f"\n[dim]Showing {len(results)} of {total}. Use --limit to see more.[/dim]")
+    console.print()
+
+
+def _export_run_results(run_dir: Path, summary) -> dict:
+    """Export run results as a dictionary for JSON output."""
+    results = load_results(run_dir)
+    system_errors = _load_system_errors(run_dir)
+
+    grouped: dict[str, list] = {}
+    for r in results:
+        if r.agent_name not in grouped:
+            grouped[r.agent_name] = []
+        grouped[r.agent_name].append(r)
+
+    export_data = {
+        "run_id": summary.run_id,
+        "status": summary.status,
+        "start_time": summary.start_time,
+        "total_cases": summary.total_cases,
+        "completed_cases": summary.completed_cases,
+        "agents": {},
+        "system_errors": system_errors,
+    }
+
+    for agent_name in sorted(grouped.keys()):
+        agent_results = grouped[agent_name]
+        m = calculate_metrics(agent_results)
+        export_data["agents"][agent_name] = {
+            "metrics": m.model_dump(),
+            "results": [
+                {
+                    "case_id": r.case_id,
+                    "passed": r.passed,
+                    "output": r.output,
+                    "error": r.error,
+                }
+                for r in agent_results
+            ],
+        }
+
+    return export_data
 
 
 def cli_main():

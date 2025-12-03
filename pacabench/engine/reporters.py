@@ -1,8 +1,10 @@
+"""Progress reporters for benchmark runs."""
+
 from typing import Protocol
 
 from rich.live import Live
 
-from pacabench.dashboard import DashboardRenderer, DashboardState
+from pacabench.engine.dashboard import DashboardRenderer, DashboardState
 
 
 class ProgressReporter(Protocol):
@@ -24,7 +26,7 @@ class ProgressReporter(Protocol):
 class RichProgressReporter:
     """Reporter that uses Rich Live display for CLI output."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.renderer = DashboardRenderer()
         self.live: Live | None = None
 

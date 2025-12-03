@@ -1,9 +1,11 @@
+"""Local file dataset loader."""
+
 import glob
 import json
 from pathlib import Path
 
 from pacabench.datasets.base import BaseDataset
-from pacabench.types import Case
+from pacabench.models import Case
 
 
 class LocalDataset(BaseDataset):

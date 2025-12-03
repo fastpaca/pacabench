@@ -1,3 +1,5 @@
+"""Configuration models for PacaBench."""
+
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +34,6 @@ class AgentConfig(BaseModel):
 class EvaluatorConfig(BaseModel):
     type: str
     model: str | None = None
-    # Allow extra fields for flexibility
     extra_config: dict[str, Any] = Field(default_factory=dict)
 
     class Config:
@@ -64,6 +65,7 @@ class BenchmarkConfig(BaseModel):
 
 
 def load_config(path: str | Path) -> BenchmarkConfig:
+    """Load a BenchmarkConfig from a YAML file."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Configuration file not found: {path}")

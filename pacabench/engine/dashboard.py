@@ -1,3 +1,5 @@
+"""Dashboard state and rendering for live progress display."""
+
 import time
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -8,6 +10,8 @@ from rich.text import Text
 
 
 class AgentDatasetState(BaseModel):
+    """State for a single agent/dataset combination."""
+
     agent_name: str
     dataset_name: str
     status: str = "Pending"  # Pending, Running, Completed
@@ -20,13 +24,12 @@ class AgentDatasetState(BaseModel):
     last_case_id: str | None = None
     avg_latency_ms: float = 0.0
 
-    # Private attributes for running calculations
     _latency_sum: float = PrivateAttr(default=0.0)
     _latency_count: int = PrivateAttr(default=0)
 
     def update_metrics(
         self, passed: bool, error: bool, cost: float, latency_ms: float, case_id: str
-    ):
+    ) -> None:
         self.completed_cases += 1
         self.total_cost += cost
         self.last_case_id = case_id
@@ -46,17 +49,15 @@ class AgentDatasetState(BaseModel):
     def pass_rate(self) -> float:
         if self.completed_cases == 0:
             return 0.0
-        # Errors are usually excluded from pass rate denominator in some views,
-        # but let's use completed_cases (which includes errors) for robustness
-        # or just (passed + failed). Let's use passed / completed for simple "Success Rate"
         return (self.passed_cases / self.completed_cases) * 100
 
 
 class DashboardState(BaseModel):
+    """Global dashboard state."""
+
     start_time: float = Field(default_factory=time.time)
     total_cost: float = 0.0
     circuit_open: bool = False
-    # Key: f"{agent_name}/{dataset_name}"
     agent_states: dict[str, AgentDatasetState] = Field(default_factory=dict)
 
     def get_state(self, agent: str, dataset: str) -> AgentDatasetState:
@@ -65,14 +66,16 @@ class DashboardState(BaseModel):
             self.agent_states[key] = AgentDatasetState(agent_name=agent, dataset_name=dataset)
         return self.agent_states[key]
 
-    def init_agent(self, agent: str, dataset: str, total_cases: int):
+    def init_agent(self, agent: str, dataset: str, total_cases: int) -> None:
         s = self.get_state(agent, dataset)
         s.total_cases = total_cases
         s.status = "Pending"
 
 
 class DashboardRenderer:
-    def __init__(self):
+    """Renders dashboard state to Rich output."""
+
+    def __init__(self) -> None:
         self.overall_progress = Progress(
             TextColumn("[bold blue]{task.description}"),
             BarColumn(bar_width=None),
@@ -83,7 +86,6 @@ class DashboardRenderer:
         self.overall_task_id = self.overall_progress.add_task("Overall Progress", total=0)
 
     def render(self, state: DashboardState) -> Group:
-        # Update Overall Progress
         total_cases = 0
         completed_cases = 0
         for s in state.agent_states.values():
@@ -94,15 +96,14 @@ class DashboardRenderer:
             self.overall_task_id, total=total_cases, completed=completed_cases
         )
 
-        # Header Stats
         elapsed = time.time() - state.start_time
         header_text = (
             f"[bold]Elapsed:[/bold] {elapsed:.1f}s  "
             f"[bold]Total Cost:[/bold] ${state.total_cost:.4f}  "
-            f"[bold]Circuit Breaker:[/bold] {'[red]TRIPPED[/red]' if state.circuit_open else '[green]OK[/green]'}"
+            f"[bold]Circuit Breaker:[/bold] "
+            f"{'[red]TRIPPED[/red]' if state.circuit_open else '[green]OK[/green]'}"
         )
 
-        # Agent Table
         table = Table(expand=True, box=None, padding=(0, 1))
         table.add_column("Agent / Dataset", style="cyan", ratio=3)
         table.add_column("Status", ratio=2)
@@ -112,23 +113,19 @@ class DashboardRenderer:
         table.add_column("Latency (Avg)", justify="right", ratio=2)
         table.add_column("Last Case", style="dim", ratio=2)
 
-        # Sort by agent name
         sorted_keys = sorted(state.agent_states.keys())
 
         for key in sorted_keys:
             s = state.agent_states[key]
 
-            # Progress string
             prog_str = f"{s.completed_cases}/{s.total_cases}"
 
-            # Status style
             status_style = "dim"
             if s.status == "Running":
                 status_style = "bold green"
             elif s.status == "Completed":
                 status_style = "bold blue"
 
-            # Pass rate color
             pass_rate = s.pass_rate
             pass_color = "green"
             if pass_rate < 50:

@@ -1,9 +1,11 @@
+"""HuggingFace dataset loader."""
+
 import logging
 
 from datasets import load_dataset as hf_load_dataset
 
 from pacabench.datasets.base import BaseDataset
-from pacabench.types import Case
+from pacabench.models import Case
 
 logger = logging.getLogger(__name__)
 
