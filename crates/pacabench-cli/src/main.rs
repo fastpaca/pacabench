@@ -5,6 +5,7 @@ mod progress;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use handlebars::Handlebars;
 use pacabench_core::config::ConfigOverrides;
 use pacabench_core::metrics::aggregate_results;
 use pacabench_core::persistence::{
@@ -14,10 +15,16 @@ use pacabench_core::types::ErrorType;
 use pacabench_core::{Benchmark, CaseResult, Config};
 use pricing::calculate_cost_from_metrics;
 use progress::ProgressDisplay;
+use rust_embed::Embed;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use toml_edit::DocumentMut;
+
+#[derive(Embed)]
+#[folder = "templates/init/"]
+struct InitTemplates;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -106,14 +113,17 @@ enum Command {
         runs_dir: Option<String>,
     },
 
-    /// Initialize a new pacabench.yaml configuration file.
+    /// Initialize a new pacabench project with example files.
     Init {
-        /// Name for the benchmark.
-        #[arg(long, default_value = "my-benchmark")]
-        name: String,
-        /// Output path.
-        #[arg(short, long, default_value = "pacabench.yaml")]
-        output: String,
+        /// Name for the benchmark. Defaults to project name from pyproject.toml if present.
+        #[arg(long)]
+        name: Option<String>,
+        /// Overwrite existing files.
+        #[arg(long)]
+        force: bool,
+        /// Skip updating pyproject.toml.
+        #[arg(long)]
+        no_pyproject: bool,
     },
 }
 
@@ -121,32 +131,16 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_path = PathBuf::from(&cli.config);
 
-    if let Some(Command::Init { name, output }) = cli.command {
-        let template = format!(
-            r#"name: {name}
-version: "0.1.0"
-
-config:
-  concurrency: 4
-  timeout_seconds: 60
-  max_retries: 2
-  proxy:
-    enabled: true
-
-agents:
-  - name: my-agent
-    command: python agent.py
-
-datasets:
-  - name: my-dataset
-    source: ./data
-
-output:
-  directory: ./runs
-"#
-        );
-        fs::write(&output, template)?;
-        println!("Created {output}");
+    if let Some(Command::Init {
+        name,
+        force,
+        no_pyproject,
+    }) = cli.command
+    {
+        // Determine project name: explicit --name > pyproject.toml > default
+        let project_name = name
+            .unwrap_or_else(|| read_pyproject_name().unwrap_or_else(|| "my-benchmark".to_string()));
+        init_project(&project_name, force, !no_pyproject)?;
         return Ok(());
     }
 
@@ -774,6 +768,172 @@ fn build_export_markdown(
     }
 
     md
+}
+
+/// Read project name from pyproject.toml if it exists.
+fn read_pyproject_name() -> Option<String> {
+    let path = PathBuf::from("pyproject.toml");
+    let content = fs::read_to_string(&path).ok()?;
+    let doc: DocumentMut = content.parse().ok()?;
+    doc.get("project")?
+        .get("name")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+fn init_project(name: &str, force: bool, update_pyproject: bool) -> Result<()> {
+    let mut created_files = Vec::new();
+
+    // Render pacabench.yaml from template
+    let yaml_template = InitTemplates::get("pacabench.yaml.hbs")
+        .ok_or_else(|| anyhow!("template pacabench.yaml.hbs not found"))?;
+    let yaml_content = std::str::from_utf8(&yaml_template.data)?;
+
+    let mut handlebars = Handlebars::new();
+    handlebars.set_strict_mode(true);
+    let rendered =
+        handlebars.render_template(yaml_content, &serde_json::json!({ "name": name }))?;
+
+    let config_path = PathBuf::from("pacabench.yaml");
+    if config_path.exists() && !force {
+        return Err(anyhow!(
+            "pacabench.yaml already exists. Use --force to overwrite."
+        ));
+    }
+    fs::write(&config_path, rendered)?;
+    created_files.push("pacabench.yaml");
+
+    // Create agents directory and copy qa_agent.py
+    let agents_dir = PathBuf::from("agents");
+    if !agents_dir.exists() {
+        fs::create_dir_all(&agents_dir)?;
+    }
+    let agent_path = agents_dir.join("qa_agent.py");
+    if agent_path.exists() && !force {
+        return Err(anyhow!(
+            "agents/qa_agent.py already exists. Use --force to overwrite."
+        ));
+    }
+    let agent_template = InitTemplates::get("agents/qa_agent.py")
+        .ok_or_else(|| anyhow!("template agents/qa_agent.py not found"))?;
+    fs::write(&agent_path, agent_template.data.as_ref())?;
+    created_files.push("agents/qa_agent.py");
+
+    // Create data directory and copy questions.jsonl
+    let data_dir = PathBuf::from("data");
+    if !data_dir.exists() {
+        fs::create_dir_all(&data_dir)?;
+    }
+    let data_path = data_dir.join("questions.jsonl");
+    if data_path.exists() && !force {
+        return Err(anyhow!(
+            "data/questions.jsonl already exists. Use --force to overwrite."
+        ));
+    }
+    let data_template = InitTemplates::get("data/questions.jsonl")
+        .ok_or_else(|| anyhow!("template data/questions.jsonl not found"))?;
+    fs::write(&data_path, data_template.data.as_ref())?;
+    created_files.push("data/questions.jsonl");
+
+    // Update .gitignore
+    let gitignore_path = PathBuf::from(".gitignore");
+    let gitignore_content = InitTemplates::get("gitignore.txt")
+        .ok_or_else(|| anyhow!("template gitignore.txt not found"))?;
+    let runs_entry = std::str::from_utf8(&gitignore_content.data)?.trim();
+
+    if gitignore_path.exists() {
+        let existing = fs::read_to_string(&gitignore_path)?;
+        if !existing.contains("runs/") {
+            fs::write(&gitignore_path, format!("{existing}\n{runs_entry}\n"))?;
+            created_files.push(".gitignore (updated)");
+        }
+    } else {
+        fs::write(&gitignore_path, format!("{runs_entry}\n"))?;
+        created_files.push(".gitignore");
+    }
+
+    // Update pyproject.toml if requested
+    if update_pyproject {
+        let pyproject_path = PathBuf::from("pyproject.toml");
+        if pyproject_path.exists() {
+            update_pyproject_toml(&pyproject_path)?;
+            created_files.push("pyproject.toml (updated)");
+        } else {
+            println!(
+                "Note: No pyproject.toml found. Add pacabench manually:\n  \
+                 uv add --dev pacabench\n  or\n  \
+                 pip install pacabench"
+            );
+        }
+    }
+
+    // Print success message
+    println!("Created pacabench project:");
+    for file in &created_files {
+        println!("  {file}");
+    }
+    println!("\nNext steps:");
+    println!("  1. Set your API key: export OPENAI_API_KEY=sk-...");
+    println!("  2. Install dependencies: pip install openai");
+    println!("  3. Run: uv run pacabench run --limit 3");
+    println!("\nSee https://github.com/fastpaca/pacabench for docs.");
+
+    Ok(())
+}
+
+fn update_pyproject_toml(path: &PathBuf) -> Result<()> {
+    let content = fs::read_to_string(path)?;
+    let mut doc: DocumentMut = content.parse()?;
+
+    // Try to add to [dependency-groups.dev] (uv style) - it's an array directly
+    if let Some(dep_groups) = doc.get_mut("dependency-groups") {
+        if let Some(dep_groups_table) = dep_groups.as_table_mut() {
+            if let Some(dev) = dep_groups_table.get_mut("dev") {
+                if let Some(dev_array) = dev.as_array_mut() {
+                    let has_pacabench = dev_array
+                        .iter()
+                        .any(|v| v.as_str().map(|s| s == "pacabench").unwrap_or(false));
+                    if !has_pacabench {
+                        dev_array.push("pacabench");
+                    }
+                    fs::write(path, doc.to_string())?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Fallback: try [project.optional-dependencies.dev]
+    if let Some(project) = doc.get_mut("project") {
+        if let Some(project_table) = project.as_table_mut() {
+            if let Some(opt_deps) = project_table.get_mut("optional-dependencies") {
+                if let Some(opt_deps_table) = opt_deps.as_table_mut() {
+                    if let Some(dev) = opt_deps_table.get_mut("dev") {
+                        if let Some(dev_array) = dev.as_array_mut() {
+                            let has_pacabench = dev_array
+                                .iter()
+                                .any(|v| v.as_str().map(|s| s == "pacabench").unwrap_or(false));
+                            if !has_pacabench {
+                                dev_array.push("pacabench");
+                            }
+                            fs::write(path, doc.to_string())?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If neither exists, add dependency-groups.dev (uv style)
+    let mut dep_groups = toml_edit::Table::new();
+    let mut dev_array = toml_edit::Array::new();
+    dev_array.push("pacabench");
+    dep_groups.insert("dev", toml_edit::value(dev_array));
+    doc.insert("dependency-groups", toml_edit::Item::Table(dep_groups));
+    fs::write(path, doc.to_string())?;
+
+    Ok(())
 }
 
 fn resolve_run_id(runs_dir: &std::path::Path, partial: &str) -> Result<String> {

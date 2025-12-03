@@ -1,0 +1,28 @@
+name: {{name}}
+description: Example benchmark
+version: "0.1.0"
+
+config:
+  concurrency: 4
+  timeout_seconds: 120
+  proxy:
+    enabled: true
+
+agents:
+  - name: qa-agent
+    command: python agents/qa_agent.py
+    env:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+datasets:
+  - name: sample-questions
+    source: ./data/questions.jsonl
+    input_map:
+      input: "question"
+      expected: "answer"
+    evaluator:
+      type: llm_judge
+      model: gpt-4o-mini
+
+output:
+  directory: ./runs
