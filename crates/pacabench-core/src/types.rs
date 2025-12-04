@@ -20,10 +20,6 @@ use std::collections::HashMap;
 /// Metadata map for extensible case data (e.g., multiple choice options).
 pub type Metadata = HashMap<String, Value>;
 
-// ============================================================================
-// RUN STATUS
-// ============================================================================
-
 /// Explicit state for benchmark runs.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -43,10 +39,6 @@ impl RunStatus {
         matches!(self, Self::Completed | Self::Failed | Self::Aborted)
     }
 }
-
-// ============================================================================
-// ERROR TYPE
-// ============================================================================
 
 /// Classification of errors during case execution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -71,10 +63,6 @@ impl ErrorType {
         matches!(self, Self::SystemFailure | Self::FatalError)
     }
 }
-
-// ============================================================================
-// LLM METRICS (typed, not HashMap)
-// ============================================================================
 
 /// Metrics from LLM API calls collected by the proxy.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -106,10 +94,6 @@ impl LlmMetrics {
     }
 }
 
-// ============================================================================
-// JUDGE METRICS (typed, not HashMap)
-// ============================================================================
-
 /// Metrics from evaluator LLM calls (e.g., LLM-as-judge).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct JudgeMetrics {
@@ -127,10 +111,6 @@ impl JudgeMetrics {
     }
 }
 
-// ============================================================================
-// CASE
-// ============================================================================
-
 /// A single benchmark case to evaluate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Case {
@@ -144,10 +124,6 @@ pub struct Case {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: Metadata,
 }
-
-// ============================================================================
-// EVALUATION RESULT
-// ============================================================================
 
 /// Result of evaluating a runner output.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -182,10 +158,6 @@ impl EvaluationResult {
         }
     }
 }
-
-// ============================================================================
-// CASE RESULT
-// ============================================================================
 
 /// Combined result of running and evaluating a case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -229,10 +201,6 @@ impl CaseResult {
     }
 }
 
-// ============================================================================
-// CASE KEY
-// ============================================================================
-
 /// Unique identifier for a case within a run (agent + dataset + case_id).
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CaseKey {
@@ -254,10 +222,6 @@ impl CaseKey {
         }
     }
 }
-
-// ============================================================================
-// AGGREGATED METRICS
-// ============================================================================
 
 /// Aggregated metrics across all cases in a run.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -282,10 +246,6 @@ pub struct AggregatedMetrics {
     pub avg_attempts: f64,
     pub max_attempts: u32,
 }
-
-// ============================================================================
-// EVENTS
-// ============================================================================
 
 /// Events emitted during benchmark execution.
 ///
@@ -346,10 +306,6 @@ pub enum Event {
     /// System error occurred.
     Error { message: String },
 }
-
-// ============================================================================
-// COMMANDS
-// ============================================================================
 
 /// Commands to control benchmark execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

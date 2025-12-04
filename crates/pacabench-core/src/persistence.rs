@@ -11,10 +11,6 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-// ============================================================================
-// RUN METADATA
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunMetadata {
     pub run_id: String,
@@ -63,10 +59,6 @@ impl RunMetadata {
     }
 }
 
-// ============================================================================
-// ERROR ENTRY
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorEntry {
     pub timestamp: String,
@@ -81,10 +73,6 @@ pub struct ErrorEntry {
     pub error: Option<String>,
 }
 
-// ============================================================================
-// RUN SUMMARY (for listing runs)
-// ============================================================================
-
 #[derive(Debug, Clone)]
 pub struct RunSummary {
     pub run_id: String,
@@ -97,10 +85,6 @@ pub struct RunSummary {
     pub datasets: Vec<String>,
     pub agents: Vec<String>,
 }
-
-// ============================================================================
-// RUN STORE
-// ============================================================================
 
 #[derive(Debug)]
 pub struct RunStore {
@@ -200,10 +184,6 @@ impl RunStore {
         Ok(entries)
     }
 }
-
-// ============================================================================
-// UTILITIES
-// ============================================================================
 
 pub fn iso_timestamp_now() -> String {
     Utc::now().to_rfc3339()

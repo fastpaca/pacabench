@@ -19,20 +19,12 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::info;
 
-// ============================================================================
-// CONFIG
-// ============================================================================
-
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     pub port: u16,
     pub upstream_base_url: String,
     pub api_key: Option<String>,
 }
-
-// ============================================================================
-// METRICS COLLECTOR (atomics, not mutex)
-// ============================================================================
 
 #[derive(Debug, Default)]
 pub struct MetricsCollector {
@@ -99,10 +91,6 @@ impl MetricsCollector {
     }
 }
 
-// ============================================================================
-// PROXY SERVER
-// ============================================================================
-
 #[derive(Clone)]
 struct ProxyState {
     metrics: Arc<MetricsCollector>,
@@ -161,10 +149,6 @@ impl Drop for ProxyServer {
         self.handle.abort();
     }
 }
-
-// ============================================================================
-// HANDLERS
-// ============================================================================
 
 async fn handle_chat(
     State(state): State<ProxyState>,

@@ -18,10 +18,6 @@ pub trait Evaluator: Send + Sync {
     fn kind(&self) -> &str;
 }
 
-// ============================================================================
-// EXACT MATCH
-// ============================================================================
-
 pub struct ExactMatchEvaluator;
 
 #[async_trait]
@@ -48,10 +44,6 @@ impl Evaluator for ExactMatchEvaluator {
         "exact_match"
     }
 }
-
-// ============================================================================
-// F1 SCORE
-// ============================================================================
 
 pub struct F1Evaluator {
     threshold: f64,
@@ -137,10 +129,6 @@ impl Evaluator for F1Evaluator {
         "f1"
     }
 }
-
-// ============================================================================
-// MULTIPLE CHOICE
-// ============================================================================
 
 pub struct MultipleChoiceEvaluator {
     fallback: MultipleChoiceFallback,
@@ -276,10 +264,6 @@ impl Evaluator for MultipleChoiceEvaluator {
         "multiple_choice"
     }
 }
-
-// ============================================================================
-// LLM JUDGE
-// ============================================================================
 
 pub struct LlmJudgeEvaluator {
     model: String,
@@ -434,10 +418,6 @@ impl Evaluator for LlmJudgeEvaluator {
         "llm_judge"
     }
 }
-
-// ============================================================================
-// FACTORY
-// ============================================================================
 
 pub fn get_evaluator(cfg: &EvaluatorConfig) -> Result<Arc<dyn Evaluator>> {
     match cfg {

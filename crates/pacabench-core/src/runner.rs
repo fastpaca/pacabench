@@ -24,10 +24,6 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-// ============================================================================
-// RUNNER OUTPUT
-// ============================================================================
-
 /// Output from running a case through an agent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct RunnerOutput {
@@ -306,10 +302,6 @@ impl Drop for CommandRunner {
         self.kill_process();
     }
 }
-
-// ============================================================================
-// REQUEST/RESPONSE TYPES
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize)]
 struct RunnerRequest {

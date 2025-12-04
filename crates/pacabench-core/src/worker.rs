@@ -24,10 +24,6 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, info, warn};
 
-// ============================================================================
-// WORK ITEM
-// ============================================================================
-
 /// A single unit of work: run a case through an agent.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkItem {
@@ -56,10 +52,6 @@ impl WorkItem {
         CaseKey::new(&self.agent_name, &self.dataset_name, &self.case_id)
     }
 }
-
-// ============================================================================
-// WORK RESULT
-// ============================================================================
 
 /// Result from processing a work item.
 #[derive(Clone, Debug)]
@@ -104,10 +96,6 @@ impl WorkResult {
         }
     }
 }
-
-// ============================================================================
-// WORKER POOL
-// ============================================================================
 
 pub struct WorkerPool {
     work_txs: HashMap<String, Sender<WorkItem>>,
@@ -238,10 +226,6 @@ impl WorkerPool {
         }
     }
 }
-
-// ============================================================================
-// WORKER
-// ============================================================================
 
 #[derive(Clone)]
 struct WorkerConfig {

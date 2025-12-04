@@ -32,10 +32,6 @@ impl From<figment::Error> for ConfigError {
     }
 }
 
-// ============================================================================
-// DEFAULTS
-// ============================================================================
-
 fn default_proxy_enabled() -> bool {
     true
 }
@@ -84,10 +80,6 @@ fn default_judge_backoff_ms() -> u64 {
     200
 }
 
-// ============================================================================
-// PROXY CONFIG
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     #[serde(default = "default_proxy_enabled")]
@@ -107,10 +99,6 @@ impl Default for ProxyConfig {
         }
     }
 }
-
-// ============================================================================
-// GLOBAL CONFIG
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -138,10 +126,6 @@ impl Default for GlobalConfig {
     }
 }
 
-// ============================================================================
-// AGENT CONFIG
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
@@ -153,10 +137,6 @@ pub struct AgentConfig {
     #[serde(default)]
     pub env: HashMap<String, String>,
 }
-
-// ============================================================================
-// EVALUATOR CONFIG
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -197,10 +177,6 @@ pub enum MultipleChoiceFallback {
     None,
 }
 
-// ============================================================================
-// DATASET CONFIG
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatasetConfig {
     pub name: String,
@@ -215,10 +191,6 @@ pub struct DatasetConfig {
     pub evaluator: Option<EvaluatorConfig>,
 }
 
-// ============================================================================
-// OUTPUT CONFIG
-// ============================================================================
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
     #[serde(default = "default_output_directory")]
@@ -232,10 +204,6 @@ impl Default for OutputConfig {
         }
     }
 }
-
-// ============================================================================
-// CONFIG
-// ============================================================================
 
 /// The main configuration for a benchmark.
 ///
@@ -341,10 +309,6 @@ impl Config {
         }
     }
 }
-
-// ============================================================================
-// INTERNAL: Raw YAML model
-// ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RawConfig {
