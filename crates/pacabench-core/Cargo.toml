@@ -31,6 +31,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 serde_qs = "0.12"
 reqwest = { version = "0.12", features = ["json", "gzip", "stream", "blocking"] }
 tokio-stream = { version = "0.1", features = ["io-util"] }
+tokio-util = { version = "0.7", features = ["time"] }
 futures-util = "0.3"
 tiktoken-rs = "0.5"
 figment = { version = "0.10", features = ["yaml", "env"] }

@@ -1,7 +1,7 @@
 //! Benchmark - the main entry point for running benchmarks.
 
-use crate::config::Config;
-use crate::datasets::{get_dataset_loader, DatasetContext};
+use crate::config::{AgentConfig, Config};
+use crate::datasets::{get_dataset_loader, DatasetContext, DatasetLoader};
 use crate::error::{PacabenchError, Result};
 use crate::metrics::aggregate_results;
 use crate::persistence::{
@@ -9,13 +9,15 @@ use crate::persistence::{
 };
 use crate::retry::RetryPolicy;
 use crate::state::RunState;
-use crate::types::{AggregatedMetrics, CaseKey, Command, Event, RunStatus};
-use crate::worker::{WorkItem, WorkerPool};
+use crate::types::{AggregatedMetrics, CaseKey, CaseResult, Command, Event, RunStatus};
+use crate::worker::{WorkItem, WorkResult, WorkerPool};
 use anyhow::anyhow;
 use futures_util::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
+use tokio_util::time::DelayQueue;
 use tracing::info;
 
 /// Result of a benchmark run.
@@ -33,6 +35,17 @@ pub struct Benchmark {
     event_tx: broadcast::Sender<Event>,
     cmd_tx: mpsc::UnboundedSender<Command>,
     cmd_rx: Option<mpsc::UnboundedReceiver<Command>>,
+}
+
+/// Everything needed to execute a benchmark run, prepared from config.
+struct PreparedRun {
+    run_id: String,
+    store: RunStore,
+    state: RunState,
+    metadata: RunMetadata,
+    passed: HashSet<CaseKey>,
+    attempt_counts: HashMap<CaseKey, u32>,
+    retry_policy: RetryPolicy,
 }
 
 impl Benchmark {
@@ -63,12 +76,65 @@ impl Benchmark {
 
     /// Run the benchmark.
     pub async fn run(mut self, run_id: Option<String>, limit: Option<usize>) -> Result<RunResult> {
-        let mut cmd_rx = self
+        let cmd_rx = self
             .cmd_rx
             .take()
             .ok_or_else(|| PacabenchError::Internal(anyhow!("run() can only be called once")))?;
 
-        // Phase 1: Initialize
+        // Phase 1: Prepare
+        let (prepared, dataset_loaders) = self.prepare_run(run_id, limit).await?;
+        self.emit_run_started(&prepared);
+
+        if prepared.state.total_cases() == 0 {
+            return self
+                .finalize_run(prepared.state, prepared.metadata, prepared.store, false)
+                .await;
+        }
+
+        // Phase 2: Start workers and producer
+        let concurrency = self.config.global.concurrency.max(1);
+        let queue_capacity = concurrency.saturating_mul(4).max(1);
+
+        let pool = WorkerPool::start(
+            concurrency,
+            queue_capacity,
+            &self.config,
+            self.event_tx.clone(),
+        )
+        .await?;
+
+        let (work_tx, work_rx) =
+            mpsc::channel::<WorkItem>(queue_capacity * self.config.agents.len().max(1));
+
+        let producer = spawn_case_producer(
+            dataset_loaders,
+            self.config.agents.clone(),
+            prepared.run_id.clone(),
+            Arc::new(prepared.passed.clone()),
+            Arc::new(prepared.attempt_counts.clone()),
+            work_tx,
+            limit,
+        );
+
+        // Phase 3: Event loop (consumes prepared, returns final state)
+        let (state, metadata, store, aborted) = self
+            .run_event_loop(cmd_rx, pool, work_rx, prepared, producer)
+            .await?;
+
+        // Phase 4: Finalize
+        self.finalize_run(state, metadata, store, aborted).await
+    }
+
+    /// Prepare all resources needed for a benchmark run.
+    ///
+    /// Returns the prepared run state and the dataset loaders (separate because
+    /// loaders are only needed for producer setup, not during the event loop).
+    async fn prepare_run(
+        &self,
+        run_id: Option<String>,
+        limit: Option<usize>,
+    ) -> Result<(PreparedRun, Vec<(String, Box<dyn DatasetLoader>)>)> {
+        // Generate run ID and create storage
         let run_id = run_id.unwrap_or_else(|| generate_run_id(&self.config.name));
         let run_dir = self.config.runs_dir.join(&run_id);
         std::fs::create_dir_all(&run_dir)?;
@@ -82,31 +148,38 @@ impl Benchmark {
             .map(|d| d.name.clone())
             .collect();
 
-        // Build dataset loaders up front.
-        let mut dataset_loaders = Vec::new();
-        for ds in &self.config.datasets {
-            let ctx = DatasetContext {
-                root_dir: self.config.root_dir.clone(),
-                cache_dir: self.config.cache_dir.clone(),
-            };
-            let loader = get_dataset_loader(ds.clone(), ctx)
-                .map_err(|e| PacabenchError::dataset(ds.name.clone(), e))?;
-            dataset_loaders.push((ds.name.clone(), loader));
-        }
+        // Build dataset loaders
+        let dataset_loaders: Vec<(String, Box<dyn DatasetLoader>)> = self
+            .config
+            .datasets
+            .iter()
+            .map(|ds| {
+                let ctx = DatasetContext {
+                    root_dir: self.config.root_dir.clone(),
+                    cache_dir: self.config.cache_dir.clone(),
+                };
+                get_dataset_loader(ds.clone(), ctx)
+                    .map(|loader| (ds.name.clone(), loader))
+                    .map_err(|e| PacabenchError::dataset(ds.name.clone(), e))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let retry_policy = RetryPolicy::new(self.config.global.max_retries as u32, 100);
 
-        // Check for resume and pull prior results.
-        let mut existing_results = Vec::new();
-        if let Some(meta) = store.read_metadata()? {
-            if !meta.status.is_terminal() {
-                existing_results = store.load_results()?;
-                let completed = existing_results.iter().filter(|r| r.passed).count();
+        // Check for resume and pull prior results
+        let existing_results = store
+            .read_metadata()?
+            .filter(|meta| !meta.status.is_terminal())
+            .map(|_| {
+                let results = store.load_results()?;
+                let completed = results.iter().filter(|r| r.passed).count();
                 info!("Resuming run with {} completed cases", completed);
-            }
-        }
+                Ok::<_, PacabenchError>(results)
+            })
+            .transpose()?
+            .unwrap_or_default();
 
-        // Count dataset cases without materializing them.
+        // Count dataset cases
         let mut dataset_case_counts: HashMap<String, u64> = HashMap::new();
         for (name, loader) in dataset_loaders.iter() {
             let count = loader
@@ -119,10 +192,10 @@ impl Benchmark {
         let total_per_agent: u64 = dataset_case_counts.values().copied().sum();
         let total_cases = total_per_agent * agent_names.len() as u64;
 
-        let mut agent_totals: HashMap<String, u64> = HashMap::new();
-        for agent in &agent_names {
-            agent_totals.insert(agent.clone(), total_per_agent);
-        }
+        let agent_totals: HashMap<String, u64> = agent_names
+            .iter()
+            .map(|agent| (agent.clone(), total_per_agent))
+            .collect();
 
         let attempt_counts: HashMap<CaseKey, u32> = existing_results
             .iter()
@@ -135,12 +208,12 @@ impl Benchmark {
             .collect();
 
         // Initialize state
-        let mut state = RunState::new(
+        let state = RunState::new(
             run_id.clone(),
             retry_policy.max_retries,
             total_cases,
-            agent_totals.clone(),
-            existing_results.clone(),
+            agent_totals,
+            existing_results,
         );
 
         // Initialize metadata
@@ -148,8 +221,8 @@ impl Benchmark {
         let mut metadata = RunMetadata::new(
             run_id.clone(),
             config_fingerprint,
-            agent_names.clone(),
-            dataset_names.clone(),
+            agent_names,
+            dataset_names,
             state.total_cases(),
         );
         metadata.completed_cases = state.completed_cases();
@@ -167,93 +240,54 @@ impl Benchmark {
             }
         }
 
-        // Emit run started
-        self.emit(Event::RunStarted {
-            run_id: run_id.clone(),
-            total_cases: state.total_cases(),
-            resuming: state.completed_cases() > 0,
-            completed_cases: state.completed_cases(),
-            agents: agent_names.clone(),
-            datasets: dataset_names.clone(),
-            agent_totals: state.agent_totals(),
-            agent_completed: state.agent_completed(),
-        });
-
-        // Handle empty run
-        if state.total_cases() == 0 {
-            return self.finalize_run(state, metadata, store, false).await;
-        }
-
-        // Phase 3: Execute
-        state.transition(RunStatus::Running);
-
-        let concurrency = self.config.global.concurrency.max(1);
-        let queue_capacity = concurrency.saturating_mul(4).max(1);
-        let mut pool = WorkerPool::start(
-            concurrency,
-            queue_capacity,
-            &self.config,
-            self.event_tx.clone(),
-        )
-        .await?;
-
-        // Producer: stream cases from disk and feed work items via bounded channel.
-        let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<WorkItem>(
-            queue_capacity * self.config.agents.len().max(1),
-        );
-
-        let producer_handle = {
-            let mut dataset_loaders = dataset_loaders;
-            let agents = self.config.agents.clone();
-            let run_id = run_id.clone();
-            let passed = Arc::new(passed);
-            let attempts = Arc::new(attempt_counts);
-
-            tokio::spawn(async move {
-                for (dataset_name, loader) in dataset_loaders.drain(..) {
-                    let mut stream = loader
-                        .stream_cases(limit)
-                        .await
-                        .map_err(|e| PacabenchError::dataset(dataset_name.clone(), e))?;
-
-                    while let Some(case) = stream.next().await {
-                        let case =
-                            case.map_err(|e| PacabenchError::dataset(dataset_name.clone(), e))?;
-
-                        for agent in &agents {
-                            let key = CaseKey::new(&agent.name, &case.dataset_name, &case.case_id);
-                            if passed.contains(&key) {
-                                continue;
-                            }
-
-                            let attempt = attempts.get(&key).copied().unwrap_or(0) + 1;
-                            let item = WorkItem {
-                                run_id: run_id.clone(),
-                                agent_name: agent.name.clone(),
-                                dataset_name: case.dataset_name.clone(),
-                                case_id: case.case_id.clone(),
-                                case: case.clone(),
-                                attempt,
-                            };
-
-                            if work_tx.send(item).await.is_err() {
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-
-                Ok::<(), PacabenchError>(())
-            })
+        let prepared = PreparedRun {
+            run_id,
+            store,
+            state,
+            metadata,
+            passed,
+            attempt_counts,
+            retry_policy,
         };
 
+        Ok((prepared, dataset_loaders))
+    }
+
+    /// Emit the RunStarted event.
+    fn emit_run_started(&self, prepared: &PreparedRun) {
+        self.emit(Event::RunStarted {
+            run_id: prepared.run_id.clone(),
+            total_cases: prepared.state.total_cases(),
+            resuming: prepared.state.completed_cases() > 0,
+            completed_cases: prepared.state.completed_cases(),
+            agents: prepared.metadata.agents.clone(),
+            datasets: prepared.metadata.datasets.clone(),
+            agent_totals: prepared.state.agent_totals(),
+            agent_completed: prepared.state.agent_completed(),
+        });
+    }
+
+    /// Main event loop: process commands, results, retries, and new work items.
+    ///
+    /// Consumes all inputs and returns the final state for finalization.
+    async fn run_event_loop(
+        &self,
+        mut cmd_rx: mpsc::UnboundedReceiver<Command>,
+        mut pool: WorkerPool,
+        mut work_rx: mpsc::Receiver<WorkItem>,
+        mut prepared: PreparedRun,
+        producer: JoinHandle<Result<()>>,
+    ) -> Result<(RunState, RunMetadata, RunStore, bool)> {
+        prepared.state.transition(RunStatus::Running);
+
+        let mut retry_queue: DelayQueue<WorkItem> = DelayQueue::new();
         let mut aborted = false;
         let mut production_done = false;
-        let mut pending_count = state.pending_count();
+        let mut pending_count = prepared.state.pending_count();
 
-        // Process results and incoming work concurrently.
-        while (!production_done || pending_count > 0) && !aborted {
+        while (!production_done || pending_count > 0 || !retry_queue.is_empty()) && !aborted {
             tokio::select! {
+                // Handle commands (stop/abort)
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {
                         Command::Stop { reason } => {
@@ -267,49 +301,26 @@ impl Benchmark {
                     }
                 }
 
+                // Handle completed work results
                 Some(result) = pool.recv(), if pending_count > 0 => {
-                    self.emit(Event::CaseCompleted {
-                        run_id: run_id.clone(),
-                        case_id: result.item.case_id.clone(),
-                        agent: result.item.agent_name.clone(),
-                        dataset: result.item.dataset_name.clone(),
-                        passed: result.passed,
-                        is_error: result.error_type.is_error(),
-                        attempt: result.item.attempt,
-                        duration_ms: result.duration_ms,
-                        input_tokens: result.llm_metrics.input_tokens,
-                        output_tokens: result.llm_metrics.output_tokens,
-                    });
-
-                    let case_result = result.to_case_result(iso_timestamp_now());
-                    let needs_retry = state.mark_completed(case_result.clone());
-
-                    if needs_retry {
-                        let backoff = retry_policy.backoff_duration(result.item.attempt);
-                        tokio::time::sleep(backoff).await;
-
-                        let mut retry_item = result.item.clone();
-                        retry_item.attempt += 1;
-                        pool.push(retry_item).await;
-                    } else {
-                        pending_count = state.pending_count();
-                        store.append_result(&case_result)?;
-
-                        metadata.completed_cases = state.completed_cases();
-                        if result.error_type.is_error() {
-                            metadata.system_error_count += 1;
-                        }
-                        store.write_metadata(&metadata)?;
-                    }
+                    self.handle_result(result, &mut prepared, &mut retry_queue).await?;
+                    pending_count = prepared.state.pending_count();
                 }
 
+                // Handle retries that are ready
+                Some(expired) = retry_queue.next() => {
+                    let item = expired.into_inner();
+                    pool.push(item).await;
+                }
+
+                // Handle new work items from producer
                 recv = work_rx.recv(), if !production_done => {
                     match recv {
                         Some(item) => {
                             let attempt = item.attempt;
                             let key = item.key();
-                            state.register_case(key, attempt);
-                            pending_count = state.pending_count();
+                            prepared.state.register_case(key, attempt);
+                            pending_count = prepared.state.pending_count();
                             pool.push(item).await;
                         }
                         None => {
@@ -320,9 +331,11 @@ impl Benchmark {
             }
         }
 
+        // Cleanup
         drop(work_rx);
+        pool.shutdown().await;
 
-        match producer_handle.await {
+        match producer.await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
             Err(e) => {
@@ -332,8 +345,48 @@ impl Benchmark {
             }
         }
 
-        pool.shutdown().await;
-        self.finalize_run(state, metadata, store, aborted).await
+        Ok((prepared.state, prepared.metadata, prepared.store, aborted))
+    }
+
+    /// Handle a single completed work result.
+    async fn handle_result(
+        &self,
+        result: WorkResult,
+        prepared: &mut PreparedRun,
+        retry_queue: &mut DelayQueue<WorkItem>,
+    ) -> Result<()> {
+        self.emit(Event::CaseCompleted {
+            run_id: prepared.run_id.clone(),
+            case_id: result.item.case_id.clone(),
+            agent: result.item.agent_name.clone(),
+            dataset: result.item.dataset_name.clone(),
+            passed: result.passed,
+            is_error: result.error_type.is_error(),
+            attempt: result.item.attempt,
+            duration_ms: result.duration_ms,
+            input_tokens: result.llm_metrics.input_tokens,
+            output_tokens: result.llm_metrics.output_tokens,
+        });
+
+        let case_result = result.to_case_result(iso_timestamp_now());
+        let needs_retry = prepared.state.mark_completed(case_result.clone());
+
+        if needs_retry {
+            let backoff = prepared.retry_policy.backoff_duration(result.item.attempt);
+            let retry_item = result.item.retry();
+            retry_queue.insert(retry_item, backoff);
+        } else {
+            // Persist final result
+            prepared.store.append_result(&case_result)?;
+
+            prepared.metadata.completed_cases = prepared.state.completed_cases();
+            if result.error_type.is_error() {
+                prepared.metadata.system_error_count += 1;
+            }
+            prepared.store.write_metadata(&prepared.metadata)?;
+        }
+
+        Ok(())
     }
 
     async fn finalize_run(
@@ -382,16 +435,64 @@ impl Benchmark {
     }
 }
 
-fn aggregate_by_agent(results: &[crate::types::CaseResult]) -> HashMap<String, AggregatedMetrics> {
-    let mut grouped: HashMap<String, Vec<crate::types::CaseResult>> = HashMap::new();
+/// Spawn a task that streams cases from datasets and feeds work items to the pool.
+fn spawn_case_producer(
+    dataset_loaders: Vec<(String, Box<dyn DatasetLoader>)>,
+    agents: Vec<AgentConfig>,
+    run_id: String,
+    passed: Arc<HashSet<CaseKey>>,
+    attempts: Arc<HashMap<CaseKey, u32>>,
+    work_tx: mpsc::Sender<WorkItem>,
+    limit: Option<usize>,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        for (dataset_name, loader) in dataset_loaders {
+            let mut stream = loader
+                .stream_cases(limit)
+                .await
+                .map_err(|e| PacabenchError::dataset(dataset_name.clone(), e))?;
+
+            while let Some(case) = stream.next().await {
+                let case = case.map_err(|e| PacabenchError::dataset(dataset_name.clone(), e))?;
+
+                for agent in &agents {
+                    let key = CaseKey::new(&agent.name, &case.dataset_name, &case.case_id);
+                    if passed.contains(&key) {
+                        continue;
+                    }
+
+                    let attempt = attempts.get(&key).copied().unwrap_or(0) + 1;
+                    let item = WorkItem {
+                        run_id: run_id.clone(),
+                        agent_name: agent.name.clone(),
+                        dataset_name: case.dataset_name.clone(),
+                        case_id: case.case_id.clone(),
+                        case: case.clone(),
+                        attempt,
+                    };
+
+                    if work_tx.send(item).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    })
+}
+
+fn aggregate_by_agent(results: &[CaseResult]) -> HashMap<String, AggregatedMetrics> {
+    let mut grouped: HashMap<String, Vec<&CaseResult>> = HashMap::new();
     for r in results {
-        grouped
-            .entry(r.agent_name.clone())
-            .or_default()
-            .push(r.clone());
+        grouped.entry(r.agent_name.clone()).or_default().push(r);
     }
+
     grouped
         .into_iter()
-        .map(|(k, v)| (k, aggregate_results(&v)))
+        .map(|(agent, cases)| {
+            let owned: Vec<CaseResult> = cases.into_iter().cloned().collect();
+            (agent, aggregate_results(&owned))
+        })
         .collect()
 }
