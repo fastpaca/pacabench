@@ -126,18 +126,21 @@ impl WorkerPool {
     ) -> Result<Self> {
         let (result_tx, result_rx) = mpsc::unbounded_channel();
 
-        let mut evaluators: Vec<(String, Arc<dyn Evaluator>)> = Vec::new();
-        for ds in &config.datasets {
-            if let Some(cfg) = ds.evaluator.as_ref() {
-                let evaluator = get_evaluator(cfg).map_err(|e| {
-                    PacabenchError::evaluation(anyhow!(
-                        "building evaluator for dataset {}: {e}",
-                        ds.name
-                    ))
-                })?;
-                evaluators.push((ds.name.clone(), evaluator));
-            }
-        }
+        let evaluators: Vec<(String, Arc<dyn Evaluator>)> = config
+            .datasets
+            .iter()
+            .filter_map(|ds| ds.evaluator.as_ref().map(|cfg| (ds, cfg)))
+            .map(|(ds, cfg)| {
+                get_evaluator(cfg)
+                    .map(|e| (ds.name.clone(), e))
+                    .map_err(|e| {
+                        PacabenchError::evaluation(anyhow!(
+                            "building evaluator for dataset {}: {e}",
+                            ds.name
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let evaluators = Arc::new(evaluators);
 
         let mut work_txs = HashMap::new();

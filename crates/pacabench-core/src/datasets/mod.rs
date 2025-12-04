@@ -80,23 +80,17 @@ fn prepare_case(
         .cloned()
         .unwrap_or_default();
 
-    let exclude_keys = {
-        let mut set = COMMON_EXCLUDE_KEYS
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<HashSet<_>>();
-        set.insert(input_key.to_string());
-        set.insert(expected_key.to_string());
-        set
-    };
+    let exclude_keys: HashSet<String> = COMMON_EXCLUDE_KEYS
+        .iter()
+        .map(|s| s.to_string())
+        .chain([input_key.to_string(), expected_key.to_string()])
+        .collect();
 
-    let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
-    for (k, v) in record {
-        if exclude_keys.contains(k) {
-            continue;
-        }
-        metadata.insert(k.clone(), v.clone());
-    }
+    let metadata: HashMap<String, serde_json::Value> = record
+        .iter()
+        .filter(|(k, _)| !exclude_keys.contains(*k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     Some(Case {
         case_id,
