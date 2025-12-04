@@ -1648,6 +1648,7 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tower 0.4.13",
  "tracing",
  "tracing-subscriber",
@@ -2575,6 +2576,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "pin-project-lite",
+ "slab",
  "tokio",
 ]
 
