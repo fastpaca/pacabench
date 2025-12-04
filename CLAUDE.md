@@ -144,10 +144,59 @@ Locks are **allowed**, but they must be:
 - Factor out common code only when duplication is provably painful **and** the abstraction is easy to understand.
 - Keep traits small and focused; prefer composition over inheritance-style hierarchies.
 
-**Don’t:**
-- Don’t introduce generic traits and blanket impls “just in case”.
-- Don’t wrap simple types in multiple layers of indirection, builders, or generics.
-- Don’t overuse macros; use them when they genuinely reduce boilerplate with clear semantics.
+**Don't:**
+- Don't introduce generic traits and blanket impls "just in case".
+- Don't wrap simple types in multiple layers of indirection, builders, or generics.
+- Don't overuse macros; use them when they genuinely reduce boilerplate with clear semantics.
+
+---
+
+### Functional Style and Ownership
+
+**Do:**
+- Use functional chains (`.map().filter().collect()`) when they read naturally:
+  ```rust
+  let agent_totals: HashMap<String, u64> = agent_names
+      .iter()
+      .map(|name| (name.clone(), total_per_agent))
+      .collect();
+  ```
+- Use `.collect::<Result<Vec<_>, _>>()?` to collect fallible iterators.
+- Consume inputs and return outputs — make data flow explicit:
+  ```rust
+  // Good: ownership in, results out
+  async fn run_event_loop(
+      cmd_rx: mpsc::Receiver<Command>,
+      pool: WorkerPool,
+      state: RunState,
+  ) -> Result<(RunState, bool)>
+  ```
+- Separate data by usage — don't bundle unrelated fields into structs just because they're "nearby".
+
+**Don't (Anti-Patterns):**
+- Don't use `fold` with mutation — it's a for loop in disguise:
+  ```rust
+  // Bad: fold pretending to be functional
+  let totals = names.iter().fold(HashMap::new(), |mut acc, n| {
+      acc.insert(n.clone(), value);
+      acc
+  });
+  
+  // Good: honest loop for grouping/accumulation
+  let mut totals = HashMap::new();
+  for name in &names {
+      totals.insert(name.clone(), value);
+  }
+  ```
+- Don't pass `&mut` references everywhere just to avoid thinking about ownership:
+  ```rust
+  // Avoid: &mut soup obscures data flow
+  async fn run(&mut self, state: &mut State, pool: &mut Pool) -> Result<bool>
+  
+  // Better: consume and return
+  async fn run(self, state: State, pool: Pool) -> Result<(State, bool)>
+  ```
+- Don't add parameters "for potential future use" — YAGNI applies to function signatures too.
 
 ---
 
@@ -202,12 +251,15 @@ Claude should treat the following as **red flags** and avoid generating them:
 
 1. `unwrap` / `expect` / `panic!` in non-test Rust code paths.
 2. New `Mutex`/`RwLock`/`parking_lot` locks without an explicit design reason and minimal scope.
-3. Deriving or using `Default` for non-trivial domain or config types where “default” is not obvious and safe.
+3. Deriving or using `Default` for non-trivial domain or config types where "default" is not obvious and safe.
 4. Stringly-typed identifiers, states, and flags instead of newtypes/enums.
 5. Logging and then ignoring errors instead of handling or propagating them.
 6. Overly defensive programming (re-checking invariants everywhere instead of enforcing them at construction).
 7. Premature generalisation via generic traits, lifetimes, or macros that do not clearly simplify real code.
 8. Removing or weakening metrics (especially latency, tokens, and cost) in CLI output or exported formats.
+9. Using `fold` with `|mut acc, x|` — just use an honest for loop for accumulation/grouping.
+10. Passing `&mut` references everywhere instead of consuming inputs and returning outputs.
+11. Adding unused parameters "for potential future use" — remove them until actually needed.
 
 If you are unsure about a trade-off, prefer:
 - **Concrete over generic**,

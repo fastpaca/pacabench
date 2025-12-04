@@ -105,13 +105,50 @@ These rules are enforced socially and via `clippy` where possible. See `CLAUDE.m
 ### 4. Simplicity, Not Premature Generalisation
 
 - Avoid generic abstractions, traits, or type gymnastics until there are **at least two real use-cases**.
-- Prefer straightforward functions and concrete types over “framework-style” layers.
+- Prefer straightforward functions and concrete types over "framework-style" layers.
 - Refactor duplication only when the new abstraction is:
   - Simple,
   - Clearly named, and
-  - Local to the domain where it’s used.
+  - Local to the domain where it's used.
 
-### 5. Concurrency and Locks
+### 5. Functional Style and Ownership
+
+- **Prefer functional chains** when they flow naturally: `.iter().map(...).filter(...).collect()`.
+- **Don't fake functional style** — `fold` with `|mut acc, x|` is just a for loop in disguise; use an honest loop instead.
+- **Consume inputs, return outputs** — functions should take ownership of what they need and return results, rather than taking `&mut` references everywhere.
+- **Separate unrelated data** — don't bundle data into structs just because it's "nearby"; group by actual usage patterns.
+
+```rust
+// Good: consume inputs, return outputs
+async fn run_event_loop(
+    cmd_rx: mpsc::Receiver<Command>,
+    pool: WorkerPool,
+    prepared: PreparedRun,
+) -> Result<(RunState, RunMetadata, bool)>
+
+// Avoid: &mut soup
+async fn run_event_loop(
+    cmd_rx: &mut mpsc::Receiver<Command>,
+    pool: &mut WorkerPool,
+    prepared: &mut PreparedRun,
+) -> Result<bool>
+```
+
+```rust
+// Good: functional chain
+let agent_totals: HashMap<String, u64> = agent_names
+    .iter()
+    .map(|name| (name.clone(), total_per_agent))
+    .collect();
+
+// Avoid: fold with mutation (just use a loop)
+let agent_totals = agent_names.iter().fold(HashMap::new(), |mut acc, name| {
+    acc.insert(name.clone(), total_per_agent);
+    acc
+});
+```
+
+### 6. Concurrency and Locks
 
 - Prefer **clear ownership** and **message passing** over shared mutable state.
 - Avoid reaching for `Mutex`/`RwLock`/`parking_lot` as a default. If you feel the need to add a lock, first:
@@ -121,7 +158,7 @@ These rules are enforced socially and via `clippy` where possible. See `CLAUDE.m
 - Locks are allowed but should be **rare, narrow in scope, and well-justified**.
 - In async code, never block on sync I/O; use async I/O or `spawn_blocking` for heavy work.
 
-### 6. Error Handling and Logging
+### 7. Error Handling and Logging
 
 - Define dedicated error types per domain (`ConfigError`, `PersistenceError`, etc.), implemented with `thiserror` or manual enums.
 - Use typed errors inside `pacabench-core`; use `anyhow` primarily at the CLI/binary boundary for flexible reporting.
