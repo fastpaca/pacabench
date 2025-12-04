@@ -189,17 +189,15 @@ impl RunStore {
         let file = File::open(&self.errors_path)?;
         let reader = BufReader::new(file);
 
-        reader
-            .lines()
-            .filter_map(|line| {
-                let line = line.ok()?;
-                if line.trim().is_empty() {
-                    return None;
-                }
-                Some(serde_json::from_str(&line))
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        let mut entries = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            entries.push(serde_json::from_str(&line)?);
+        }
+        Ok(entries)
     }
 }
 

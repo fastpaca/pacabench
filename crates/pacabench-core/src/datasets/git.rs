@@ -94,32 +94,32 @@ impl GitDataset {
     }
 
     fn resolve_files(&self, repo_dir: &Path) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        for entry in globwalk::GlobWalkerBuilder::from_patterns(repo_dir, &["**/*.jsonl"])
+        let files: Vec<PathBuf> = globwalk::GlobWalkerBuilder::from_patterns(repo_dir, &["**/*.jsonl"])
             .build()
             .map_err(|e| PacabenchError::Internal(e.into()))?
             .filter_map(|e| e.ok())
-        {
-            if entry.path().is_file() {
-                files.push(entry.path().to_path_buf());
-            }
-        }
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| entry.path().to_path_buf())
+            .collect();
 
-        if let Some(s) = self.config.split.clone() {
+        // Filter by split if specified
+        if let Some(split) = &self.config.split {
             let filtered: Vec<PathBuf> = files
                 .iter()
                 .filter(|p| {
-                    p.file_stem()
+                    let matches_stem = p
+                        .file_stem()
                         .and_then(|f| f.to_str())
-                        .map(|stem| stem == s)
-                        .unwrap_or(false)
-                        || p.file_name()
-                            .and_then(|f| f.to_str())
-                            .map(|name| name.contains(&s))
-                            .unwrap_or(false)
+                        .is_some_and(|stem| stem == split);
+                    let matches_name = p
+                        .file_name()
+                        .and_then(|f| f.to_str())
+                        .is_some_and(|name| name.contains(split));
+                    matches_stem || matches_name
                 })
                 .cloned()
                 .collect();
+
             if !filtered.is_empty() {
                 return Ok(filtered);
             }
