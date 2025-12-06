@@ -6,58 +6,58 @@ Thank you for your interest in contributing to PacaBench! We welcome contributio
 
 1.  **Fork the repository** on GitHub.
 2.  **Clone your fork** locally.
-3.  **Install dependencies**:
+3.  **Install Rust** via [rustup](https://rustup.rs/):
     ```bash
-    # We recommend using uv for dependency management
-    pip install uv
-    uv sync --all-extras
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
     ```
-4.  **Create a branch** for your feature or fix.
+4.  **Build the project**:
+    ```bash
+    cargo build --workspace
+    ```
+5.  **Create a branch** for your feature or fix.
 
 ## Development Workflow
 
-### Code Style
+### Code Quality
 
-We enforce strict code quality gates using `ruff`. Before submitting a PR, you **must** run:
-
-```bash
-# Fix linting issues
-uv run ruff check pacabench/ --fix
-
-# Format code
-uv run ruff format pacabench/
-
-# Verify everything is clean
-uv run ruff check pacabench/
-```
-
-### Running Tests
-
-We use `pytest` for testing (if tests are available) and the harness itself for smoke testing.
-
-To run a quick smoke test of the harness:
+Before submitting a PR, you **must** run:
 
 ```bash
-cd examples/smoke_test && uv run pacabench
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
 ```
+
+All three commands must pass with no errors or warnings.
+
+### Running Smoke Tests
+
+```bash
+cd examples/smoke_test && cargo run -p pacabench-cli
+```
+
+### Project Structure
+
+- `crates/pacabench-core/` - Core library with benchmark engine, persistence, and proxy
+- `crates/pacabench-cli/` - CLI binary (thin wrapper around core)
+- `examples/` - Example benchmark configurations
 
 ## Pull Request Process
 
-1. Ensure all checks pass locally (`ruff` and smoke tests).
+1. Ensure all checks pass locally.
 2. Open a Pull Request against the `main` branch.
-3. Provide a clear description of the problem you are solving and your solution.
-4. If you are adding a new feature, include a test case or verification steps.
-5. **If you are using AI** ensure code quality is high before you submit.
+3. Provide a clear description of the problem and your solution.
+4. If adding a new feature, include test cases.
+5. **If using AI**, ensure code quality is high before you submit.
 
 ## Reporting Issues
 
-Please use the GitHub Issue Tracker to report bugs or request features. Include as much detail as possible, such as:
--   PacaBench version
--   Configuration file (`pacabench.yaml`)
--   Steps to reproduce
--   Logs or error messages
+Please use the GitHub Issue Tracker. Include:
+- PacaBench version
+- Configuration file (`pacabench.yaml`)
+- Steps to reproduce
+- Logs or error messages
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under its [Apache 2.0 License](LICENSE).
-
+By contributing, you agree that your contributions will be licensed under the [Apache 2.0 License](LICENSE).

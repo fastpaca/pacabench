@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/feat/oss-prep/docs/images/simple-run.gif" width="800">
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-run.gif" width="800">
 </p>
 
 ---
@@ -57,7 +57,7 @@ PacaBench is a harness built for the reality of agentic LLM development. It hand
 * **It handles the retry loop.** Run the suite, let it finish, then retry failures with a single command.
 * **It measures reality.** A built-in proxy sits between your agent and the LLM provider to track exact latency and token usage. No more guessing or relying on self-reported metrics.
 
-[Documentation](docs/) | [Examples](examples/) | [Issues](https://github.com/fastpaca/pacabench/issues)
+[Examples](examples/) | [Issues](https://github.com/fastpaca/pacabench/issues)
 
 ---
 
@@ -134,9 +134,11 @@ pacabench export <run-id> > results.json
 | `pacabench show <run> --failures` | Show only failed cases |
 | `pacabench run` | Start a benchmark run |
 | `pacabench run --limit N` | Run with limited cases (for testing) |
-| `pacabench retry <run>` | Retry system errors from a run |
-| `pacabench retry <run> --all` | Retry all failures (including wrong answers) |
+| `pacabench run -a agent1,agent2` | Run only specific agents |
+| `pacabench retry <run>` | Retry failed cases from a run |
 | `pacabench export <run>` | Export results to JSON |
+| `pacabench export <run> --format md` | Export results to Markdown |
+| `pacabench show-config` | Show parsed configuration |
 | `pacabench init` | Create a new project |
 
 Partial run IDs work - just type enough to uniquely match (e.g., `pacabench show 120358`).
