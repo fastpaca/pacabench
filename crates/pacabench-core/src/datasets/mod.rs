@@ -6,7 +6,7 @@ use crate::types::Case;
 use async_trait::async_trait;
 use futures_util::stream::BoxStream;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 mod local;
 pub use local::LocalDataset;
@@ -46,15 +46,7 @@ pub fn get_dataset_loader(
     }
 }
 
-/// Resolve a path relative to the dataset context root if not absolute.
-fn resolve_path(path_str: &str, root: &Path) -> PathBuf {
-    let p = PathBuf::from(path_str);
-    if p.is_absolute() {
-        p
-    } else {
-        root.join(p)
-    }
-}
+use crate::utils::resolve_path;
 
 /// Common helper to build a Case from a JSON-like record.
 fn prepare_case(

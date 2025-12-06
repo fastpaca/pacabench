@@ -384,14 +384,7 @@ fn validate_raw_config(cfg: &RawConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn resolve_path(path: &str, base: &Path) -> PathBuf {
-    let p = PathBuf::from(path);
-    if p.is_absolute() {
-        p
-    } else {
-        base.join(p)
-    }
-}
+use crate::utils::resolve_path;
 
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {

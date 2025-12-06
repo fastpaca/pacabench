@@ -57,6 +57,7 @@ pub mod persistence;
 // Internal modules
 pub(crate) mod retry;
 pub(crate) mod state;
+pub(crate) mod utils;
 pub(crate) mod worker;
 
 // Supporting modules

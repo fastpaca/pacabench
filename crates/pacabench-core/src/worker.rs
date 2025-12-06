@@ -249,7 +249,7 @@ async fn spawn_worker(
         let upstream = config
             .proxy_base_url
             .clone()
-            .unwrap_or_else(|| "https://api.openai.com".to_string());
+            .unwrap_or_else(|| crate::utils::DEFAULT_OPENAI_BASE_URL.to_string());
         Some(
             ProxyServer::start(ProxyConfig {
                 port: 0,

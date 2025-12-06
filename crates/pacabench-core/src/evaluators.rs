@@ -331,7 +331,7 @@ impl LlmJudgeEvaluator {
             "{}/v1/chat/completions",
             self.base_url
                 .clone()
-                .unwrap_or_else(|| "https://api.openai.com".into())
+                .unwrap_or_else(|| crate::utils::DEFAULT_OPENAI_BASE_URL.into())
         );
 
         let start = std::time::Instant::now();
