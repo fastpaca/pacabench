@@ -12,10 +12,13 @@ use formatting::{
 };
 use pacabench_core::config::ConfigOverrides;
 use pacabench_core::persistence::{list_run_summaries, RunStore, RunSummary};
-use pacabench_core::{Benchmark, Config};
+use pacabench_core::{Benchmark, Command as BenchCommand, Config};
 use progress::ProgressDisplay;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -434,15 +437,78 @@ fn run_benchmark_with_progress(
     limit: Option<usize>,
 ) -> Result<()> {
     let events = bench.subscribe();
+    let cmd_tx = bench.command_sender();
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
     rt.block_on(async {
         let display = ProgressDisplay::new();
         let display_handle = tokio::spawn(display.run(events));
+
+        // Spawn signal handler
+        let signal_handle = tokio::spawn(handle_signals(cmd_tx));
+
         let result = bench.run(run_id, limit).await;
+
+        // Abort signal handler since benchmark is done
+        signal_handle.abort();
+
         let _ = display_handle.await;
         result
     })
     .context("running benchmark")?;
 
     Ok(())
+}
+
+/// Handle shutdown signals (SIGINT/SIGTERM).
+///
+/// First signal sends a graceful stop, second signal aborts immediately.
+async fn handle_signals(cmd_tx: mpsc::UnboundedSender<BenchCommand>) {
+    let stop_requested = Arc::new(AtomicBool::new(false));
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT");
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM");
+
+        loop {
+            tokio::select! {
+                _ = sigint.recv() => {}
+                _ = sigterm.recv() => {}
+            }
+
+            if stop_requested.swap(true, Ordering::SeqCst) {
+                eprintln!("\nForce abort requested, terminating...");
+                let _ = cmd_tx.send(BenchCommand::Abort {
+                    reason: "user interrupt (force)".to_string(),
+                });
+                break;
+            } else {
+                eprintln!("\nShutdown requested, finishing current cases... (press Ctrl+C again to force)");
+                let _ = cmd_tx.send(BenchCommand::Stop {
+                    reason: "user interrupt".to_string(),
+                });
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        loop {
+            tokio::signal::ctrl_c().await.ok();
+
+            if stop_requested.swap(true, Ordering::SeqCst) {
+                eprintln!("\nForce abort requested, terminating...");
+                let _ = cmd_tx.send(BenchCommand::Abort {
+                    reason: "user interrupt (force)".to_string(),
+                });
+                break;
+            } else {
+                eprintln!("\nShutdown requested, finishing current cases... (press Ctrl+C again to force)");
+                let _ = cmd_tx.send(BenchCommand::Stop {
+                    reason: "user interrupt".to_string(),
+                });
+            }
+        }
+    }
 }
