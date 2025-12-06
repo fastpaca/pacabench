@@ -260,6 +260,9 @@ impl CommandRunner {
         let line = serde_json::to_vec(&request)
             .map_err(|e| self.runner_error(anyhow!("serialize request: {e}")))?;
 
+        // Capture agent name before borrowing stdin/stdout to avoid borrow conflicts
+        let agent_name = self.config.name.clone();
+
         let stdin = self
             .stdin
             .as_mut()
@@ -269,13 +272,25 @@ impl CommandRunner {
             .as_mut()
             .ok_or_else(|| anyhow!("runner stdout unavailable"))?;
 
-        stdin.write_all(&line).await?;
-        stdin.write_all(b"\n").await?;
-        stdin.flush().await?;
+        stdin
+            .write_all(&line)
+            .await
+            .map_err(|e| PacabenchError::runner(agent_name.clone(), e))?;
+        stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|e| PacabenchError::runner(agent_name.clone(), e))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| PacabenchError::runner(agent_name.clone(), e))?;
 
         loop {
             let mut buf = String::new();
-            let n = stdout.read_line(&mut buf).await?;
+            let n = stdout
+                .read_line(&mut buf)
+                .await
+                .map_err(|e| PacabenchError::runner(agent_name.clone(), e))?;
             if n == 0 {
                 return Ok(RunnerOutput::failure(
                     "Process exited unexpectedly (EOF)".into(),

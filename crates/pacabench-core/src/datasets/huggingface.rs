@@ -71,11 +71,16 @@ impl HuggingFaceDataset {
             .cache_dir
             .join("hf")
             .join(repo_id.replace('/', "_"));
-        fs::create_dir_all(&cache_dir).await?;
+        fs::create_dir_all(&cache_dir)
+            .await
+            .map_err(PacabenchError::Persistence)?;
 
         let split = self.config.split.clone().unwrap_or_else(|| "train".into());
         let target_file = cache_dir.join(format!("{split}.jsonl"));
-        if fs::try_exists(&target_file).await? {
+        if fs::try_exists(&target_file)
+            .await
+            .map_err(PacabenchError::Persistence)?
+        {
             *self.prepared_path.lock() = Some(cache_dir.clone());
             return Ok(cache_dir);
         }
@@ -106,7 +111,9 @@ impl HuggingFaceDataset {
             .into());
         }
         let bytes = resp.bytes().await.map_err(|e| anyhow!("read body: {e}"))?;
-        fs::write(&target_file, bytes).await?;
+        fs::write(&target_file, bytes)
+            .await
+            .map_err(PacabenchError::Persistence)?;
 
         *self.prepared_path.lock() = Some(cache_dir.clone());
         Ok(cache_dir)
@@ -155,11 +162,17 @@ impl DatasetLoader for HuggingFaceDataset {
 
         let mut count = 0usize;
         for file in files {
-            let f = File::open(&file).await?;
+            let f = File::open(&file)
+                .await
+                .map_err(PacabenchError::Persistence)?;
             let reader = BufReader::new(f);
             let mut lines = reader.lines();
             let mut idx = 0usize;
-            while let Some(line) = lines.next_line().await? {
+            while let Some(line) = lines
+                .next_line()
+                .await
+                .map_err(PacabenchError::Persistence)?
+            {
                 if let Some(limit) = limit {
                     if count >= limit {
                         return Ok(count);
@@ -235,7 +248,9 @@ impl DatasetLoader for HuggingFaceDataset {
                 let expected_key = expected_key.clone();
                 async move {
                     let file_clone = file.clone();
-                    let f = File::open(&file).await?;
+                    let f = File::open(&file)
+                        .await
+                        .map_err(PacabenchError::Persistence)?;
                     let reader = BufReader::new(f);
                     let lines = LinesStream::new(reader.lines()).enumerate().filter_map(
                         move |(idx, line)| {

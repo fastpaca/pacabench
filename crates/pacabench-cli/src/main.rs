@@ -154,7 +154,7 @@ fn main() -> Result<()> {
     let mut config = Config::from_file(&config_path, overrides)?;
 
     match cli.command {
-        Some(Command::ShowConfig) => cmd_show_config(&config),
+        Some(Command::ShowConfig) => cmd_show_config(&config)?,
         Some(Command::Run {
             limit,
             run_id,
@@ -198,15 +198,16 @@ fn main() -> Result<()> {
 // Command handlers
 // ============================================================================
 
-fn cmd_show_config(config: &Config) {
+fn cmd_show_config(config: &Config) -> Result<()> {
     println!(
         "Loaded benchmark '{}': {} agent(s), {} dataset(s).",
         config.name,
         config.agents.len(),
         config.datasets.len()
     );
-    let yaml = serde_yaml::to_string(&config).expect("config serialization should succeed");
+    let yaml = serde_yaml::to_string(config)?;
     println!("{yaml}");
+    Ok(())
 }
 
 fn cmd_run(

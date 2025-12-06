@@ -348,11 +348,9 @@ impl ProgressDisplay {
                 );
                 println!("  {} {:.1}s", style("Duration:").dim(), elapsed);
                 println!(
-                    "  {} {:.1}% / {:.1}% / {:.1}% | {} {:.0} / {:.0} ms | {} {:.0}/{:.0} (judge {}/{})",
-                    style("Acc/Prec/Rec:").dim(),
+                    "  {} {:.1}% | {} {:.0} / {:.0} ms | {} {:.0}/{:.0} (judge {}/{})",
+                    style("Accuracy:").dim(),
                     metrics.accuracy * 100.0,
-                    metrics.precision * 100.0,
-                    metrics.recall * 100.0,
                     style("Duration p50/p95:").dim(),
                     metrics.p50_duration_ms,
                     metrics.p95_duration_ms,

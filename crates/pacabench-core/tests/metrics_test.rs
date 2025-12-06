@@ -31,15 +31,6 @@ fn aggregates_accuracy() {
     assert_eq!(m.total_cases, 2);
     assert_eq!(m.failed_cases, 1);
     assert!((m.accuracy - 0.5).abs() < 1e-6);
-    assert!((m.recall - m.accuracy).abs() < 1e-6);
-}
-
-#[test]
-fn precision_matches_accuracy_when_only_pass_fail_known() {
-    let res = vec![make_result(5.0, true), make_result(8.0, true)];
-    let m = aggregate_results(&res);
-    assert!((m.precision - m.accuracy).abs() < 1e-6);
-    assert!((m.precision - 1.0).abs() < 1e-6);
 }
 
 #[test]

@@ -75,8 +75,6 @@ pub fn aggregate_results(results: &[CaseResult]) -> AggregatedMetrics {
 
     AggregatedMetrics {
         accuracy,
-        precision: accuracy,
-        recall: accuracy,
         total_cases: results.len() as u64,
         failed_cases: (results.len() as u64).saturating_sub(passed as u64),
         p50_duration_ms,

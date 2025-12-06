@@ -137,7 +137,7 @@ impl Benchmark {
         // Generate run ID and create storage
         let run_id = run_id.unwrap_or_else(|| generate_run_id(&self.config.name));
         let run_dir = self.config.runs_dir.join(&run_id);
-        std::fs::create_dir_all(&run_dir)?;
+        std::fs::create_dir_all(&run_dir).map_err(PacabenchError::Persistence)?;
         let store = RunStore::new(&run_dir)?;
 
         let agent_names: Vec<String> = self.config.agents.iter().map(|a| a.name.clone()).collect();

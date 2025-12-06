@@ -45,7 +45,7 @@ fn show_without_run_id_handles_empty_runs_dir() {
 }
 
 #[test]
-fn export_json_includes_judge_fields_and_precision() {
+fn export_json_includes_judge_fields() {
     let dir = tempdir().unwrap();
     let config_path = dir.path().join("pacabench.yaml");
     write_min_config(&config_path);
@@ -120,8 +120,6 @@ fn export_json_includes_judge_fields_and_precision() {
         .clone();
 
     let parsed: Value = serde_json::from_slice(&output).unwrap();
-    let metrics = &parsed["agents"]["agent"]["metrics"];
-    assert_eq!(metrics["precision"], metrics["accuracy"]);
     // Judge tokens should be tracked (cost is computed at CLI layer)
     assert_eq!(
         parsed["agents"]["agent"]["results"][0]["judge_metrics"]["input_tokens"]

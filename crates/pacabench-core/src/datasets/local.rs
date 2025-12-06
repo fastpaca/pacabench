@@ -122,11 +122,17 @@ impl DatasetLoader for LocalDataset {
 
         let mut count = 0usize;
         for file in files {
-            let f = File::open(&file).await?;
+            let f = File::open(&file)
+                .await
+                .map_err(PacabenchError::Persistence)?;
             let reader = BufReader::new(f);
             let mut lines = reader.lines();
             let mut idx = 0usize;
-            while let Some(line) = lines.next_line().await? {
+            while let Some(line) = lines
+                .next_line()
+                .await
+                .map_err(PacabenchError::Persistence)?
+            {
                 if let Some(limit) = limit {
                     if count >= limit {
                         return Ok(count);
@@ -176,7 +182,9 @@ impl DatasetLoader for LocalDataset {
                 let expected_key = expected_key.clone();
                 async move {
                     let file_clone = file.clone();
-                    let f = File::open(&file).await?;
+                    let f = File::open(&file)
+                        .await
+                        .map_err(PacabenchError::Persistence)?;
                     let reader = BufReader::new(f);
                     let lines = tokio_stream::wrappers::LinesStream::new(reader.lines())
                         .enumerate()

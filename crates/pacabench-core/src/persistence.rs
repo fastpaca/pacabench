@@ -1,7 +1,7 @@
 //! Run persistence: storing and loading benchmark results.
 
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{PacabenchError, Result};
 use crate::types::{CaseKey, CaseResult, ErrorType, RunStatus};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,7 @@ pub struct RunStore {
 impl RunStore {
     pub fn new(run_dir: impl AsRef<Path>) -> Result<Self> {
         let run_dir = run_dir.as_ref().to_path_buf();
-        fs::create_dir_all(&run_dir)?;
+        fs::create_dir_all(&run_dir).map_err(PacabenchError::Persistence)?;
         Ok(Self {
             results_path: run_dir.join("results.jsonl"),
             errors_path: run_dir.join("system_errors.jsonl"),
@@ -112,7 +112,7 @@ impl RunStore {
 
     pub fn write_metadata(&self, metadata: &RunMetadata) -> Result<()> {
         let json = serde_json::to_string_pretty(metadata)?;
-        fs::write(&self.metadata_path, json)?;
+        fs::write(&self.metadata_path, json).map_err(PacabenchError::Persistence)?;
         Ok(())
     }
 
@@ -120,7 +120,7 @@ impl RunStore {
         if !self.metadata_path.exists() {
             return Ok(None);
         }
-        let data = fs::read_to_string(&self.metadata_path)?;
+        let data = fs::read_to_string(&self.metadata_path).map_err(PacabenchError::Persistence)?;
         let meta: RunMetadata = serde_json::from_str(&data)?;
         Ok(Some(meta))
     }
@@ -129,9 +129,10 @@ impl RunStore {
         let mut file = File::options()
             .create(true)
             .append(true)
-            .open(&self.results_path)?;
+            .open(&self.results_path)
+            .map_err(PacabenchError::Persistence)?;
         let line = serde_json::to_string(result)?;
-        writeln!(file, "{line}")?;
+        writeln!(file, "{line}").map_err(PacabenchError::Persistence)?;
         Ok(())
     }
 
@@ -139,9 +140,10 @@ impl RunStore {
         let mut file = File::options()
             .create(true)
             .append(true)
-            .open(&self.errors_path)?;
+            .open(&self.errors_path)
+            .map_err(PacabenchError::Persistence)?;
         let line = serde_json::to_string(entry)?;
-        writeln!(file, "{line}")?;
+        writeln!(file, "{line}").map_err(PacabenchError::Persistence)?;
         Ok(())
     }
 
@@ -150,12 +152,12 @@ impl RunStore {
             return Ok(Vec::new());
         }
 
-        let file = File::open(&self.results_path)?;
+        let file = File::open(&self.results_path).map_err(PacabenchError::Persistence)?;
         let reader = BufReader::new(file);
 
         let mut dedup: HashMap<CaseKey, CaseResult> = HashMap::new();
         for line in reader.lines() {
-            let line = line?;
+            let line = line.map_err(PacabenchError::Persistence)?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -170,12 +172,12 @@ impl RunStore {
         if !self.errors_path.exists() {
             return Ok(Vec::new());
         }
-        let file = File::open(&self.errors_path)?;
+        let file = File::open(&self.errors_path).map_err(PacabenchError::Persistence)?;
         let reader = BufReader::new(file);
 
         let mut entries = Vec::new();
         for line in reader.lines() {
-            let line = line?;
+            let line = line.map_err(PacabenchError::Persistence)?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -206,8 +208,8 @@ pub fn list_run_summaries(runs_dir: &Path) -> Result<Vec<RunSummary>> {
     }
 
     let mut summaries = Vec::new();
-    for entry in fs::read_dir(runs_dir)? {
-        let path = entry?.path();
+    for entry in fs::read_dir(runs_dir).map_err(PacabenchError::Persistence)? {
+        let path = entry.map_err(PacabenchError::Persistence)?.path();
         if !path.is_dir() {
             continue;
         }

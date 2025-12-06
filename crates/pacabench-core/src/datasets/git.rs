@@ -48,7 +48,8 @@ impl GitDataset {
 
     fn ensure_repo(&self, repo_url: &str) -> Result<PathBuf> {
         let repo_dir = self.repo_cache_dir(repo_url);
-        std::fs::create_dir_all(repo_dir.parent().unwrap_or_else(|| Path::new(".")))?;
+        std::fs::create_dir_all(repo_dir.parent().unwrap_or_else(|| Path::new(".")))
+            .map_err(PacabenchError::Persistence)?;
         if repo_dir.join(".git").exists() {
             if let Ok(repo) = Repository::open(&repo_dir) {
                 let mut origin = repo
@@ -72,7 +73,8 @@ impl GitDataset {
                 .current_dir(&self.ctx.root_dir)
                 .env("PACABENCH_DATASET_PATH", repo_dir)
                 .status()
-                .await?;
+                .await
+                .map_err(PacabenchError::Process)?;
             if !status.success() {
                 return Err(anyhow!("prepare command failed with status {status}").into());
             }
@@ -94,13 +96,14 @@ impl GitDataset {
     }
 
     fn resolve_files(&self, repo_dir: &Path) -> Result<Vec<PathBuf>> {
-        let files: Vec<PathBuf> = globwalk::GlobWalkerBuilder::from_patterns(repo_dir, &["**/*.jsonl"])
-            .build()
-            .map_err(|e| PacabenchError::Internal(e.into()))?
-            .filter_map(|e| e.ok())
-            .filter(|entry| entry.path().is_file())
-            .map(|entry| entry.path().to_path_buf())
-            .collect();
+        let files: Vec<PathBuf> =
+            globwalk::GlobWalkerBuilder::from_patterns(repo_dir, &["**/*.jsonl"])
+                .build()
+                .map_err(|e| PacabenchError::Internal(e.into()))?
+                .filter_map(|e| e.ok())
+                .filter(|entry| entry.path().is_file())
+                .map(|entry| entry.path().to_path_buf())
+                .collect();
 
         // Filter by split if specified
         if let Some(split) = &self.config.split {
@@ -149,11 +152,17 @@ impl DatasetLoader for GitDataset {
 
         let mut count = 0usize;
         for file in files {
-            let f = File::open(&file).await?;
+            let f = File::open(&file)
+                .await
+                .map_err(PacabenchError::Persistence)?;
             let reader = BufReader::new(f);
             let mut lines = reader.lines();
             let mut idx = 0usize;
-            while let Some(line) = lines.next_line().await? {
+            while let Some(line) = lines
+                .next_line()
+                .await
+                .map_err(PacabenchError::Persistence)?
+            {
                 if let Some(limit) = limit {
                     if count >= limit {
                         return Ok(count);
@@ -208,7 +217,9 @@ impl DatasetLoader for GitDataset {
                 let expected_key = expected_key.clone();
                 async move {
                     let file_clone = file.clone();
-                    let f = File::open(&file).await?;
+                    let f = File::open(&file)
+                        .await
+                        .map_err(PacabenchError::Persistence)?;
                     let reader = BufReader::new(f);
                     let lines = LinesStream::new(reader.lines()).enumerate().filter_map(
                         move |(idx, line)| {

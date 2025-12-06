@@ -227,8 +227,6 @@ impl CaseKey {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AggregatedMetrics {
     pub accuracy: f64,
-    pub precision: f64,
-    pub recall: f64,
     pub total_cases: u64,
     pub failed_cases: u64,
     pub p50_duration_ms: f64,

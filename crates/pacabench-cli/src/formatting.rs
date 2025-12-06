@@ -86,10 +86,8 @@ pub fn print_run_details(
         0,
     );
     println!(
-        "Accuracy {acc:.1}% | Precision {prec:.1}% | Recall {rec:.1}% | Failed {failed}",
+        "Accuracy {acc:.1}% | Failed {failed}",
         acc = agg.accuracy * 100.0,
-        prec = agg.precision * 100.0,
-        rec = agg.recall * 100.0,
         failed = agg.failed_cases
     );
     println!(
@@ -351,12 +349,7 @@ pub fn build_export_markdown(
             .map(|m| m.total_cases)
             .unwrap_or(results.len() as u64)
     ));
-    md.push_str(&format!(
-        "- **Accuracy / Precision / Recall**: {:.1}% / {:.1}% / {:.1}%\n",
-        agg.accuracy * 100.0,
-        agg.precision * 100.0,
-        agg.recall * 100.0
-    ));
+    md.push_str(&format!("- **Accuracy**: {:.1}%\n", agg.accuracy * 100.0));
     md.push_str(&format!(
         "- **Duration (p50/p95)**: {:.0}ms / {:.0}ms\n",
         agg.p50_duration_ms, agg.p95_duration_ms
