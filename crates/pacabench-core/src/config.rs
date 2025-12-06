@@ -16,12 +16,17 @@ use std::{
 };
 use thiserror::Error;
 
+/// Errors that can occur when loading or validating configuration.
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    /// Failed to read the configuration file from disk.
     #[error("failed to read config: {0}")]
     Io(#[from] std::io::Error),
+    /// Failed to parse the configuration (YAML syntax or type errors).
     #[error("failed to parse config: {0}")]
     Figment(#[source] Box<figment::Error>),
+    /// Configuration is syntactically valid but semantically incorrect
+    /// (e.g., missing required agents or datasets).
     #[error("invalid config: {0}")]
     Invalid(String),
 }

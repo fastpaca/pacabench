@@ -24,6 +24,9 @@ pub struct DatasetContext {
     pub cache_dir: PathBuf,
 }
 
+/// Trait for loading benchmark cases from various sources.
+///
+/// Implementations handle local files, git repositories, and HuggingFace datasets.
 #[async_trait]
 pub trait DatasetLoader: Send + Sync {
     /// Count how many cases are available, respecting an optional limit.
@@ -33,6 +36,12 @@ pub trait DatasetLoader: Send + Sync {
     async fn stream_cases(&self, limit: Option<usize>) -> Result<BoxStream<'static, Result<Case>>>;
 }
 
+/// Create a dataset loader from configuration.
+///
+/// Dispatches to the appropriate loader based on the source prefix:
+/// - `git:` - Clone from a git repository
+/// - `huggingface:` - Download from HuggingFace Hub
+/// - Otherwise - Load from local file system
 pub fn get_dataset_loader(
     config: DatasetConfig,
     ctx: DatasetContext,

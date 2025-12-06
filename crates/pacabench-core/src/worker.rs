@@ -25,18 +25,27 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, info, warn};
 
 /// A single unit of work: run a case through an agent.
+///
+/// Work items are created by the case producer and dispatched to workers
+/// via agent-scoped queues.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkItem {
+    /// ID of the benchmark run this work belongs to.
     pub run_id: String,
+    /// Name of the agent to process this case.
     pub agent_name: String,
+    /// Name of the dataset containing this case.
     pub dataset_name: String,
+    /// Unique ID of the case within the dataset.
     pub case_id: String,
+    /// The case data to process.
     pub case: Case,
+    /// Current attempt number (1-based, increments on retry).
     pub attempt: u32,
 }
 
 impl WorkItem {
-    #[allow(dead_code)]
+    /// Create a retry of this work item with incremented attempt counter.
     pub fn retry(&self) -> Self {
         Self {
             run_id: self.run_id.clone(),
@@ -48,30 +57,44 @@ impl WorkItem {
         }
     }
 
+    /// Get the unique key identifying this case.
     pub fn key(&self) -> CaseKey {
         CaseKey::new(&self.agent_name, &self.dataset_name, &self.case_id)
     }
 }
 
 /// Result from processing a work item.
+///
+/// Contains both the runner output and evaluation results, ready to be
+/// converted to a [`CaseResult`] for persistence.
 #[derive(Clone, Debug)]
 pub struct WorkResult {
+    /// The original work item that produced this result.
     pub item: WorkItem,
+    /// Whether the case passed evaluation.
     pub passed: bool,
+    /// Raw output from the runner.
     pub output: Option<String>,
+    /// Error message if the runner failed.
     pub error: Option<String>,
+    /// Classification of the error.
     pub error_type: ErrorType,
+    /// Wall-clock time for the runner, in milliseconds.
     pub duration_ms: f64,
+    /// LLM metrics collected by the proxy.
     pub llm_metrics: LlmMetrics,
+    /// Evaluation result, if an evaluator was configured.
     pub evaluation: Option<EvaluationResult>,
 }
 
 impl WorkResult {
+    /// Returns true if this result represents a system or fatal error.
     #[allow(dead_code)]
     pub fn is_error(&self) -> bool {
         self.error_type.is_error()
     }
 
+    /// Convert to a [`CaseResult`] for persistence.
     pub fn to_case_result(&self, timestamp: String) -> CaseResult {
         CaseResult {
             case_id: self.item.case_id.clone(),
@@ -97,6 +120,10 @@ impl WorkResult {
     }
 }
 
+/// Pool of workers that process cases in parallel.
+///
+/// Each agent has its own queue, ensuring cases are routed to the correct
+/// runner. Workers are distributed across agents based on concurrency settings.
 pub struct WorkerPool {
     work_txs: HashMap<String, Sender<WorkItem>>,
     result_rx: mpsc::UnboundedReceiver<WorkResult>,
@@ -106,6 +133,10 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
+    /// Start the worker pool with the given concurrency and configuration.
+    ///
+    /// Creates agent-scoped queues and spawns workers according to the
+    /// concurrency setting (at least one worker per agent).
     pub async fn start(
         concurrency: usize,
         queue_capacity: usize,
@@ -199,7 +230,9 @@ impl WorkerPool {
         }
     }
 
-    /// Push all work items to the queue.
+    /// Receive the next completed work result.
+    ///
+    /// Returns `None` when all workers have stopped and the result channel is empty.
     pub async fn recv(&mut self) -> Option<WorkResult> {
         self.result_rx.recv().await
     }

@@ -2,28 +2,32 @@
 //!
 //! # Quick Start
 //!
-//! ```ignore
+//! ```no_run
 //! use pacabench_core::{Benchmark, Config, Event};
 //! use pacabench_core::config::ConfigOverrides;
 //!
-//! // Load from config file
-//! let config = Config::from_file("pacabench.yaml", ConfigOverrides::default())?;
-//! let bench = Benchmark::new(config);
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     // Load from config file
+//!     let config = Config::from_file("pacabench.yaml", ConfigOverrides::default())?;
+//!     let bench = Benchmark::new(config);
 //!
-//! // Subscribe to events
-//! let events = bench.subscribe();
-//! tokio::spawn(async move {
-//!     while let Ok(event) = events.recv() {
-//!         match event {
-//!             Event::CaseCompleted { passed, .. } => println!("Case: {}", if passed { "✓" } else { "✗" }),
-//!             Event::RunCompleted { metrics, .. } => println!("Done: {:.1}% accuracy", metrics.accuracy * 100.0),
-//!             _ => {}
+//!     // Subscribe to events
+//!     let mut events = bench.subscribe();
+//!     tokio::spawn(async move {
+//!         while let Ok(event) = events.recv().await {
+//!             match event {
+//!                 Event::CaseCompleted { passed, .. } => println!("Case: {}", if passed { "✓" } else { "✗" }),
+//!                 Event::RunCompleted { metrics, .. } => println!("Done: {:.1}% accuracy", metrics.accuracy * 100.0),
+//!                 _ => {}
+//!             }
 //!         }
-//!     }
-//! });
+//!     });
 //!
-//! // Run
-//! let result = bench.run(None, None).await?;
+//!     // Run
+//!     let result = bench.run(None, None).await?;
+//!     Ok(())
+//! }
 //! ```
 //!
 //! # Public API

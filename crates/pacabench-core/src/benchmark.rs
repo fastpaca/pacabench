@@ -23,9 +23,13 @@ use tracing::info;
 /// Result of a benchmark run.
 #[derive(Debug, Clone)]
 pub struct RunResult {
+    /// Unique identifier for this run.
     pub run_id: String,
+    /// Aggregated metrics across all agents and datasets.
     pub metrics: AggregatedMetrics,
+    /// Per-agent aggregated metrics.
     pub agent_metrics: HashMap<String, AggregatedMetrics>,
+    /// Whether the run was aborted before completion.
     pub aborted: bool,
 }
 
@@ -62,14 +66,26 @@ impl Benchmark {
         }
     }
 
+    /// Subscribe to events emitted during the benchmark run.
+    ///
+    /// Returns a broadcast receiver that will receive all [`Event`] variants
+    /// as the benchmark progresses.
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.event_tx.subscribe()
     }
 
+    /// Send a command to control the running benchmark.
+    ///
+    /// Use [`Command::Stop`] for graceful shutdown or [`Command::Abort`] for
+    /// immediate termination.
     pub fn send(&self, cmd: Command) {
         let _ = self.cmd_tx.send(cmd);
     }
 
+    /// Get a cloneable sender for commands.
+    ///
+    /// Useful for passing to signal handlers or other async tasks that need
+    /// to control the benchmark.
     pub fn command_sender(&self) -> mpsc::UnboundedSender<Command> {
         self.cmd_tx.clone()
     }

@@ -160,33 +160,52 @@ impl EvaluationResult {
 }
 
 /// Combined result of running and evaluating a case.
+///
+/// This struct captures both the runner output and evaluation results.
+/// It is persisted to JSONL files and used for aggregating metrics.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CaseResult {
+    /// Unique identifier for the case within its dataset.
     pub case_id: String,
+    /// Name of the dataset this case belongs to.
     pub dataset_name: String,
+    /// Name of the agent that processed this case.
     pub agent_name: String,
+    /// Whether the case passed evaluation.
     pub passed: bool,
+    /// Attempt number (1-based, increments on retry).
     pub attempt: u32,
+    /// Raw output from the runner, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// Error message if the runner failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Classification of the error (none, task failure, system failure, fatal).
     #[serde(default)]
     pub error_type: ErrorType,
+    /// Total wall-clock time for the runner, in milliseconds.
     #[serde(default)]
     pub runner_duration_ms: f64,
+    /// LLM metrics collected by the proxy during this case.
     #[serde(default)]
     pub llm_metrics: LlmMetrics,
+    /// ISO 8601 timestamp when this result was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    /// F1 score from F1 evaluator, if used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub f1_score: Option<f64>,
+    /// Whether F1 score met the threshold, if F1 evaluator was used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub f1_passed: Option<bool>,
+    /// Whether LLM judge passed, if judge evaluator was used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_passed: Option<bool>,
+    /// Reason from LLM judge, if judge evaluator was used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_reason: Option<String>,
+    /// Metrics from judge LLM call (tokens, latency), if applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_metrics: Option<JudgeMetrics>,
 }

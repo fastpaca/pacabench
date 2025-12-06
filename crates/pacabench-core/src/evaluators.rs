@@ -12,12 +12,19 @@ use std::sync::Arc;
 use tiktoken_rs::{cl100k_base, get_bpe_from_model};
 use tokio::time::{sleep, Duration};
 
+/// Trait for evaluating runner output against expected results.
+///
+/// Evaluators determine whether a case passed or failed based on the
+/// runner's output and the expected answer from the dataset.
 #[async_trait]
 pub trait Evaluator: Send + Sync {
+    /// Evaluate the runner output against the expected result.
     async fn evaluate(&self, case: &Case, output: &RunnerOutput) -> EvaluationResult;
+    /// Return the evaluator type name (e.g., "exact_match", "f1", "llm_judge").
     fn kind(&self) -> &str;
 }
 
+/// Evaluator that requires exact string match between output and expected.
 pub struct ExactMatchEvaluator;
 
 #[async_trait]
@@ -45,6 +52,10 @@ impl Evaluator for ExactMatchEvaluator {
     }
 }
 
+/// Evaluator using token-level F1 score with a configurable threshold.
+///
+/// Tokenizes both the output and expected using BPE (cl100k_base or GPT-2),
+/// then computes precision, recall, and F1 score.
 pub struct F1Evaluator {
     threshold: f64,
 }
@@ -130,6 +141,11 @@ impl Evaluator for F1Evaluator {
     }
 }
 
+/// Evaluator for multiple-choice questions.
+///
+/// Attempts to extract a choice letter (A, B, C, D) from the output and
+/// compare it to the expected answer. Falls back to F1 or LLM judge if
+/// no valid choice is extracted.
 pub struct MultipleChoiceEvaluator {
     fallback: MultipleChoiceFallback,
     judge_model: String,
@@ -265,6 +281,10 @@ impl Evaluator for MultipleChoiceEvaluator {
     }
 }
 
+/// Evaluator that uses an LLM to judge semantic equivalence.
+///
+/// Prompts the model to determine if the output is semantically equivalent
+/// to the expected answer, returning YES or NO.
 pub struct LlmJudgeEvaluator {
     model: String,
     base_url: Option<String>,
@@ -419,6 +439,7 @@ impl Evaluator for LlmJudgeEvaluator {
     }
 }
 
+/// Create an evaluator from configuration.
 pub fn get_evaluator(cfg: &EvaluatorConfig) -> Result<Arc<dyn Evaluator>> {
     match cfg {
         EvaluatorConfig::ExactMatch => Ok(Arc::new(ExactMatchEvaluator)),
