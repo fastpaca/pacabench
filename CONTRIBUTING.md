@@ -14,7 +14,11 @@ Thank you for your interest in contributing to PacaBench! We welcome contributio
     ```bash
     cargo build --workspace
     ```
-5.  **Create a branch** for your feature or fix.
+5.  **Install locally** (optional, for testing the pip-distributed binary):
+    ```bash
+    pip install -e .
+    ```
+6.  **Create a branch** for your feature or fix.
 
 ## Development Workflow
 

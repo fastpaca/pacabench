@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 #[derive(Debug, Parser)]
 #[command(
     name = "pacabench",
+    version,
     about = "A local-first benchmark harness for LLM agents"
 )]
 struct Cli {
