@@ -89,11 +89,9 @@ Run a quick test:
 pacabench run --limit 10
 ```
 
-Check results:
-
-```bash
-pacabench
-```
+<p align="center">
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-run.gif" width="800">
+</p>
 
 See all runs:
 
@@ -108,6 +106,11 @@ pacabench show <run-id>
 pacabench show <run-id> --cases
 pacabench show <run-id> --failures
 ```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-show.gif" width="800">
+</p>
+
 
 Retry failures:
 
@@ -127,7 +130,6 @@ pacabench export <run-id> > results.json
 
 | Command | Description |
 |---------|-------------|
-| `pacabench` | Show latest run summary |
 | `pacabench show` | List all runs |
 | `pacabench show <run>` | Show run details |
 | `pacabench show <run> --cases` | Show individual case results |
@@ -161,8 +163,6 @@ config:
 agents:
   - name: "mem0-agent"
     command: "python agents/mem0_agent.py"
-    env:
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
 
 datasets:
   - name: "membench"
@@ -216,7 +216,7 @@ PacaBench exists because I wanted to stop fighting my tools and start getting ac
 
 ## Architecture
 
-PacaBench is built in Rust for speed and reliability, while remaining easy to install via pip/uvx. It isolates your code from the harness.
+PacaBench is built in Rust for failure isolation and reliability, while remaining easy to install via pip/uvx. It isolates your code from the harness.
 
 ```mermaid
 graph LR
