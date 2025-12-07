@@ -162,6 +162,7 @@ impl ProgressDisplay {
                 run_id,
                 total_cases,
                 resuming,
+                retrying,
                 completed_cases,
                 agents,
                 datasets: _,
@@ -170,21 +171,27 @@ impl ProgressDisplay {
             } => {
                 *self.start_time.lock() = Some(Instant::now());
 
-                let cases_per_agent = if agents.is_empty() {
-                    total_cases
-                } else {
-                    total_cases / agents.len() as u64
-                };
-                let run_scope = if agents.is_empty() {
+                // For retry scenarios, agents have different case counts so don't show "X cases x Y agents"
+                let run_scope = if retrying {
+                    format!("{total_cases} failed cases")
+                } else if agents.is_empty() {
                     format!("{total_cases} cases")
                 } else {
+                    let cases_per_agent = total_cases / agents.len() as u64;
                     format!(
                         "{total_cases} tasks = {cases_per_agent} cases x {} agents",
                         agents.len()
                     )
                 };
 
-                if resuming {
+                if retrying {
+                    println!(
+                        "{} Retrying {} ({})",
+                        style("→").cyan().bold(),
+                        style(&run_id).bold(),
+                        run_scope
+                    );
+                } else if resuming {
                     println!(
                         "{} Resuming {} ({} already done, {})",
                         style("→").cyan().bold(),
@@ -201,26 +208,24 @@ impl ProgressDisplay {
                     );
                 }
 
-                let max_name_len = agents.iter().map(|n| n.len()).max().unwrap_or(10);
-
                 let mut agent_names = agents.clone();
                 agent_names.sort();
 
-                for agent_name in agent_names {
-                    let total_for_agent = agent_totals
-                        .get(&agent_name)
-                        .copied()
-                        .unwrap_or(cases_per_agent);
-                    let completed_for_agent = agent_completed
-                        .get(&agent_name)
-                        .copied()
-                        .unwrap_or_else(|| {
-                            if agents.is_empty() {
-                                completed_cases
-                            } else {
-                                completed_cases / agents.len() as u64
-                            }
-                        });
+                // Filter out agents with 0 cases (e.g., in retry scenarios)
+                let agents_with_cases: Vec<_> = agent_names
+                    .iter()
+                    .filter(|name| agent_totals.get(*name).copied().unwrap_or(1) > 0)
+                    .collect();
+
+                let max_name_len = agents_with_cases
+                    .iter()
+                    .map(|n| n.len())
+                    .max()
+                    .unwrap_or(10);
+
+                for agent_name in agents_with_cases {
+                    let total_for_agent = agent_totals.get(agent_name).copied().unwrap_or(0);
+                    let completed_for_agent = agent_completed.get(agent_name).copied().unwrap_or(0);
 
                     let bar_style = ProgressStyle::with_template(&format!(
                         "{{spinner:.green}} {{prefix:<{max_name_len}}} [{{bar:30.cyan/blue}}] {{pos}}/{{len}} {{msg}}"
@@ -238,7 +243,7 @@ impl ProgressDisplay {
                     state
                         .bar
                         .enable_steady_tick(std::time::Duration::from_millis(100));
-                    self.agents.insert(agent_name, state);
+                    self.agents.insert(agent_name.clone(), state);
                 }
             }
 
@@ -285,6 +290,7 @@ impl ProgressDisplay {
             Event::RunCompleted {
                 run_id,
                 total_cases,
+                completed_cases,
                 passed_cases,
                 failed_cases,
                 aborted,
@@ -327,19 +333,33 @@ impl ProgressDisplay {
                 );
                 println!();
 
-                let accuracy = if total_cases > 0 {
-                    passed_cases as f64 / total_cases as f64 * 100.0
+                // Accuracy is based on completed cases (what we actually ran)
+                let accuracy = if completed_cases > 0 {
+                    passed_cases as f64 / completed_cases as f64 * 100.0
                 } else {
                     0.0
                 };
 
-                println!(
-                    "  {} {}/{} ({:.1}%)",
-                    style("Passed:").dim(),
-                    style(passed_cases).green(),
-                    total_cases,
-                    accuracy
-                );
+                // Show "passed/completed" with note if some cases weren't attempted
+                if completed_cases < total_cases {
+                    let not_attempted = total_cases - completed_cases;
+                    println!(
+                        "  {} {}/{} ({:.1}%) [{} not attempted]",
+                        style("Passed:").dim(),
+                        style(passed_cases).green(),
+                        completed_cases,
+                        accuracy,
+                        style(not_attempted).yellow()
+                    );
+                } else {
+                    println!(
+                        "  {} {}/{} ({:.1}%)",
+                        style("Passed:").dim(),
+                        style(passed_cases).green(),
+                        completed_cases,
+                        accuracy
+                    );
+                }
                 println!("  {} {}", style("Failed:").dim(), style(failed_cases).red());
                 println!(
                     "  {} {}",

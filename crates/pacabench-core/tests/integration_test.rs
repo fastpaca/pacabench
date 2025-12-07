@@ -141,8 +141,15 @@ async fn test_benchmark_end_to_end() {
     assert_eq!(metrics.failed_cases, 0);
 }
 
+/// Test resume of an interrupted (non-terminal) run.
+///
+/// This simulates a run that was interrupted mid-execution and needs to be resumed.
+/// The key difference from retry is that resume processes ALL remaining cases,
+/// not just failed ones from the original run.
 #[tokio::test]
 async fn test_benchmark_resume() {
+    use pacabench_core::types::RunStatus;
+
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let runs = root.join("runs");
@@ -179,7 +186,12 @@ async fn test_benchmark_resume() {
     let results1 = store1.load_results().unwrap();
     assert_eq!(results1.len(), 1, "first run should have 1 result");
 
-    // Resume run
+    // Simulate an interrupted run by setting status back to Running
+    let mut metadata = store1.read_metadata().unwrap().unwrap();
+    metadata.status = RunStatus::Running;
+    store1.write_metadata(&metadata).unwrap();
+
+    // Resume run - should process remaining cases since run is non-terminal
     let bench2 = Benchmark::new(config);
     bench2
         .run(Some("resume-run".into()), None)
@@ -480,4 +492,106 @@ for line in sys.stdin:
             panic!("unexpected agent {}", result.agent_name);
         }
     }
+}
+
+/// Test that retry only retries cases from the original run, not new cases from the dataset.
+///
+/// This tests the bug where:
+/// 1. Run with --limit 2 on a 5-case dataset (case 1 passes, case 2 fails)
+/// 2. Retry the run
+/// 3. Bug: All 5 cases are retried instead of just the 1 failed case from the original run
+#[tokio::test]
+async fn test_retry_only_retries_failed_cases_from_original_run() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let runs = root.join("runs");
+    let data_dir = root.join("data");
+
+    fs::create_dir_all(&runs).unwrap();
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let agent_script = root.join("agent.py");
+    create_echo_agent(&agent_script);
+
+    // Create dataset with 5 cases, where case 2 will fail (expected != input)
+    let dataset_file = data_dir.join("cases.jsonl");
+    let cases = [
+        r#"{"case_id": "1", "input": "hello", "expected": "hello"}"#,
+        r#"{"case_id": "2", "input": "world", "expected": "DIFFERENT"}"#,
+        r#"{"case_id": "3", "input": "foo", "expected": "foo"}"#,
+        r#"{"case_id": "4", "input": "bar", "expected": "bar"}"#,
+        r#"{"case_id": "5", "input": "baz", "expected": "baz"}"#,
+    ];
+    fs::write(&dataset_file, cases.join("\n")).unwrap();
+
+    let mut config = make_test_config(
+        "retry-limit-test",
+        format!("python {}", agent_script.display()),
+        data_dir.to_string_lossy().to_string(),
+        root.clone(),
+        runs.clone(),
+        Some(EvaluatorConfig::ExactMatch),
+    );
+    config.global.concurrency = 1;
+    config.global.max_retries = 0; // No automatic retries
+
+    // First run with limit 2: runs cases 1 and 2 only
+    let bench1 = Benchmark::new(config.clone());
+    bench1
+        .run(Some("retry-test-run".into()), Some(2))
+        .await
+        .expect("first run should succeed");
+
+    let store1 = RunStore::new(runs.join("retry-test-run")).unwrap();
+    let results1 = store1.load_results().unwrap();
+
+    assert_eq!(results1.len(), 2, "first run should have exactly 2 results");
+
+    let passed_count = results1.iter().filter(|r| r.passed).count();
+    let failed_count = results1.iter().filter(|r| !r.passed).count();
+    assert_eq!(passed_count, 1, "should have 1 passed case");
+    assert_eq!(failed_count, 1, "should have 1 failed case");
+
+    // Retry: should only retry the 1 failed case, not run cases 3,4,5
+    let bench2 = Benchmark::new(config);
+
+    // Subscribe to events to check that total_cases is reported correctly
+    let mut events = bench2.subscribe();
+
+    let result2 = bench2
+        .run(Some("retry-test-run".into()), None)
+        .await
+        .expect("retry should succeed");
+
+    let store2 = RunStore::new(runs.join("retry-test-run")).unwrap();
+    let results2 = store2.load_results().unwrap();
+
+    // Verify only cases from original run are processed
+    assert_eq!(
+        results2.len(),
+        2,
+        "retry should only process cases from original run, not new cases. \
+         Got {} results but expected 2. Case IDs: {:?}",
+        results2.len(),
+        results2.iter().map(|r| &r.case_id).collect::<Vec<_>>()
+    );
+
+    // Verify total_cases in RunStarted event reflects only the failed cases being retried
+    // Not the full dataset (5 cases) or the original run (2 cases)
+    // This is what the progress display shows to the user
+    let mut found_run_started = false;
+    while let Ok(event) = events.try_recv() {
+        if let pacabench_core::Event::RunStarted { total_cases, .. } = event {
+            assert_eq!(
+                total_cases, 1,
+                "RunStarted.total_cases should be 1 (only failed case), not full dataset"
+            );
+            found_run_started = true;
+            break;
+        }
+    }
+    assert!(found_run_started, "should have received RunStarted event");
+
+    // Verify run completed successfully
+    assert!(!result2.aborted, "run should not be aborted");
 }

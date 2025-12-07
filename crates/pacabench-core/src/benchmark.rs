@@ -50,6 +50,11 @@ struct PreparedRun {
     passed: HashSet<CaseKey>,
     attempt_counts: HashMap<CaseKey, u32>,
     retry_policy: RetryPolicy,
+    /// Cases that were in the original run (for retry scenarios).
+    /// If Some, only these cases should be processed. If None, process all cases.
+    eligible_cases: Option<HashSet<CaseKey>>,
+    /// True if this is a retry of a completed run (vs resume of interrupted run).
+    is_retry: bool,
 }
 
 impl Benchmark {
@@ -128,6 +133,7 @@ impl Benchmark {
             prepared.run_id.clone(),
             Arc::new(prepared.passed.clone()),
             Arc::new(prepared.attempt_counts.clone()),
+            prepared.eligible_cases.clone().map(Arc::new),
             work_tx,
             limit,
         );
@@ -182,37 +188,34 @@ impl Benchmark {
 
         let retry_policy = RetryPolicy::new(self.config.global.max_retries as u32, 100);
 
-        // Check for resume and pull prior results
-        let existing_results = store
-            .read_metadata()?
-            .filter(|meta| !meta.status.is_terminal())
-            .map(|_| {
-                let results = store.load_results()?;
-                let completed = results.iter().filter(|r| r.passed).count();
+        // Load prior results if they exist.
+        // For non-terminal runs (interrupted), we resume.
+        // For terminal runs (completed/aborted), we retry failed cases only.
+        let metadata_opt = store.read_metadata()?;
+        let (existing_results, eligible_cases, is_retry) = if let Some(ref meta) = metadata_opt {
+            let results = store.load_results()?;
+            let completed = results.iter().filter(|r| r.passed).count();
+
+            if meta.status.is_terminal() {
+                // Retry scenario: only process cases that were in the original run
+                let all_case_keys: HashSet<CaseKey> = results.iter().map(|r| r.key()).collect();
+                info!(
+                    "Retrying run with {} prior cases ({} passed)",
+                    results.len(),
+                    completed
+                );
+                (results, Some(all_case_keys), true)
+            } else {
+                // Resume scenario: continue with all cases (no restriction)
                 info!("Resuming run with {} completed cases", completed);
-                Ok::<_, PacabenchError>(results)
-            })
-            .transpose()?
-            .unwrap_or_default();
+                (results, None, false)
+            }
+        } else {
+            // Fresh run
+            (Vec::new(), None, false)
+        };
 
-        // Count dataset cases
-        let mut dataset_case_counts: HashMap<String, u64> = HashMap::new();
-        for (name, loader) in dataset_loaders.iter() {
-            let count = loader
-                .count_cases(limit)
-                .await
-                .map_err(|e| PacabenchError::dataset(name.clone(), e))?;
-            dataset_case_counts.insert(name.clone(), count as u64);
-        }
-
-        let total_per_agent: u64 = dataset_case_counts.values().copied().sum();
-        let total_cases = total_per_agent * agent_names.len() as u64;
-
-        let agent_totals: HashMap<String, u64> = agent_names
-            .iter()
-            .map(|agent| (agent.clone(), total_per_agent))
-            .collect();
-
+        // Build attempt counts and passed set from existing results
         let attempt_counts: HashMap<CaseKey, u32> = existing_results
             .iter()
             .map(|r| (r.key(), r.attempt))
@@ -222,6 +225,47 @@ impl Benchmark {
             .filter(|r| r.passed)
             .map(|r| r.key())
             .collect();
+
+        // Calculate total cases and agent totals
+        // For retry (eligible_cases is Some), use the eligible cases count
+        // For fresh run or resume, count from dataset
+        let (total_cases, agent_totals) = if let Some(ref eligible) = eligible_cases {
+            // Retry scenario: count eligible cases (failed cases from original run)
+            // Group by agent to get per-agent totals
+            // Initialize all agents to 0 so progress display doesn't use incorrect fallbacks
+            let mut per_agent: HashMap<String, u64> = agent_names
+                .iter()
+                .map(|name| (name.clone(), 0u64))
+                .collect();
+            for key in eligible.iter() {
+                // Only count cases that haven't passed yet
+                if !passed.contains(key) {
+                    *per_agent.entry(key.agent.clone()).or_default() += 1;
+                }
+            }
+            let total = per_agent.values().sum();
+            (total, per_agent)
+        } else {
+            // Fresh run or resume: count from dataset
+            let mut dataset_case_counts: HashMap<String, u64> = HashMap::new();
+            for (name, loader) in dataset_loaders.iter() {
+                let count = loader
+                    .count_cases(limit)
+                    .await
+                    .map_err(|e| PacabenchError::dataset(name.clone(), e))?;
+                dataset_case_counts.insert(name.clone(), count as u64);
+            }
+
+            let total_per_agent: u64 = dataset_case_counts.values().copied().sum();
+            let total_cases = total_per_agent * agent_names.len() as u64;
+
+            let agent_totals: HashMap<String, u64> = agent_names
+                .iter()
+                .map(|agent| (agent.clone(), total_per_agent))
+                .collect();
+
+            (total_cases, agent_totals)
+        };
 
         // Initialize state
         let state = RunState::new(
@@ -264,6 +308,8 @@ impl Benchmark {
             passed,
             attempt_counts,
             retry_policy,
+            eligible_cases,
+            is_retry,
         };
 
         Ok((prepared, dataset_loaders))
@@ -271,15 +317,28 @@ impl Benchmark {
 
     /// Emit the RunStarted event.
     fn emit_run_started(&self, prepared: &PreparedRun) {
+        // For retry, completed_cases represents passed cases from original run (not relevant to show)
+        // For resume, completed_cases represents progress so far
+        let resuming = !prepared.is_retry && prepared.state.completed_cases() > 0;
+
         self.emit(Event::RunStarted {
             run_id: prepared.run_id.clone(),
             total_cases: prepared.state.total_cases(),
-            resuming: prepared.state.completed_cases() > 0,
-            completed_cases: prepared.state.completed_cases(),
+            resuming,
+            retrying: prepared.is_retry,
+            completed_cases: if prepared.is_retry {
+                0 // Don't show "already done" for retry - it's misleading
+            } else {
+                prepared.state.completed_cases()
+            },
             agents: prepared.metadata.agents.clone(),
             datasets: prepared.metadata.datasets.clone(),
             agent_totals: prepared.state.agent_totals(),
-            agent_completed: prepared.state.agent_completed(),
+            agent_completed: if prepared.is_retry {
+                HashMap::new() // Don't set initial progress for retry
+            } else {
+                prepared.state.agent_completed()
+            },
         });
     }
 
@@ -421,18 +480,23 @@ impl Benchmark {
         metadata.completed_cases = state.completed_cases();
         store.write_metadata(&metadata)?;
 
+        // Load all unique results (deduplicated by CaseKey)
         let results = store.load_results()?;
         let metrics = aggregate_results(&results);
         let agent_metrics = aggregate_by_agent(&results);
 
-        let passed = results.iter().filter(|r| r.passed).count() as u64;
-        let failed = state.total_cases().saturating_sub(passed);
+        // total_cases = intended (from state, matches RunStarted)
+        // completed_cases = actually processed (from results)
+        // This makes start/end events consistent while showing actual progress
+        let intended_total = state.total_cases();
+        let actual_completed = metrics.total_cases;
 
         self.emit(Event::RunCompleted {
             run_id: state.run_id.clone(),
-            total_cases: state.total_cases(),
-            passed_cases: passed,
-            failed_cases: failed,
+            total_cases: intended_total,
+            completed_cases: actual_completed,
+            passed_cases: actual_completed.saturating_sub(metrics.failed_cases),
+            failed_cases: metrics.failed_cases,
             aborted,
             metrics: metrics.clone(),
             agent_metrics: agent_metrics.clone(),
@@ -452,12 +516,17 @@ impl Benchmark {
 }
 
 /// Spawn a task that streams cases from datasets and feeds work items to the pool.
+///
+/// If `eligible_cases` is Some, only cases in that set will be processed (retry scenario).
+/// If None, all cases from the datasets will be processed (fresh run or resume).
+#[allow(clippy::too_many_arguments)]
 fn spawn_case_producer(
     dataset_loaders: Vec<(String, Box<dyn DatasetLoader>)>,
     agents: Vec<AgentConfig>,
     run_id: String,
     passed: Arc<HashSet<CaseKey>>,
     attempts: Arc<HashMap<CaseKey, u32>>,
+    eligible_cases: Option<Arc<HashSet<CaseKey>>>,
     work_tx: mpsc::Sender<WorkItem>,
     limit: Option<usize>,
 ) -> JoinHandle<Result<()>> {
@@ -473,6 +542,15 @@ fn spawn_case_producer(
 
                 for agent in &agents {
                     let key = CaseKey::new(&agent.name, &case.dataset_name, &case.case_id);
+
+                    // Skip if case was not in the original run (retry scenario)
+                    if let Some(ref eligible) = eligible_cases {
+                        if !eligible.contains(&key) {
+                            continue;
+                        }
+                    }
+
+                    // Skip already passed cases
                     if passed.contains(&key) {
                         continue;
                     }

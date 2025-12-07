@@ -273,7 +273,11 @@ pub enum Event {
     RunStarted {
         run_id: String,
         total_cases: u64,
+        /// True if resuming an interrupted (non-terminal) run.
         resuming: bool,
+        /// True if retrying failed cases from a completed run.
+        #[serde(default)]
+        retrying: bool,
         completed_cases: u64,
         agents: Vec<String>,
         datasets: Vec<String>,
@@ -309,7 +313,10 @@ pub enum Event {
     /// Benchmark run finished.
     RunCompleted {
         run_id: String,
+        /// Intended total cases (matches RunStarted.total_cases).
         total_cases: u64,
+        /// Actually processed cases (may be < total if aborted/circuit-tripped).
+        completed_cases: u64,
         passed_cases: u64,
         failed_cases: u64,
         aborted: bool,
