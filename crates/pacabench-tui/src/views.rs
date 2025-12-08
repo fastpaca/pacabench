@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Frame,
 };
 use std::time::Duration;
@@ -42,37 +42,27 @@ fn render_dashboard(
     anim: Animation,
     area: Rect,
 ) {
-    let chunks = Layout::vertical([
+    let layout = Layout::vertical([
         Constraint::Length(1), // Header
+        Constraint::Length(2), // Blank
+        Constraint::Length(5), // Stats row
         Constraint::Length(1), // Blank
-        Constraint::Length(1), // Progress bar
-        Constraint::Length(1), // Progress text
-        Constraint::Length(2), // Blank
-        Constraint::Min(10),   // Content (agents + events)
-        Constraint::Length(2), // Blank
+        Constraint::Min(10),   // Main content (agents + events)
+        Constraint::Length(1), // Blank
         Constraint::Length(1), // Help
     ])
     .split(area);
 
-    // Header
-    render_header(frame, state, theme, anim, chunks[0]);
+    render_header(frame, state, theme, anim, layout[0]);
+    render_stat_cards(frame, state, theme, layout[2]);
 
-    // Progress bar
-    render_progress_bar(frame, state, theme, chunks[2]);
+    let main_chunks = Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(layout[4]);
 
-    // Progress text
-    render_progress_text(frame, state, theme, chunks[3]);
+    render_agents_table(frame, state, theme, main_chunks[0]);
+    render_events_panel(frame, state, theme, main_chunks[1]);
 
-    // Content: agents on left, events on right
-    let content_chunks =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[5]);
-
-    render_agents_section(frame, state, theme, content_chunks[0]);
-    render_events_section(frame, state, theme, content_chunks[1]);
-
-    // Help line
-    render_help(frame, theme, chunks[7]);
+    render_help(frame, theme, layout[6]);
 }
 
 fn render_header(frame: &mut Frame, state: &AppState, theme: &Theme, anim: Animation, area: Rect) {
@@ -129,137 +119,187 @@ fn render_header(frame: &mut Frame, state: &AppState, theme: &Theme, anim: Anima
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_progress_bar(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let pct = state.progress_pct();
-    let width = area.width.saturating_sub(12) as usize; // Leave room for percentage
-    let filled = (pct * width as f64).round() as usize;
-    let empty = width.saturating_sub(filled);
+fn render_stat_cards(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let chunks = Layout::horizontal([
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+    ])
+    .split(area);
 
-    let filled_bar = "━".repeat(filled);
-    let empty_bar = "─".repeat(empty);
-    let pct_str = format!(" {:.1}%", pct * 100.0);
-
-    let line = Line::from(vec![
-        Span::styled("  ", theme.text),
-        Span::styled(filled_bar, Style::default().fg(theme::NEON_CYAN)),
-        Span::styled(empty_bar, theme.text_dim),
-        Span::styled(pct_str, theme.text_muted),
-    ]);
-
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-fn render_progress_text(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
     let completed = state.total_completed();
-    let total = state.total_cases;
+    let total = state.total_cases.max(1);
+    let pct = state.progress_pct() * 100.0;
+    render_stat_card(
+        frame,
+        theme,
+        chunks[0],
+        "Progress",
+        format!("{pct:.1}%"),
+        format!("{completed}/{total} cases"),
+    );
 
-    let mut spans = vec![
-        Span::styled("  ", theme.text),
-        Span::styled(format!("{} of {} cases", completed, total), theme.text),
-    ];
+    let accuracy = state.accuracy() * 100.0;
+    render_stat_card(
+        frame,
+        theme,
+        chunks[1],
+        "Accuracy",
+        format!("{accuracy:.1}%"),
+        format!("{} passed", state.total_passed()),
+    );
 
-    // ETA
-    if let Some(eta) = state.eta() {
-        let eta_str = format_duration(eta);
-        spans.push(Span::styled(
-            format!("   ETA {}", eta_str),
-            theme.text_muted,
-        ));
-    }
-
-    // Throughput
     let throughput = state.throughput_per_min();
-    if throughput > 0.0 {
-        spans.push(Span::styled(
-            format!("   {:.1}/min", throughput),
-            theme.text_muted,
-        ));
-    }
+    render_stat_card(
+        frame,
+        theme,
+        chunks[2],
+        "Throughput",
+        format!("{throughput:.1}/min"),
+        "cases per minute".to_string(),
+    );
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let eta = state
+        .eta()
+        .map(format_duration)
+        .unwrap_or_else(|| "—".into());
+    render_stat_card(
+        frame,
+        theme,
+        chunks[3],
+        "ETA",
+        eta,
+        format!("elapsed {}", format_duration(state.elapsed())),
+    );
 }
 
-fn render_agents_section(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let mut lines = vec![
-        Line::from(Span::styled("  AGENTS", theme.text_muted)),
-        Line::from(""),
+fn render_stat_card(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    value: String,
+    detail: String,
+) {
+    let block = Block::default()
+        .title(Span::styled(format!(" {title} "), theme.text_muted))
+        .borders(Borders::ALL)
+        .border_style(theme.border);
+
+    let content = Paragraph::new(vec![
+        Line::from(Span::styled(
+            value,
+            theme.title.add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(detail, theme.text_muted)),
+    ])
+    .block(block);
+
+    frame.render_widget(content, area);
+}
+
+fn render_agents_table(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let header = ["Agent", "Progress", "Done", "Pass/Fail/Err"];
+    let widths = [
+        Constraint::Length(18),
+        Constraint::Length(18),
+        Constraint::Length(12),
+        Constraint::Length(18),
     ];
 
-    // Calculate available height for agents (minus header and blank line)
-    let max_agents = (area.height as usize).saturating_sub(3) / 3; // 3 lines per agent
-
-    for (i, name) in state.agent_order.iter().enumerate().take(max_agents) {
-        if let Some(agent) = state.agents.get(name) {
-            let a = agent;
-            let is_selected = state.selected_index == i;
-
-            // Progress bar (16 chars to fit better)
-            let pct = a.progress_pct();
-            let bar_width = 16;
-            let filled = (pct * bar_width as f64).round() as usize;
-
-            let bar: String = (0..bar_width)
-                .map(|j| if j < filled { '█' } else { '░' })
-                .collect();
-
-            let prefix = if is_selected { "▸ " } else { "  " };
-
-            // Truncate name to fit (max 20 chars)
-            let display_name: String = agent.name.chars().take(20).collect();
-            let padded_name = format!("{:<20}", display_name);
-
-            // Name line
-            let name_style = if is_selected {
-                theme.text.add_modifier(Modifier::BOLD)
+    let rows: Vec<Row> = state
+        .agent_order
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| {
+            let a = state.agents.get(name);
+            let (progress, done, pfe, acc_style) = if let Some(agent) = a {
+                let pct = agent.progress_pct();
+                let bar = gauge_line(pct, 12);
+                let done = format!("{}/{}", agent.completed(), agent.total_cases);
+                let pfe = format!(
+                    "{} ✓ / {} ✗ / {} ⚠",
+                    agent.passed(),
+                    agent.failed(),
+                    agent.errors()
+                );
+                (bar, done, pfe, theme.accuracy_style(agent.accuracy()))
             } else {
-                theme.text
+                ("".into(), "".into(), "".into(), theme.text_muted)
             };
 
-            lines.push(Line::from(vec![
-                Span::styled(prefix, theme.text_muted),
-                Span::styled(padded_name, name_style),
-                Span::styled(bar, Style::default().fg(theme::NEON_CYAN)),
-                Span::styled(format!(" {:>3.0}%", pct * 100.0), theme.text_muted),
-            ]));
+            let mut row = Row::new(vec![
+                Cell::from(Span::styled(name.clone(), theme.text)),
+                Cell::from(Span::styled(
+                    progress,
+                    Style::default().fg(theme::NEON_CYAN),
+                )),
+                Cell::from(Span::styled(done, theme.text_muted)),
+                Cell::from(Span::styled(pfe, acc_style)),
+            ]);
 
-            // Stats line - show completed/total as well
-            let acc = a.accuracy() * 100.0;
-            let acc_style = theme.accuracy_style(a.accuracy());
+            if state.selected_index == idx {
+                row = row.style(theme.highlight);
+            }
 
-            lines.push(Line::from(vec![
-                Span::styled("    ", theme.text),
-                Span::styled(
-                    format!("{}/{}", a.completed(), a.total_cases),
-                    theme.text_muted,
-                ),
-                Span::styled(format!(" · {:.0}%", acc), acc_style),
-                Span::styled(
-                    format!(" · {} ✓ · {} ✗", a.passed(), a.failed()),
-                    theme.text_muted,
-                ),
-            ]));
+            row
+        })
+        .collect();
 
-            lines.push(Line::from(""));
-        }
-    }
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(
+                header
+                    .iter()
+                    .map(|h| Cell::from(Span::styled(*h, theme.text_muted)))
+                    .collect::<Vec<Cell>>(),
+            )
+            .bottom_margin(1),
+        )
+        .column_spacing(2)
+        .block(
+            Block::default()
+                .title(Span::styled(" Agents ", theme.text_muted))
+                .borders(Borders::ALL)
+                .border_style(theme.border),
+        )
+        .row_highlight_style(theme.highlight);
 
-    let para = Paragraph::new(lines);
-    frame.render_widget(para, area);
+    frame.render_widget(table, area);
 }
 
-fn render_events_section(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let failures = state.failures.len();
+fn gauge_line(pct: f64, width: usize) -> String {
+    let pct = pct.clamp(0.0, 1.0);
+    let filled = (pct * width as f64).round() as usize;
+    let empty = width.saturating_sub(filled);
+    let mut s = String::new();
+    for _ in 0..filled {
+        s.push('█');
+    }
+    for _ in 0..empty {
+        s.push('░');
+    }
+    format!("{s} {:>4.0}%", pct * 100.0)
+}
 
-    let header = if failures > 0 {
-        Line::from(vec![
-            Span::styled("  RECENT", theme.text_muted),
-            Span::styled(format!("   {} failures ↓", failures), theme.error),
-        ])
-    } else {
-        Line::from(Span::styled("  RECENT", theme.text_muted))
-    };
+fn render_events_panel(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let layout = Layout::vertical([
+        Constraint::Min(6),
+        Constraint::Length(1),
+        Constraint::Min(4),
+    ])
+    .split(area);
 
-    let mut lines = vec![header, Line::from("")];
+    render_events_list(frame, state, theme, layout[0]);
+    render_failures_summary(frame, state, theme, layout[2]);
+}
+
+fn render_events_list(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let mut lines = vec![
+        Line::from(Span::styled("  Recent events", theme.text_muted)),
+        Line::from(""),
+    ];
 
     let visible = (area.height as usize).saturating_sub(3);
     for entry in state.events.iter().take(visible) {
@@ -273,9 +313,9 @@ fn render_events_section(frame: &mut Frame, state: &AppState, theme: &Theme, are
         let mut spans = vec![
             Span::styled("  ", theme.text),
             Span::styled(&entry.time, theme.text_dim),
-            Span::styled("   ", theme.text),
+            Span::styled("  ", theme.text),
             Span::styled(icon, icon_style),
-            Span::styled("   ", theme.text),
+            Span::styled("  ", theme.text),
         ];
 
         if let Some(agent) = &entry.agent {
@@ -290,8 +330,33 @@ fn render_events_section(frame: &mut Frame, state: &AppState, theme: &Theme, are
         lines.push(Line::from(spans));
     }
 
-    let para = Paragraph::new(lines);
-    frame.render_widget(para, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border);
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_failures_summary(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("  Failures ", theme.text_muted),
+        Span::styled(format!("{}", state.failures.len()), theme.error),
+    ])];
+
+    for failure in state.failures.iter().take(3) {
+        lines.push(Line::from(vec![
+            Span::styled("    ✗ ", theme.error),
+            Span::styled(format!("{}/{}", failure.agent, failure.case_id), theme.text),
+            Span::styled(" — ", theme.text_muted),
+            Span::styled(&failure.reason, theme.text_muted),
+        ]));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.border);
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
@@ -305,8 +370,8 @@ fn render_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         Span::styled(" expand · ", theme.text_muted),
         Span::styled("f", theme.highlight),
         Span::styled(" failures · ", theme.text_muted),
-        Span::styled("/", theme.highlight),
-        Span::styled(" search", theme.text_muted),
+        Span::styled("esc", theme.highlight),
+        Span::styled(" back", theme.text_muted),
     ]);
 
     frame.render_widget(Paragraph::new(line), area);
@@ -497,12 +562,12 @@ fn render_failures(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rec
 
 /// Completed view with aggregated metrics
 fn render_completed(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let chunks = Layout::vertical([
+    let layout = Layout::vertical([
         Constraint::Length(1), // Header
         Constraint::Length(1), // Blank
-        Constraint::Length(3), // Summary stats
+        Constraint::Length(5), // Stat cards
         Constraint::Length(1), // Blank
-        Constraint::Min(6),    // Per-agent metrics
+        Constraint::Min(8),    // Main content
         Constraint::Length(1), // Help
     ])
     .split(area);
@@ -531,107 +596,22 @@ fn render_completed(frame: &mut Frame, state: &AppState, theme: &Theme, area: Re
         header.push(Span::styled(short_id, theme.text_muted));
     }
 
-    frame.render_widget(Paragraph::new(Line::from(header)), chunks[0]);
+    frame.render_widget(Paragraph::new(Line::from(header)), layout[0]);
 
-    // Summary stats
-    let mut summary_lines: Vec<Line> = Vec::new();
-    if let Some(m) = &state.metrics {
-        let acc_pct = m.accuracy * 100.0;
-        summary_lines.push(Line::from(vec![
-            Span::styled("  Accuracy ", theme.text_muted),
-            Span::styled(format!("{acc_pct:.1}%"), theme.accuracy_style(m.accuracy)),
-            Span::styled("   Passed ", theme.text_muted),
-            Span::styled(
-                format!("{}/{}", m.total_cases - m.failed_cases, m.total_cases),
-                theme.success,
-            ),
-            Span::styled("   Failed ", theme.text_muted),
-            Span::styled(format!("{}", m.failed_cases), theme.error),
-            Span::styled("   Attempts ", theme.text_muted),
-            Span::styled(
-                format!("{:.2} avg · {} max", m.avg_attempts, m.max_attempts),
-                theme.text,
-            ),
-        ]));
+    render_completed_cards(frame, state, theme, layout[2]);
 
-        summary_lines.push(Line::from(vec![
-            Span::styled("  Latency ", theme.text_muted),
-            Span::styled(
-                format!("p50 {:.1}s", m.p50_duration_ms / 1000.0),
-                theme.text,
-            ),
-            Span::styled(" · ", theme.text_muted),
-            Span::styled(
-                format!("p95 {:.1}s", m.p95_duration_ms / 1000.0),
-                theme.text,
-            ),
-            Span::styled("   LLM ", theme.text_muted),
-            Span::styled(format!("avg {:.1}ms", m.avg_llm_latency_ms), theme.text),
-            Span::styled(" · ", theme.text_muted),
-            Span::styled(format!("p95 {:.1}ms", m.p95_llm_latency_ms), theme.text),
-        ]));
+    let main_chunks = Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(layout[4]);
 
-        summary_lines.push(Line::from(vec![
-            Span::styled("  Tokens ", theme.text_muted),
-            Span::styled(
-                format!(
-                    "in {} · out {} · cached {}",
-                    m.total_input_tokens, m.total_output_tokens, m.total_cached_tokens
-                ),
-                theme.text,
-            ),
-            Span::styled("   Judge ", theme.text_muted),
-            Span::styled(
-                format!(
-                    "in {} · out {}",
-                    m.total_judge_input_tokens, m.total_judge_output_tokens
-                ),
-                theme.text,
-            ),
-        ]));
-    } else {
-        summary_lines.push(Line::from(vec![Span::styled(
-            "  Waiting for completion metrics...",
-            theme.text_muted,
-        )]));
-    }
-    frame.render_widget(Paragraph::new(summary_lines), chunks[2]);
+    let left = Layout::vertical([
+        Constraint::Percentage(65),
+        Constraint::Percentage(35),
+    ])
+    .split(main_chunks[0]);
 
-    // Per-agent metrics
-    let mut agent_lines: Vec<Line> = vec![
-        Line::from(Span::styled("  AGENTS", theme.text_muted)),
-        Line::from(""),
-    ];
-    for name in &state.agent_order {
-        if let Some(m) = state.agent_metrics.get(name) {
-            let acc_pct = m.accuracy * 100.0;
-            agent_lines.push(Line::from(vec![
-                Span::styled("  ", theme.text),
-                Span::styled(format!("{:<16}", name), theme.text),
-                Span::styled(
-                    format!("{acc_pct:>5.1}% ",),
-                    theme.accuracy_style(m.accuracy),
-                ),
-                Span::styled(
-                    format!(
-                        "p50 {:.1}s · p95 {:.1}s",
-                        m.p50_duration_ms / 1000.0,
-                        m.p95_duration_ms / 1000.0
-                    ),
-                    theme.text_muted,
-                ),
-                Span::styled(
-                    format!("   fail {}", m.failed_cases),
-                    if m.failed_cases > 0 {
-                        theme.error
-                    } else {
-                        theme.success
-                    },
-                ),
-            ]));
-        }
-    }
-    frame.render_widget(Paragraph::new(agent_lines), chunks[4]);
+    render_agent_metrics_table(frame, state, theme, left[0]);
+    render_failures_table(frame, state, theme, left[1]);
+    render_events_panel(frame, state, theme, main_chunks[1]);
 
     // Help
     let help = Line::from(vec![
@@ -643,7 +623,189 @@ fn render_completed(frame: &mut Frame, state: &AppState, theme: &Theme, area: Re
         Span::styled("esc", theme.highlight),
         Span::styled(" dashboard", theme.text_muted),
     ]);
-    frame.render_widget(Paragraph::new(help), chunks[5]);
+    frame.render_widget(Paragraph::new(help), layout[5]);
+}
+
+fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let rows = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    let top = Layout::horizontal([
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+    ])
+    .split(rows[0]);
+    let bottom = Layout::horizontal([
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+    ])
+    .split(rows[1]);
+
+    let metrics = state.metrics.as_ref();
+    let total = metrics.map(|m| m.total_cases).unwrap_or(state.total_cases);
+    let failed = metrics.map(|m| m.failed_cases).unwrap_or(0);
+    let passed = total.saturating_sub(failed);
+    let accuracy = metrics
+        .map(|m| m.accuracy * 100.0)
+        .unwrap_or_else(|| state.accuracy() * 100.0);
+
+    render_stat_card(
+        frame,
+        theme,
+        top[0],
+        "Accuracy",
+        format!("{accuracy:.1}%"),
+        format!("{passed}/{total} passed"),
+    );
+
+    if let Some(m) = metrics {
+        render_stat_card(
+            frame,
+            theme,
+            top[1],
+            "Latency (run)",
+            format!("p50 {:.1}s", m.p50_duration_ms / 1000.0),
+            format!("p95 {:.1}s", m.p95_duration_ms / 1000.0),
+        );
+
+        render_stat_card(
+            frame,
+            theme,
+            top[2],
+            "Attempts",
+            format!("avg {:.2}", m.avg_attempts),
+            format!("max {}", m.max_attempts),
+        );
+
+        render_stat_card(
+            frame,
+            theme,
+            top[3],
+            "Tokens",
+            format!("in {}", m.total_input_tokens),
+            format!("out {}", m.total_output_tokens),
+        );
+
+        render_stat_card(
+            frame,
+            theme,
+            bottom[0],
+            "LLM latency",
+            format!("avg {:.1}ms", m.avg_llm_latency_ms),
+            format!("p95 {:.1}ms", m.p95_llm_latency_ms),
+        );
+
+        render_stat_card(
+            frame,
+            theme,
+            bottom[1],
+            "Judge tokens",
+            format!("in {}", m.total_judge_input_tokens),
+            format!("out {}", m.total_judge_output_tokens),
+        );
+
+        render_stat_card(
+            frame,
+            theme,
+            bottom[2],
+            "Throughput",
+            format!("{:.1}/min", state.throughput_per_min()),
+            format!("elapsed {}", format_duration(state.elapsed())),
+        );
+
+        render_stat_card(
+            frame,
+            theme,
+            bottom[3],
+            "Failures",
+            format!("{}", failed),
+            "see table below".to_string(),
+        );
+    } else {
+        for chunk in top.iter().skip(1).chain(bottom.iter()) {
+            render_stat_card(
+                frame,
+                theme,
+                *chunk,
+                "Pending",
+                "—".into(),
+                "Waiting for metrics".into(),
+            );
+        }
+    }
+}
+
+fn render_agent_metrics_table(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let header = ["Agent", "Accuracy", "Latency", "Failed"];
+    let widths = [
+        Constraint::Length(18),
+        Constraint::Length(10),
+        Constraint::Length(18),
+        Constraint::Length(10),
+    ];
+
+    let rows: Vec<Row> = state
+        .agent_order
+        .iter()
+        .map(|name| {
+            if let Some(m) = state.agent_metrics.get(name) {
+                let acc_pct = m.accuracy * 100.0;
+                Row::new(vec![
+                    Cell::from(Span::styled(name.clone(), theme.text)),
+                    Cell::from(Span::styled(
+                        format!("{acc_pct:>5.1}%"),
+                        theme.accuracy_style(m.accuracy),
+                    )),
+                    Cell::from(Span::styled(
+                        format!(
+                            "p50 {:.1}s · p95 {:.1}s",
+                            m.p50_duration_ms / 1000.0,
+                            m.p95_duration_ms / 1000.0
+                        ),
+                        theme.text_muted,
+                    )),
+                    Cell::from(Span::styled(
+                        format!("{}", m.failed_cases),
+                        if m.failed_cases > 0 {
+                            theme.error
+                        } else {
+                            theme.success
+                        },
+                    )),
+                ])
+            } else {
+                Row::new(vec![
+                    Cell::from(Span::styled(name.clone(), theme.text_muted)),
+                    Cell::from(Span::styled("—", theme.text_muted)),
+                    Cell::from(Span::styled("—", theme.text_muted)),
+                    Cell::from(Span::styled("—", theme.text_muted)),
+                ])
+            }
+        })
+        .collect();
+
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(
+                header
+                    .iter()
+                    .map(|h| Cell::from(Span::styled(*h, theme.text_muted)))
+                    .collect::<Vec<Cell>>(),
+            )
+            .bottom_margin(1),
+        )
+        .column_spacing(2)
+        .block(
+            Block::default()
+                .title(Span::styled(" Agent metrics ", theme.text_muted))
+                .borders(Borders::ALL)
+                .border_style(theme.border),
+        )
+        .row_highlight_style(theme.highlight);
+
+    frame.render_widget(table, area);
 }
 
 /// Format duration as human readable
