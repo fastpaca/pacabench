@@ -5,7 +5,8 @@ use crate::datasets::{get_dataset_loader, DatasetContext, DatasetLoader};
 use crate::error::{PacabenchError, Result};
 use crate::metrics::aggregate_results;
 use crate::persistence::{
-    compute_config_fingerprint, generate_run_id, iso_timestamp_now, RunMetadata, RunStore,
+    compute_config_fingerprint, generate_run_id, iso_timestamp_now, ErrorEntry, RunMetadata,
+    RunStore,
 };
 use crate::retry::RetryPolicy;
 use crate::state::RunState;
@@ -285,6 +286,24 @@ impl Benchmark {
             dataset_names,
             state.total_cases(),
         );
+
+        // Preserve original totals and retry lineage for reporting
+        if let Some(prev_meta) = metadata_opt {
+            metadata.original_total_cases = Some(
+                prev_meta
+                    .original_total_cases
+                    .unwrap_or(prev_meta.total_cases),
+            );
+            if is_retry {
+                metadata.retry_of = Some(prev_meta.run_id);
+                // planned cases for reporting should reflect the original run,
+                // while active_cases captures what this retry will execute.
+                metadata.total_cases = metadata
+                    .original_total_cases
+                    .unwrap_or(metadata.total_cases);
+                metadata.active_cases = Some(state.total_cases());
+            }
+        }
         metadata.completed_cases = state.completed_cases();
         metadata.start_time = Some(iso_timestamp_now());
         metadata.status = RunStatus::Running;
@@ -441,23 +460,61 @@ impl Benchmark {
             duration_ms: result.duration_ms,
             input_tokens: result.llm_metrics.input_tokens,
             output_tokens: result.llm_metrics.output_tokens,
+            cached_tokens: result.llm_metrics.cached_tokens,
+            model: result.llm_metrics.model.clone(),
+            judge_input_tokens: result
+                .evaluation
+                .as_ref()
+                .and_then(|e| e.judge_metrics.as_ref())
+                .map(|m| m.input_tokens)
+                .unwrap_or(0),
+            judge_output_tokens: result
+                .evaluation
+                .as_ref()
+                .and_then(|e| e.judge_metrics.as_ref())
+                .map(|m| m.output_tokens)
+                .unwrap_or(0),
+            judge_cached_tokens: result
+                .evaluation
+                .as_ref()
+                .and_then(|e| e.judge_metrics.as_ref())
+                .map(|m| m.cached_tokens)
+                .unwrap_or(0),
+            judge_model: result
+                .evaluation
+                .as_ref()
+                .and_then(|e| e.judge_metrics.as_ref())
+                .and_then(|m| m.model.clone()),
         });
 
         let case_result = result.to_case_result(iso_timestamp_now());
         let needs_retry = prepared.state.mark_completed(case_result.clone());
 
+        // Persist system/fatal errors for reporting, even if we will retry.
+        if result.error_type.is_error() {
+            let error_entry = ErrorEntry {
+                timestamp: iso_timestamp_now(),
+                error_type: result.error_type,
+                agent_name: Some(result.item.agent_name.clone()),
+                dataset_name: Some(result.item.dataset_name.clone()),
+                case_id: Some(result.item.case_id.clone()),
+                error: result.error.clone(),
+            };
+            prepared.store.append_error(&error_entry)?;
+            prepared.metadata.system_error_count += 1;
+        }
+
         if needs_retry {
             let backoff = prepared.retry_policy.backoff_duration(result.item.attempt);
             let retry_item = result.item.retry();
+            // Persist updated metadata (e.g., system error counts) even when retrying
+            prepared.store.write_metadata(&prepared.metadata)?;
             retry_queue.insert(retry_item, backoff);
         } else {
-            // Persist final result
+            // Persist final result (includes error info in CaseResult.error_type/error)
             prepared.store.append_result(&case_result)?;
 
             prepared.metadata.completed_cases = prepared.state.completed_cases();
-            if result.error_type.is_error() {
-                prepared.metadata.system_error_count += 1;
-            }
             prepared.store.write_metadata(&prepared.metadata)?;
         }
 

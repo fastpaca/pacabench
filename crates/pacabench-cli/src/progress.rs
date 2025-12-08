@@ -4,7 +4,7 @@
 //! Receives events via tokio channel and updates the display.
 //! Cost is computed here using pricing tables from the pricing module.
 
-use crate::pricing::calculate_cost_from_metrics;
+use crate::pricing::{calculate_cost, calculate_cost_from_metrics};
 use console::style;
 use dashmap::DashMap;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -257,6 +257,12 @@ impl ProgressDisplay {
                 is_error,
                 input_tokens,
                 output_tokens,
+                cached_tokens,
+                model,
+                judge_input_tokens,
+                judge_output_tokens,
+                judge_cached_tokens,
+                judge_model,
                 ..
             } => {
                 if let Some(state) = self.agents.get(&agent) {
@@ -271,8 +277,37 @@ impl ProgressDisplay {
                     let key = format!("{dataset}:{case_id}");
                     state.value().record_case(&key, outcome);
 
-                    let cost_usd = calculate_cost_from_metrics(input_tokens, output_tokens, 0);
-                    state.value().add_cost(cost_usd);
+                    // Use model-aware pricing; fallback to default model if missing
+                    let model_name = model.as_deref().unwrap_or("gpt-4o-mini");
+                    let judge_model_name = judge_model.as_deref().unwrap_or(model_name);
+
+                    let default_agent_cost =
+                        calculate_cost_from_metrics(input_tokens, output_tokens, cached_tokens);
+                    let default_judge_cost = calculate_cost_from_metrics(
+                        judge_input_tokens,
+                        judge_output_tokens,
+                        judge_cached_tokens,
+                    );
+
+                    // If we have explicit models, price per model for accuracy
+                    let agent_cost = if model.is_some() {
+                        calculate_cost(model_name, input_tokens, output_tokens, cached_tokens)
+                    } else {
+                        default_agent_cost
+                    };
+
+                    let judge_cost = if judge_model.is_some() {
+                        calculate_cost(
+                            judge_model_name,
+                            judge_input_tokens,
+                            judge_output_tokens,
+                            judge_cached_tokens,
+                        )
+                    } else {
+                        default_judge_cost
+                    };
+
+                    state.value().add_cost(agent_cost + judge_cost);
                     state.value().update_message(*self.start_time.lock());
                 }
             }

@@ -2,7 +2,9 @@
 
 use crate::config::Config;
 use crate::error::{PacabenchError, Result};
+use crate::stats::RunStats;
 use crate::types::{CaseKey, CaseResult, ErrorType, RunStatus};
+use anyhow::anyhow;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,6 +21,12 @@ pub struct RunMetadata {
     pub agents: Vec<String>,
     pub datasets: Vec<String>,
     pub total_cases: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_cases: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_total_cases: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
     pub completed_cases: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_time: Option<String>,
@@ -43,6 +51,9 @@ impl RunMetadata {
             agents,
             datasets,
             total_cases,
+            active_cases: Some(total_cases),
+            original_total_cases: Some(total_cases),
+            retry_of: None,
             completed_cases: 0,
             start_time: None,
             completed_time: None,
@@ -51,10 +62,11 @@ impl RunMetadata {
     }
 
     pub fn progress(&self) -> f64 {
-        if self.total_cases == 0 {
+        let denom = self.active_cases.unwrap_or(self.total_cases);
+        if denom == 0 {
             0.0
         } else {
-            self.completed_cases as f64 / self.total_cases as f64
+            self.completed_cases as f64 / denom as f64
         }
     }
 }
@@ -185,6 +197,24 @@ impl RunStore {
         }
         Ok(entries)
     }
+
+    /// Load complete run statistics from persisted files.
+    ///
+    /// This is the single source of truth for all run metrics.
+    /// All display code should use this rather than loading individual
+    /// files and recomputing.
+    pub fn load_stats(&self) -> Result<RunStats> {
+        let metadata = self.read_metadata()?;
+        let results = self.load_results()?;
+        let errors = self.load_errors()?;
+
+        match metadata {
+            Some(meta) => Ok(RunStats::compute(&meta, &results, &errors)),
+            None => Err(PacabenchError::Internal(anyhow!(
+                "no metadata found for run"
+            ))),
+        }
+    }
 }
 
 pub fn iso_timestamp_now() -> String {
@@ -216,6 +246,7 @@ pub fn list_run_summaries(runs_dir: &Path) -> Result<Vec<RunSummary>> {
         let store = RunStore::new(&path)?;
         if let Some(meta) = store.read_metadata()? {
             let progress = meta.progress();
+            let display_total = meta.active_cases.unwrap_or(meta.total_cases);
             summaries.push(RunSummary {
                 run_id: path
                     .file_name()
@@ -225,7 +256,7 @@ pub fn list_run_summaries(runs_dir: &Path) -> Result<Vec<RunSummary>> {
                 start_time: meta.start_time,
                 completed_time: meta.completed_time,
                 completed_cases: meta.completed_cases,
-                total_cases: meta.total_cases,
+                total_cases: display_total,
                 progress,
                 datasets: meta.datasets,
                 agents: meta.agents,

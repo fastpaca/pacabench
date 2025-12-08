@@ -8,7 +8,8 @@ mod progress;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use formatting::{
-    build_export_json, build_export_markdown, print_cases, print_run_details, print_run_list,
+    build_export_json_from_stats, build_export_markdown_from_stats, print_cases, print_run_list,
+    print_run_stats,
 };
 use pacabench_core::config::ConfigOverrides;
 use pacabench_core::persistence::{list_run_summaries, RunStore, RunSummary};
@@ -103,6 +104,9 @@ enum Command {
         output: Option<String>,
         #[arg(long)]
         runs_dir: Option<String>,
+        /// Include per-case results in the export payload (JSON only).
+        #[arg(long)]
+        include_cases: bool,
     },
 
     /// Initialize a new pacabench project with example files.
@@ -182,7 +186,8 @@ fn main() -> Result<()> {
             format,
             output,
             runs_dir,
-        }) => cmd_export(&config, &run_id, &format, output, runs_dir)?,
+            include_cases,
+        }) => cmd_export(&config, &run_id, &format, output, runs_dir, include_cases)?,
         Some(Command::Init { .. }) => unreachable!(),
         None => {
             println!(
@@ -272,18 +277,22 @@ fn cmd_show(
     let resolved_id = resolve_run_id_from_summaries(&summaries, partial)?;
     let store = RunStore::new(runs_dir.join(&resolved_id))
         .with_context(|| format!("opening run {}", resolved_id))?;
-    let results = store
-        .load_results()
-        .with_context(|| format!("loading results for {}", resolved_id))?;
-    let errors = store
-        .load_errors()
-        .with_context(|| format!("loading errors for {}", resolved_id))?;
-    let metadata = store
-        .read_metadata()
-        .with_context(|| format!("reading metadata for {}", resolved_id))?;
 
-    print_run_details(&resolved_id, metadata, &results, &errors);
+    // Use load_stats() - single source of truth
+    let stats = store
+        .load_stats()
+        .with_context(|| format!("loading stats for {}", resolved_id))?;
+
+    print_run_stats(&stats);
+
     if cases {
+        // For case-level display, we still need the raw data
+        let results = store
+            .load_results()
+            .with_context(|| format!("loading results for {}", resolved_id))?;
+        let errors = store
+            .load_errors()
+            .with_context(|| format!("loading errors for {}", resolved_id))?;
         print_cases(&resolved_id, &results, &errors, failures, limit);
     }
 
@@ -328,31 +337,33 @@ fn cmd_export(
     format: &str,
     output: Option<String>,
     runs_dir: Option<String>,
+    include_cases: bool,
 ) -> Result<()> {
     let runs_dir = resolve_runs_dir(config, runs_dir);
     let resolved_id = resolve_run_id(&runs_dir, run_id)?;
     let store = RunStore::new(runs_dir.join(&resolved_id))
         .with_context(|| format!("opening run {}", resolved_id))?;
-    let results = store
-        .load_results()
-        .with_context(|| format!("loading results for {}", resolved_id))?;
-    let errors = store
-        .load_errors()
-        .with_context(|| format!("loading errors for {}", resolved_id))?;
-    let metadata = store
-        .read_metadata()
-        .with_context(|| format!("reading metadata for {}", resolved_id))?;
+
+    // Use load_stats() - single source of truth
+    let stats = store
+        .load_stats()
+        .with_context(|| format!("loading stats for {}", resolved_id))?;
+
+    let cases = if include_cases {
+        Some(
+            store
+                .load_results()
+                .with_context(|| format!("loading results for {}", resolved_id))?,
+        )
+    } else {
+        None
+    };
 
     let content = match format {
-        "json" => serde_json::to_string_pretty(&build_export_json(
-            &resolved_id,
-            metadata.as_ref(),
-            &results,
-            &errors,
-        ))?,
-        "markdown" | "md" => {
-            build_export_markdown(&resolved_id, metadata.as_ref(), &results, &errors)
+        "json" => {
+            serde_json::to_string_pretty(&build_export_json_from_stats(&stats, cases.as_deref()))?
         }
+        "markdown" | "md" => build_export_markdown_from_stats(&stats),
         _ => return Err(anyhow!("unsupported format: {format}")),
     };
 

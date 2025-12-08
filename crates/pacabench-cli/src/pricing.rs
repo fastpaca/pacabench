@@ -364,3 +364,65 @@ pub fn calculate_cost_from_metrics(
     // Use gpt-4o-mini pricing as a reasonable default
     calculate_cost("gpt-4o-mini", input_tokens, output_tokens, cached_tokens)
 }
+
+/// Cost breakdown calculated from TokenStats.
+#[derive(Debug, Clone, Default)]
+pub struct CostBreakdown {
+    pub agent_cost_usd: f64,
+    pub judge_cost_usd: f64,
+    pub total_cost_usd: f64,
+}
+
+/// Calculate cost from TokenStats using actual model info.
+///
+/// Uses the models recorded in TokenStats.models_used for accurate pricing.
+/// Falls back to gpt-4o-mini if no model info is available.
+pub fn calculate_cost_from_tokens(tokens: &pacabench_core::stats::TokenStats) -> CostBreakdown {
+    // If we have per-model breakdown, price each model separately
+    let mut agent_cost = 0.0;
+    let mut judge_cost = 0.0;
+
+    if !tokens.per_model.is_empty() {
+        for (model, usage) in &tokens.per_model {
+            agent_cost += calculate_cost(
+                model,
+                usage.agent_input_tokens,
+                usage.agent_output_tokens,
+                usage.agent_cached_tokens,
+            );
+            judge_cost += calculate_cost(
+                model,
+                usage.judge_input_tokens,
+                usage.judge_output_tokens,
+                usage.judge_cached_tokens,
+            );
+        }
+    } else {
+        // Use the first model found, or default to gpt-4o-mini
+        let model = tokens
+            .models_used
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("gpt-4o-mini");
+
+        agent_cost = calculate_cost(
+            model,
+            tokens.agent_input_tokens,
+            tokens.agent_output_tokens,
+            tokens.agent_cached_tokens,
+        );
+
+        judge_cost = calculate_cost(
+            model,
+            tokens.judge_input_tokens,
+            tokens.judge_output_tokens,
+            tokens.judge_cached_tokens,
+        );
+    }
+
+    CostBreakdown {
+        agent_cost_usd: agent_cost,
+        judge_cost_usd: judge_cost,
+        total_cost_usd: agent_cost + judge_cost,
+    }
+}

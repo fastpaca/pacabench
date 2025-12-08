@@ -308,6 +308,18 @@ pub enum Event {
         duration_ms: f64,
         input_tokens: u64,
         output_tokens: u64,
+        #[serde(default)]
+        cached_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default)]
+        judge_input_tokens: u64,
+        #[serde(default)]
+        judge_output_tokens: u64,
+        #[serde(default)]
+        judge_cached_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        judge_model: Option<String>,
     },
 
     /// Benchmark run finished.

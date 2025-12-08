@@ -87,7 +87,8 @@ fn export_json_includes_judge_fields() {
             "latency_ms": [],
             "input_tokens": 100,
             "output_tokens": 50,
-            "cached_tokens": 0
+            "cached_tokens": 0,
+            "model": "gpt-4o"
         },
         "attempt": 1,
         "timestamp": "2024-01-01T00:00:00Z",
@@ -99,7 +100,8 @@ fn export_json_includes_judge_fields() {
             "input_tokens": 10,
             "output_tokens": 5,
             "cached_tokens": 0,
-            "latency_ms": 0.0
+            "latency_ms": 0.0,
+            "model": "gpt-4o"
         }
     });
     let mut results_file = fs::File::create(run_dir.join("results.jsonl")).unwrap();
@@ -121,19 +123,21 @@ fn export_json_includes_judge_fields() {
         .clone();
 
     let parsed: Value = serde_json::from_slice(&output).unwrap();
-    // Judge tokens should be tracked (cost is computed at CLI layer)
+
+    // New RunStats-based export format: judge tokens in tokens object
+    assert_eq!(parsed["tokens"]["judge_input"].as_u64().unwrap(), 10);
+    assert_eq!(parsed["tokens"]["judge_output"].as_u64().unwrap(), 5);
     assert_eq!(
-        parsed["agents"]["agent"]["results"][0]["judge_metrics"]["input_tokens"]
+        parsed["tokens"]["per_model"]["gpt-4o"]["judge_input"]
             .as_u64()
             .unwrap(),
         10
     );
-    assert_eq!(
-        parsed["agents"]["agent"]["results"][0]["judge_metrics"]["output_tokens"]
-            .as_u64()
-            .unwrap(),
-        5
-    );
+
+    // Verify failures array includes judge_reason
+    // (The test case passes, so it won't be in failures)
+    assert_eq!(parsed["passed_cases"].as_u64().unwrap(), 1);
+    assert_eq!(parsed["failed_cases"].as_u64().unwrap(), 0);
 }
 
 /// Test that SIGINT triggers graceful shutdown.

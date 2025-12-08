@@ -57,6 +57,7 @@ pub use runner::RunnerOutput;
 pub mod error;
 pub mod metrics;
 pub mod persistence;
+pub mod stats;
 
 // Internal modules
 pub(crate) mod retry;
