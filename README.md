@@ -9,6 +9,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/fastpaca/pacabench/actions/workflows/lint.yml">
+    <img src="https://github.com/fastpaca/pacabench/actions/workflows/lint.yml/badge.svg" alt="CI">
+  </a>
   <a href="https://opensource.org/license/apache-2-0">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
   </a>
@@ -16,7 +19,7 @@
     <img src="https://img.shields.io/badge/rust-%23000000.svg?logo=rust&logoColor=white" alt="Built with Rust">
   </a>
   <a href="https://pypi.org/project/pacabench/">
-    <img src="https://img.shields.io/badge/pypi-pacabench-3775A9?logo=pypi&logoColor=white" alt="PyPI">
+    <img src="https://img.shields.io/pypi/v/pacabench?logo=pypi&logoColor=white&label=pypi" alt="PyPI Version">
   </a>
 </p>
 
