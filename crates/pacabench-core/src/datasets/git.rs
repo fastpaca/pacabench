@@ -9,6 +9,7 @@ use git2::Repository;
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -72,6 +73,9 @@ impl GitDataset {
                 .arg(cmd)
                 .current_dir(&self.ctx.root_dir)
                 .env("PACABENCH_DATASET_PATH", repo_dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .await
                 .map_err(PacabenchError::Process)?;

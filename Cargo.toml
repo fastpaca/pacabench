@@ -2,6 +2,7 @@
 members = [
     "crates/pacabench-core",
     "crates/pacabench-cli",
+    "crates/pacabench-tui",
 ]
 resolver = "2"
 

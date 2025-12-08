@@ -1,0 +1,34 @@
+[package]
+name = "pacabench-tui"
+version = "0.0.1"
+edition = "2021"
+description = "Minimal terminal UI for PacaBench - LLM agent benchmarking"
+license = "MIT"
+
+[[bin]]
+name = "pacabench-tui"
+path = "src/main.rs"
+
+[dependencies]
+# Core benchmark functionality
+pacabench-core = { path = "../pacabench-core" }
+
+# TUI framework
+ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+
+# Time and formatting
+chrono = "0.4"
+
+[dev-dependencies]
+pretty_assertions = "1"
