@@ -320,6 +320,15 @@ pub enum Event {
         judge_cached_tokens: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         judge_model: Option<String>,
+        /// Raw output from the runner, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+        /// Error message if the runner failed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        /// Reason from LLM judge, if judge evaluator was used.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        judge_reason: Option<String>,
     },
 
     /// Benchmark run finished.

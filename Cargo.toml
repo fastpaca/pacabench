@@ -1,8 +1,7 @@
 [workspace]
 members = [
     "crates/pacabench-core",
-    "crates/pacabench-cli",
-    "crates/pacabench-tui",
+    "crates/pacabench-cli"
 ]
 resolver = "2"
 

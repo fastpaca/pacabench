@@ -480,6 +480,9 @@ impl Benchmark {
                 .as_ref()
                 .and_then(|e| e.judge_metrics.as_ref())
                 .and_then(|m| m.model.clone()),
+            output: result.output.as_ref().map(|o| o.to_string()),
+            error: result.error.clone(),
+            judge_reason: result.evaluation.as_ref().and_then(|e| e.reason.clone()),
         });
 
         let case_result = result.to_case_result(iso_timestamp_now());
