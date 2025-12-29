@@ -332,7 +332,10 @@ impl ProgressDisplay {
                 print_run_stats(&stats);
 
                 if aborted {
-                    println!("     {} Run was aborted early", style("warning").yellow().bold());
+                    println!(
+                        "     {} Run was aborted early",
+                        style("warning").yellow().bold()
+                    );
                     println!();
                 }
             }

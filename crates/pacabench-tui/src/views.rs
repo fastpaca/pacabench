@@ -23,15 +23,64 @@ pub fn render(frame: &mut Frame, state: &AppState, theme: &Theme, anim: Animatio
         area,
     );
 
+    // Split off space for the warning banner at the top
+    let layout = Layout::vertical([
+        Constraint::Length(1), // Warning banner (3 lines for visibility)
+        Constraint::Min(0),    // Main content
+    ])
+    .split(area);
+
+    render_warning_banner(frame, anim, layout[0]);
+    let content_area = layout[1];
+
     match &state.view {
-        View::Dashboard => render_dashboard(frame, state, theme, anim, area),
-        View::AgentDetail { agent } => render_agent_detail(frame, state, theme, agent, area),
-        View::CaseDetail { agent, case_id } => {
-            render_case_detail(frame, state, theme, agent, case_id, area)
+        View::Dashboard => render_dashboard(frame, state, theme, anim, content_area),
+        View::AgentDetail { agent } => {
+            render_agent_detail(frame, state, theme, agent, content_area)
         }
-        View::Failures => render_failures(frame, state, theme, area),
-        View::Completed => render_completed(frame, state, theme, area),
+        View::CaseDetail { agent, case_id } => {
+            render_case_detail(frame, state, theme, agent, case_id, content_area)
+        }
+        View::Failures => render_failures(frame, state, theme, content_area),
+        View::Completed => render_completed(frame, state, theme, content_area),
     }
+}
+
+/// Render the experimental warning banner with red background
+fn render_warning_banner(frame: &mut Frame, anim: Animation, area: Rect) {
+    use ratatui::layout::Alignment;
+    use ratatui::style::Color;
+
+    let blink = anim.blink();
+    let warn_icon = if blink { "⚠ " } else { "  " };
+
+    // Red/dark red background for high visibility
+    let banner_bg = Color::Rgb(60, 20, 20);
+    let text_color = Color::White;
+
+    let banner_style = Style::default().bg(banner_bg).fg(text_color);
+    let bold_style = banner_style.add_modifier(Modifier::BOLD);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(warn_icon, bold_style),
+            Span::styled("EXPERIMENTAL PREVIEW", bold_style),
+            Span::styled(
+                " — This TUI is under active development and may not work as expected",
+                banner_style,
+            ),
+            Span::styled(warn_icon, bold_style),
+        ]),
+    ];
+
+    // Fill the entire area with the background color
+    let block = Block::default().style(banner_style);
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .alignment(Alignment::Center);
+
+    frame.render_widget(paragraph, area);
 }
 
 /// Main dashboard view
