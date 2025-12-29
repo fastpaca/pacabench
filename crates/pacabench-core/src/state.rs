@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 /// Tracks state for a benchmark run.
 pub struct RunState {
-    pub run_id: String,
+    #[allow(dead_code)]
+    run_id: String,
     pub status: RunStatus,
     pending: HashSet<CaseKey>,
     completed: HashMap<CaseKey, CaseResult>,

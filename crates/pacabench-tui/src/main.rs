@@ -331,11 +331,10 @@ async fn run_event_loop(
                                 RunStatus::Completed
                             };
                             if state.total_cases == 0 {
-                                state.total_cases = run.metrics.total_cases;
+                                state.total_cases = run.stats.planned_cases;
                             }
-                            if state.metrics.is_none() {
-                                state.metrics = Some(run.metrics.clone());
-                                state.agent_metrics = run.agent_metrics.clone();
+                            if state.run_stats.is_none() {
+                                state.run_stats = Some(run.stats.clone());
                             }
                             state.view = View::Completed;
                             // Only exit if the user already requested to quit.

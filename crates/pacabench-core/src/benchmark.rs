@@ -3,14 +3,13 @@
 use crate::config::{AgentConfig, Config};
 use crate::datasets::{get_dataset_loader, DatasetContext, DatasetLoader};
 use crate::error::{PacabenchError, Result};
-use crate::metrics::aggregate_results;
 use crate::persistence::{
     compute_config_fingerprint, generate_run_id, iso_timestamp_now, ErrorEntry, RunMetadata,
     RunStore,
 };
 use crate::retry::RetryPolicy;
 use crate::state::RunState;
-use crate::types::{AggregatedMetrics, CaseKey, CaseResult, Command, Event, RunStatus};
+use crate::types::{CaseKey, Command, Event, RunStatus};
 use crate::worker::{WorkItem, WorkResult, WorkerPool};
 use anyhow::anyhow;
 use futures_util::StreamExt;
@@ -24,12 +23,8 @@ use tracing::info;
 /// Result of a benchmark run.
 #[derive(Debug, Clone)]
 pub struct RunResult {
-    /// Unique identifier for this run.
-    pub run_id: String,
-    /// Aggregated metrics across all agents and datasets.
-    pub metrics: AggregatedMetrics,
-    /// Per-agent aggregated metrics.
-    pub agent_metrics: HashMap<String, AggregatedMetrics>,
+    /// Complete run statistics - the single source of truth.
+    pub stats: crate::stats::RunStats,
     /// Whether the run was aborted before completion.
     pub aborted: bool,
 }
@@ -523,7 +518,7 @@ impl Benchmark {
 
     async fn finalize_run(
         &self,
-        state: RunState,
+        _state: RunState,
         mut metadata: RunMetadata,
         store: RunStore,
         aborted: bool,
@@ -534,37 +529,18 @@ impl Benchmark {
             RunStatus::Completed
         };
         metadata.completed_time = Some(iso_timestamp_now());
-        metadata.completed_cases = state.completed_cases();
+        metadata.completed_cases = metadata.active_cases.unwrap_or(metadata.total_cases);
         store.write_metadata(&metadata)?;
 
-        // Load all unique results (deduplicated by CaseKey)
-        let results = store.load_results()?;
-        let metrics = aggregate_results(&results);
-        let agent_metrics = aggregate_by_agent(&results);
-
-        // total_cases = intended (from state, matches RunStarted)
-        // completed_cases = actually processed (from results)
-        // This makes start/end events consistent while showing actual progress
-        let intended_total = state.total_cases();
-        let actual_completed = metrics.total_cases;
+        // Load complete stats - single source of truth
+        let stats = store.load_stats()?;
 
         self.emit(Event::RunCompleted {
-            run_id: state.run_id.clone(),
-            total_cases: intended_total,
-            completed_cases: actual_completed,
-            passed_cases: actual_completed.saturating_sub(metrics.failed_cases),
-            failed_cases: metrics.failed_cases,
             aborted,
-            metrics: metrics.clone(),
-            agent_metrics: agent_metrics.clone(),
+            stats: Box::new(stats.clone()),
         });
 
-        Ok(RunResult {
-            run_id: state.run_id,
-            metrics,
-            agent_metrics,
-            aborted,
-        })
+        Ok(RunResult { stats, aborted })
     }
 
     fn emit(&self, event: Event) {
@@ -631,19 +607,4 @@ fn spawn_case_producer(
 
         Ok(())
     })
-}
-
-fn aggregate_by_agent(results: &[CaseResult]) -> HashMap<String, AggregatedMetrics> {
-    let mut grouped: HashMap<String, Vec<&CaseResult>> = HashMap::new();
-    for r in results {
-        grouped.entry(r.agent_name.clone()).or_default().push(r);
-    }
-
-    grouped
-        .into_iter()
-        .map(|(agent, cases)| {
-            let owned: Vec<CaseResult> = cases.into_iter().cloned().collect();
-            (agent, aggregate_results(&owned))
-        })
-        .collect()
 }

@@ -2,7 +2,7 @@
 //!
 //! Single-owner state, updated from benchmark events and rendered immutably.
 
-use pacabench_core::types::AggregatedMetrics;
+use pacabench_core::stats::RunStats;
 use pacabench_core::Event;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -257,10 +257,10 @@ pub struct AppState {
 
     // Totals
     pub total_cases: u64,
-    pub metrics: Option<AggregatedMetrics>,
-    pub agent_metrics: HashMap<String, AggregatedMetrics>,
+    /// Final run statistics - populated on completion
+    pub run_stats: Option<RunStats>,
 
-    // Agent state
+    // Agent state (live, during run)
     pub agents: HashMap<String, AgentState>,
     pub agent_order: Vec<String>,
 
@@ -293,8 +293,7 @@ impl AppState {
             resuming: false,
             retrying: false,
             total_cases: 0,
-            metrics: None,
-            agent_metrics: HashMap::new(),
+            run_stats: None,
             agents: HashMap::new(),
             agent_order: Vec::new(),
             events: VecDeque::with_capacity(MAX_EVENTS),
@@ -530,27 +529,21 @@ impl AppState {
                 self.add_event(LogLevel::Error, None, message);
             }
 
-            Event::RunCompleted {
-                aborted,
-                metrics,
-                agent_metrics,
-                total_cases,
-                ..
-            } => {
+            Event::RunCompleted { aborted, stats } => {
                 self.status = if aborted {
                     RunStatus::Aborted
                 } else {
                     RunStatus::Completed
                 };
-                self.metrics = Some(metrics);
-                self.agent_metrics = agent_metrics;
-                self.total_cases = total_cases;
+                self.total_cases = stats.planned_cases;
+                let accuracy = stats.accuracy * 100.0;
+                self.run_stats = Some(*stats); // Unbox
                 self.view = View::Completed;
 
                 let msg = if aborted {
                     "Run aborted".to_string()
                 } else {
-                    format!("Run completed - {:.1}% accuracy", self.accuracy() * 100.0)
+                    format!("Run completed - {:.1}% accuracy", accuracy)
                 };
                 self.add_event(LogLevel::Info, None, msg);
             }

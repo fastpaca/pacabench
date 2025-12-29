@@ -4,7 +4,7 @@
 //! Receives events via tokio channel and updates the display.
 //! Cost is computed here using pricing tables from the pricing module.
 
-use crate::pricing::{calculate_cost, calculate_cost_from_metrics};
+use crate::pricing::{calculate_cost, calculate_cost_from_metrics, calculate_cost_from_tokens};
 use console::style;
 use dashmap::DashMap;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -322,26 +322,9 @@ impl ProgressDisplay {
                 }
             }
 
-            Event::RunCompleted {
-                run_id,
-                total_cases,
-                completed_cases,
-                passed_cases,
-                failed_cases,
-                aborted,
-                metrics,
-                agent_metrics,
-            } => {
-                let total_cost_usd = calculate_cost_from_metrics(
-                    metrics.total_input_tokens,
-                    metrics.total_output_tokens,
-                    metrics.total_cached_tokens,
-                );
-                let judge_cost_usd = calculate_cost_from_metrics(
-                    metrics.total_judge_input_tokens,
-                    metrics.total_judge_output_tokens,
-                    0,
-                );
+            Event::RunCompleted { aborted, stats } => {
+                let stats = &*stats; // Unbox for convenience
+                let cost = calculate_cost_from_tokens(&stats.tokens);
 
                 for entry in self.agents.iter() {
                     entry.value().bar.finish_and_clear();
@@ -363,100 +346,88 @@ impl ProgressDisplay {
                 println!(
                     "{} Run {} {}",
                     style("✓").green().bold(),
-                    style(&run_id).bold(),
+                    style(&stats.run_id).bold(),
                     status
                 );
                 println!();
 
-                // Accuracy is based on completed cases (what we actually ran)
-                let accuracy = if completed_cases > 0 {
-                    passed_cases as f64 / completed_cases as f64 * 100.0
-                } else {
-                    0.0
-                };
-
                 // Show "passed/completed" with note if some cases weren't attempted
-                if completed_cases < total_cases {
-                    let not_attempted = total_cases - completed_cases;
+                if stats.completed_cases < stats.planned_cases {
+                    let not_attempted = stats.planned_cases - stats.completed_cases;
                     println!(
                         "  {} {}/{} ({:.1}%) [{} not attempted]",
                         style("Passed:").dim(),
-                        style(passed_cases).green(),
-                        completed_cases,
-                        accuracy,
+                        style(stats.passed_cases).green(),
+                        stats.completed_cases,
+                        stats.accuracy * 100.0,
                         style(not_attempted).yellow()
                     );
                 } else {
                     println!(
                         "  {} {}/{} ({:.1}%)",
                         style("Passed:").dim(),
-                        style(passed_cases).green(),
-                        completed_cases,
-                        accuracy
+                        style(stats.passed_cases).green(),
+                        stats.completed_cases,
+                        stats.accuracy * 100.0
                     );
                 }
-                println!("  {} {}", style("Failed:").dim(), style(failed_cases).red());
+                println!(
+                    "  {} {}",
+                    style("Failed:").dim(),
+                    style(stats.failed_cases).red()
+                );
                 println!(
                     "  {} {}",
                     style("Cost:").dim(),
-                    style(format!("${:.4}", total_cost_usd)).cyan()
+                    style(format!("${:.4}", cost.total_cost_usd)).cyan()
                 );
                 println!("  {} {:.1}s", style("Duration:").dim(), elapsed);
                 println!(
                     "  {} {:.1}% | {} {:.0} / {:.0} ms | {} {:.0}/{:.0} (judge {}/{})",
                     style("Accuracy:").dim(),
-                    metrics.accuracy * 100.0,
+                    stats.accuracy * 100.0,
                     style("Duration p50/p95:").dim(),
-                    metrics.p50_duration_ms,
-                    metrics.p95_duration_ms,
+                    stats.metrics.p50_duration_ms,
+                    stats.metrics.p95_duration_ms,
                     style("Tokens in/out:").dim(),
-                    metrics.total_input_tokens,
-                    metrics.total_output_tokens,
-                    metrics.total_judge_input_tokens,
-                    metrics.total_judge_output_tokens
+                    stats.tokens.agent_input_tokens,
+                    stats.tokens.agent_output_tokens,
+                    stats.tokens.judge_input_tokens,
+                    stats.tokens.judge_output_tokens
                 );
                 println!(
                     "  {} {:.0}/{:.0}/{:.0} ms | {} ${:.4} (judge ${:.4}) | {} {:.1}/{}",
                     style("LLM latency avg/p50/p95:").dim(),
-                    metrics.avg_llm_latency_ms,
-                    metrics.p50_llm_latency_ms,
-                    metrics.p95_llm_latency_ms,
+                    stats.metrics.avg_llm_latency_ms,
+                    stats.metrics.p50_llm_latency_ms,
+                    stats.metrics.p95_llm_latency_ms,
                     style("Cost:").dim(),
-                    total_cost_usd,
-                    judge_cost_usd,
+                    cost.agent_cost_usd,
+                    cost.judge_cost_usd,
                     style("Attempts avg/max:").dim(),
-                    metrics.avg_attempts,
-                    metrics.max_attempts
+                    stats.metrics.avg_attempts,
+                    stats.metrics.max_attempts
                 );
 
-                if !agent_metrics.is_empty() {
+                if !stats.by_agent.is_empty() {
                     println!();
                     println!("  Per agent:");
-                    let mut names: Vec<_> = agent_metrics.keys().cloned().collect();
+                    let mut names: Vec<_> = stats.by_agent.keys().cloned().collect();
                     names.sort();
                     for name in names {
-                        if let Some(m) = agent_metrics.get(&name) {
-                            let agent_cost = calculate_cost_from_metrics(
-                                m.total_input_tokens,
-                                m.total_output_tokens,
-                                m.total_cached_tokens,
-                            );
-                            let agent_judge_cost = calculate_cost_from_metrics(
-                                m.total_judge_input_tokens,
-                                m.total_judge_output_tokens,
-                                0,
-                            );
+                        if let Some(agent) = stats.by_agent.get(&name) {
+                            let agent_cost = calculate_cost_from_tokens(&agent.tokens);
                             println!(
                                 "    {} acc {:.1}% p50 {:.0}ms tokens {}/{} cost ${:.4} (judge ${:.4}) attempts {:.1}/{}",
                                 style(&name).bold(),
-                                m.accuracy * 100.0,
-                                m.p50_duration_ms,
-                                m.total_input_tokens,
-                                m.total_output_tokens,
-                                agent_cost,
-                                agent_judge_cost,
-                                m.avg_attempts,
-                                m.max_attempts
+                                agent.accuracy * 100.0,
+                                agent.metrics.p50_duration_ms,
+                                agent.tokens.agent_input_tokens,
+                                agent.tokens.agent_output_tokens,
+                                agent_cost.agent_cost_usd,
+                                agent_cost.judge_cost_usd,
+                                agent.metrics.avg_attempts,
+                                agent.metrics.max_attempts
                             );
                         }
                     }

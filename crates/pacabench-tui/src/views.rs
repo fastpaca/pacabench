@@ -641,31 +641,23 @@ fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, ar
     ])
     .split(rows[1]);
 
-    let metrics = state.metrics.as_ref();
-    let total = metrics.map(|m| m.total_cases).unwrap_or(state.total_cases);
-    let failed = metrics.map(|m| m.failed_cases).unwrap_or(0);
-    let passed = total.saturating_sub(failed);
-    let accuracy = metrics
-        .map(|m| m.accuracy * 100.0)
-        .unwrap_or_else(|| state.accuracy() * 100.0);
+    if let Some(stats) = state.run_stats.as_ref() {
+        render_stat_card(
+            frame,
+            theme,
+            top[0],
+            "Accuracy",
+            format!("{:.1}%", stats.accuracy * 100.0),
+            format!("{}/{} passed", stats.passed_cases, stats.completed_cases),
+        );
 
-    render_stat_card(
-        frame,
-        theme,
-        top[0],
-        "Accuracy",
-        format!("{accuracy:.1}%"),
-        format!("{passed}/{total} passed"),
-    );
-
-    if let Some(m) = metrics {
         render_stat_card(
             frame,
             theme,
             top[1],
             "Latency (run)",
-            format!("p50 {:.1}s", m.p50_duration_ms / 1000.0),
-            format!("p95 {:.1}s", m.p95_duration_ms / 1000.0),
+            format!("p50 {:.1}s", stats.metrics.p50_duration_ms / 1000.0),
+            format!("p95 {:.1}s", stats.metrics.p95_duration_ms / 1000.0),
         );
 
         render_stat_card(
@@ -673,8 +665,8 @@ fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, ar
             theme,
             top[2],
             "Attempts",
-            format!("avg {:.2}", m.avg_attempts),
-            format!("max {}", m.max_attempts),
+            format!("avg {:.2}", stats.metrics.avg_attempts),
+            format!("max {}", stats.metrics.max_attempts),
         );
 
         render_stat_card(
@@ -682,8 +674,8 @@ fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, ar
             theme,
             top[3],
             "Tokens",
-            format!("in {}", m.total_input_tokens),
-            format!("out {}", m.total_output_tokens),
+            format!("in {}", stats.tokens.agent_input_tokens),
+            format!("out {}", stats.tokens.agent_output_tokens),
         );
 
         render_stat_card(
@@ -691,8 +683,8 @@ fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, ar
             theme,
             bottom[0],
             "LLM latency",
-            format!("avg {:.1}ms", m.avg_llm_latency_ms),
-            format!("p95 {:.1}ms", m.p95_llm_latency_ms),
+            format!("avg {:.1}ms", stats.metrics.avg_llm_latency_ms),
+            format!("p95 {:.1}ms", stats.metrics.p95_llm_latency_ms),
         );
 
         render_stat_card(
@@ -700,8 +692,8 @@ fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, ar
             theme,
             bottom[1],
             "Judge tokens",
-            format!("in {}", m.total_judge_input_tokens),
-            format!("out {}", m.total_judge_output_tokens),
+            format!("in {}", stats.tokens.judge_input_tokens),
+            format!("out {}", stats.tokens.judge_output_tokens),
         );
 
         render_stat_card(
@@ -718,10 +710,24 @@ fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, ar
             theme,
             bottom[3],
             "Failures",
-            format!("{}", failed),
+            format!("{}", stats.failed_cases),
             "see table below".to_string(),
         );
     } else {
+        // No stats yet - show placeholders
+        let total = state.total_cases;
+        let passed = state.total_passed();
+        let accuracy = state.accuracy() * 100.0;
+
+        render_stat_card(
+            frame,
+            theme,
+            top[0],
+            "Accuracy",
+            format!("{accuracy:.1}%"),
+            format!("{passed}/{total} passed"),
+        );
+
         for chunk in top.iter().skip(1).chain(bottom.iter()) {
             render_stat_card(
                 frame,
@@ -729,7 +735,7 @@ fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, ar
                 *chunk,
                 "Pending",
                 "—".into(),
-                "Waiting for metrics".into(),
+                "Waiting for stats".into(),
             );
         }
     }
@@ -744,29 +750,32 @@ fn render_agent_metrics_table(frame: &mut Frame, state: &AppState, theme: &Theme
         Constraint::Length(10),
     ];
 
+    // Use by_agent from run_stats if available
+    let by_agent = state.run_stats.as_ref().map(|s| &s.by_agent);
+
     let rows: Vec<Row> = state
         .agent_order
         .iter()
         .map(|name| {
-            if let Some(m) = state.agent_metrics.get(name) {
-                let acc_pct = m.accuracy * 100.0;
+            if let Some(agent) = by_agent.and_then(|m| m.get(name)) {
+                let acc_pct = agent.accuracy * 100.0;
                 Row::new(vec![
                     Cell::from(Span::styled(name.clone(), theme.text)),
                     Cell::from(Span::styled(
                         format!("{acc_pct:>5.1}%"),
-                        theme.accuracy_style(m.accuracy),
+                        theme.accuracy_style(agent.accuracy),
                     )),
                     Cell::from(Span::styled(
                         format!(
                             "p50 {:.1}s · p95 {:.1}s",
-                            m.p50_duration_ms / 1000.0,
-                            m.p95_duration_ms / 1000.0
+                            agent.metrics.p50_duration_ms / 1000.0,
+                            agent.metrics.p95_duration_ms / 1000.0
                         ),
                         theme.text_muted,
                     )),
                     Cell::from(Span::styled(
-                        format!("{}", m.failed_cases),
-                        if m.failed_cases > 0 {
+                        format!("{}", agent.failed_cases),
+                        if agent.failed_cases > 0 {
                             theme.error
                         } else {
                             theme.success

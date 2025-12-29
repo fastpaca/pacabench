@@ -324,16 +324,10 @@ pub enum Event {
 
     /// Benchmark run finished.
     RunCompleted {
-        run_id: String,
-        /// Intended total cases (matches RunStarted.total_cases).
-        total_cases: u64,
-        /// Actually processed cases (may be < total if aborted/circuit-tripped).
-        completed_cases: u64,
-        passed_cases: u64,
-        failed_cases: u64,
+        /// Whether the run was aborted before completion.
         aborted: bool,
-        metrics: AggregatedMetrics,
-        agent_metrics: HashMap<String, AggregatedMetrics>,
+        /// Complete run statistics - the single source of truth (boxed to reduce enum size).
+        stats: Box<crate::stats::RunStats>,
     },
 
     /// Circuit breaker tripped due to high error rate.

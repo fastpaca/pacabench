@@ -18,7 +18,7 @@
 //!         while let Ok(event) = events.recv().await {
 //!             match event {
 //!                 Event::CaseCompleted { passed, .. } => println!("Case: {}", if passed { "✓" } else { "✗" }),
-//!                 Event::RunCompleted { metrics, .. } => println!("Done: {:.1}% accuracy", metrics.accuracy * 100.0),
+//!                 Event::RunCompleted { stats, .. } => println!("Done: {:.1}% accuracy", stats.accuracy * 100.0),
 //!                 _ => {}
 //!             }
 //!         }
@@ -58,6 +58,7 @@ pub mod error;
 pub mod metrics;
 pub mod persistence;
 pub mod stats;
+pub use stats::RunStats;
 
 // Internal modules
 pub(crate) mod retry;
