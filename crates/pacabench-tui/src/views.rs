@@ -603,11 +603,8 @@ fn render_completed(frame: &mut Frame, state: &AppState, theme: &Theme, area: Re
     let main_chunks = Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(layout[4]);
 
-    let left = Layout::vertical([
-        Constraint::Percentage(65),
-        Constraint::Percentage(35),
-    ])
-    .split(main_chunks[0]);
+    let left = Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .split(main_chunks[0]);
 
     render_agent_metrics_table(frame, state, theme, left[0]);
     render_failures_table(frame, state, theme, left[1]);
@@ -627,7 +624,8 @@ fn render_completed(frame: &mut Frame, state: &AppState, theme: &Theme, area: Re
 }
 
 fn render_completed_cards(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let rows = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    let rows =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
     let top = Layout::horizontal([
         Constraint::Percentage(25),
         Constraint::Percentage(25),
@@ -804,6 +802,48 @@ fn render_agent_metrics_table(frame: &mut Frame, state: &AppState, theme: &Theme
                 .border_style(theme.border),
         )
         .row_highlight_style(theme.highlight);
+
+    frame.render_widget(table, area);
+}
+
+fn render_failures_table(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let header = ["Agent", "Case", "Reason"];
+    let widths = [
+        Constraint::Length(16),
+        Constraint::Length(20),
+        Constraint::Fill(1),
+    ];
+
+    let rows: Vec<Row> = state
+        .failures
+        .iter()
+        .take(10)
+        .map(|f| {
+            Row::new(vec![
+                Cell::from(Span::styled(f.agent.clone(), theme.text)),
+                Cell::from(Span::styled(f.case_id.clone(), theme.text_muted)),
+                Cell::from(Span::styled(f.reason.clone(), theme.error)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(rows, widths)
+        .header(
+            Row::new(
+                header
+                    .iter()
+                    .map(|h| Cell::from(Span::styled(*h, theme.text_muted)))
+                    .collect::<Vec<Cell>>(),
+            )
+            .bottom_margin(1),
+        )
+        .column_spacing(2)
+        .block(
+            Block::default()
+                .title(Span::styled(" Recent failures ", theme.text_muted))
+                .borders(Borders::ALL)
+                .border_style(theme.border),
+        );
 
     frame.render_widget(table, area);
 }
