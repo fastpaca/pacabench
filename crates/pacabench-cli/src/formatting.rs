@@ -4,10 +4,24 @@
 //! source of truth for all run metrics. Do not re-aggregate from raw results.
 
 use crate::pricing::calculate_cost_from_tokens;
+use console::style;
 use pacabench_core::persistence::{ErrorEntry, RunSummary};
 use pacabench_core::stats::RunStats;
 use pacabench_core::types::ErrorType;
 use pacabench_core::CaseResult;
+
+/// Print a k6-style metric line with dots as separator
+fn print_metric(name: &str, value: &str) {
+    let width: usize = 20;
+    let dots = ".".repeat(width.saturating_sub(name.len()));
+    println!("     {}{} {}", style(name).cyan(), style(dots).dim(), value);
+}
+
+/// Print a k6-style section header
+fn print_section(name: &str) {
+    println!();
+    println!("     {}", style(name).magenta().bold());
+}
 
 // Show command formatting
 
@@ -45,114 +59,231 @@ pub fn print_run_list(runs: &[RunSummary], limit: usize) {
 
 // RunStats-based formatting (single source of truth)
 
-/// Print run details from RunStats - the single source of truth.
-///
-/// This function uses pre-computed stats rather than re-aggregating from results.
-/// Cost is calculated using actual model info from the run.
-pub fn print_run_stats(stats: &RunStats) {
-    let status = format!("{:?}", stats.status).to_lowercase();
-    let case_scope = if let Some(orig) = stats
-        .original_total_cases
-        .filter(|orig| *orig != stats.planned_cases)
-    {
-        format!(
-            "{}/{} (originally {})",
-            stats.completed_cases, stats.planned_cases, orig
-        )
+/// Format duration in human-readable form
+fn format_duration_ms(ms: f64) -> String {
+    if ms >= 1000.0 {
+        format!("{:.1}s", ms / 1000.0)
     } else {
-        format!("{}/{}", stats.completed_cases, stats.planned_cases)
-    };
-
-    println!("Run {} [{}] cases {case_scope}", stats.run_id, status);
-
-    if let Some(retry) = &stats.retry_of {
-        println!("Retry of: {retry}");
+        format!("{:.0}ms", ms)
     }
-    if let Some(active) = stats
-        .active_cases
-        .filter(|active| *active != stats.planned_cases)
-    {
-        println!("Scheduled this run: {} case(s)", active);
+}
+
+/// Format large numbers with commas for readability
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.insert(0, ',');
+        }
+        result.insert(0, c);
+    }
+    result
+}
+
+/// Print run details from RunStats - k6 style output.
+pub fn print_run_stats(stats: &RunStats) {
+    let cost = calculate_cost_from_tokens(&stats.tokens);
+
+    // Header
+    println!();
+    let status_text = match stats.status {
+        pacabench_core::RunStatus::Completed => "COMPLETED",
+        pacabench_core::RunStatus::Aborted => "ABORTED",
+        pacabench_core::RunStatus::Failed => "FAILED",
+        pacabench_core::RunStatus::Running => "RUNNING",
+        pacabench_core::RunStatus::Loading => "LOADING",
+        pacabench_core::RunStatus::Pending => "PENDING",
+        pacabench_core::RunStatus::Finalizing => "FINALIZING",
+    };
+    let status_styled = match stats.status {
+        pacabench_core::RunStatus::Completed => style(status_text).green().bold(),
+        pacabench_core::RunStatus::Aborted | pacabench_core::RunStatus::Failed => {
+            style(status_text).red().bold()
+        }
+        _ => style(status_text).yellow(),
+    };
+    println!(
+        "     {} {}",
+        style(&stats.run_id).bold().cyan(),
+        status_styled
+    );
+    if let Some(retry) = &stats.retry_of {
+        println!("     {} {}", style("retry of:").dim(), retry);
     }
 
     if stats.completed_cases == 0 {
-        println!("No results yet.");
+        println!();
+        println!("     No results yet.");
+        println!();
         return;
     }
 
-    // Use actual model for cost calculation
-    let cost = calculate_cost_from_tokens(&stats.tokens);
+    // Accuracy with visual bar
+    let acc_pct = stats.accuracy * 100.0;
+    let bar_width = 20;
+    let filled = ((stats.accuracy * bar_width as f64).round() as usize).min(bar_width);
+    let empty = bar_width - filled;
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+    let acc_colored = if acc_pct >= 80.0 {
+        style(format!("{:.1}%", acc_pct)).green()
+    } else if acc_pct >= 50.0 {
+        style(format!("{:.1}%", acc_pct)).yellow()
+    } else {
+        style(format!("{:.1}%", acc_pct)).red()
+    };
 
-    println!(
-        "Accuracy {:.1}% | Failed {}",
-        stats.accuracy * 100.0,
-        stats.failed_cases
+    print_section("results");
+    print_metric(
+        "accuracy",
+        &format!(
+            "{} {}  passed={}  failed={}",
+            style(bar).cyan(),
+            acc_colored,
+            style(stats.passed_cases).green(),
+            style(stats.failed_cases).red()
+        ),
     );
-    println!(
-        "Duration p50={:.0}ms p95={:.0}ms | LLM latency avg/p50/p95 = {:.0}/{:.0}/{:.0} ms",
-        stats.metrics.p50_duration_ms,
-        stats.metrics.p95_duration_ms,
-        stats.metrics.avg_llm_latency_ms,
-        stats.metrics.p50_llm_latency_ms,
-        stats.metrics.p95_llm_latency_ms
-    );
-    println!(
-        "Tokens in/out: {}/{} (judge {}/{}) | LLM calls {} | Cost ${:.4} (judge ${:.4}) | Attempts avg/max {:.1}/{}",
-        stats.tokens.agent_input_tokens,
-        stats.tokens.agent_output_tokens,
-        stats.tokens.judge_input_tokens,
-        stats.tokens.judge_output_tokens,
-        stats.tokens.agent_calls,
-        cost.agent_cost_usd,
-        cost.judge_cost_usd,
-        stats.metrics.avg_attempts,
-        stats.metrics.max_attempts
+    print_metric(
+        "cases",
+        &format!("{}/{}", stats.completed_cases, stats.planned_cases),
     );
 
-    if !stats.tokens.models_used.is_empty() {
-        println!("Models: {}", stats.tokens.models_used.join(", "));
-    }
+    print_section("performance");
+    print_metric(
+        "duration",
+        &format!(
+            "p50={} p95={}",
+            format_duration_ms(stats.metrics.p50_duration_ms),
+            format_duration_ms(stats.metrics.p95_duration_ms)
+        ),
+    );
+    print_metric(
+        "llm_latency",
+        &format!(
+            "avg={} p50={} p95={}",
+            format_duration_ms(stats.metrics.avg_llm_latency_ms),
+            format_duration_ms(stats.metrics.p50_llm_latency_ms),
+            format_duration_ms(stats.metrics.p95_llm_latency_ms)
+        ),
+    );
+    print_metric(
+        "attempts",
+        &format!(
+            "avg={:.1} max={}",
+            stats.metrics.avg_attempts, stats.metrics.max_attempts
+        ),
+    );
 
-    if stats.system_error_count > 0 || stats.fatal_error_count > 0 {
-        println!(
-            "Errors logged: {} system, {} fatal (includes retried)",
-            stats.system_error_count, stats.fatal_error_count
+    print_section("tokens");
+    print_metric(
+        "agent_input",
+        &format_number(stats.tokens.agent_input_tokens),
+    );
+    print_metric(
+        "agent_output",
+        &format_number(stats.tokens.agent_output_tokens),
+    );
+    print_metric("llm_calls", &stats.tokens.agent_calls.to_string());
+
+    if stats.tokens.judge_input_tokens > 0 || stats.tokens.judge_output_tokens > 0 {
+        print_metric(
+            "judge_input",
+            &format_number(stats.tokens.judge_input_tokens),
+        );
+        print_metric(
+            "judge_output",
+            &format_number(stats.tokens.judge_output_tokens),
         );
     }
 
-    // Per-agent breakdown
+    print_section("cost");
+    print_metric("total", &format!("${:.4}", cost.total_cost_usd));
+    print_metric("agent", &format!("${:.4}", cost.agent_cost_usd));
+    print_metric("judge", &format!("${:.4}", cost.judge_cost_usd));
+
+    if !stats.tokens.models_used.is_empty() {
+        print_metric("models", &stats.tokens.models_used.join(", "));
+    }
+
+    if stats.system_error_count > 0 || stats.fatal_error_count > 0 {
+        print_section("errors");
+        if stats.system_error_count > 0 {
+            print_metric(
+                "system_errors",
+                &style(stats.system_error_count).yellow().to_string(),
+            );
+        }
+        if stats.fatal_error_count > 0 {
+            print_metric(
+                "fatal_errors",
+                &style(stats.fatal_error_count).red().to_string(),
+            );
+        }
+    }
+
+    // Agents
     if !stats.by_agent.is_empty() {
-        println!("\nBy Agent:");
+        print_section("agents");
+
         let mut agents: Vec<_> = stats.by_agent.values().collect();
-        agents.sort_by(|a, b| a.agent_name.cmp(&b.agent_name));
+        agents.sort_by(|a, b| {
+            b.accuracy
+                .partial_cmp(&a.accuracy)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for agent in agents {
             let agent_cost = calculate_cost_from_tokens(&agent.tokens);
-            println!(
-                "  {}: {}/{} ({:.1}%) p50={:.0}ms cost=${:.4}",
-                agent.agent_name,
-                agent.passed_cases,
-                agent.completed_cases,
-                agent.accuracy * 100.0,
-                agent.metrics.p50_duration_ms,
-                agent_cost.total_cost_usd
+            let acc = agent.accuracy * 100.0;
+            let acc_styled = if acc >= 80.0 {
+                style(format!("{:.1}%", acc)).green()
+            } else if acc >= 50.0 {
+                style(format!("{:.1}%", acc)).yellow()
+            } else {
+                style(format!("{:.1}%", acc)).red()
+            };
+            print_metric(
+                &agent.agent_name,
+                &format!(
+                    "{}  passed={}  failed={}  p50={}  ${:.4}",
+                    acc_styled,
+                    style(agent.passed_cases).green(),
+                    style(agent.failed_cases).red(),
+                    format_duration_ms(agent.metrics.p50_duration_ms),
+                    agent_cost.total_cost_usd
+                ),
             );
         }
     }
 
-    // Failures with actual reasons
+    // Failures
     if !stats.failures.is_empty() {
-        println!("\nFailures (showing up to 10):");
+        print_section(&format!("failures ({})", stats.failures.len()));
+        println!();
+
         for failure in stats.failures.iter().take(10) {
+            let reason = if failure.reason.len() > 60 {
+                format!("{}...", &failure.reason[..57])
+            } else {
+                failure.reason.clone()
+            };
             println!(
-                "  - {}/{} {}: {}",
-                failure.dataset_name, failure.case_id, failure.agent_name, failure.reason
+                "     {} {}",
+                style(format!("{}/{}", failure.agent_name, failure.case_id)).white(),
+                style(reason).dim()
             );
         }
         if stats.failures.len() > 10 {
-            println!("  ... and {} more", stats.failures.len() - 10);
+            println!(
+                "     {} {}",
+                style("...").dim(),
+                style(format!("and {} more", stats.failures.len() - 10)).dim()
+            );
         }
     }
+
+    println!();
 }
 
 /// Export schema version.

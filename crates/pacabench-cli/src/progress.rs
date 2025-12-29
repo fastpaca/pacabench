@@ -4,7 +4,8 @@
 //! Receives events via tokio channel and updates the display.
 //! Cost is computed here using pricing tables from the pricing module.
 
-use crate::pricing::{calculate_cost, calculate_cost_from_metrics, calculate_cost_from_tokens};
+use crate::formatting::print_run_stats;
+use crate::pricing::{calculate_cost, calculate_cost_from_metrics};
 use console::style;
 use dashmap::DashMap;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -323,119 +324,16 @@ impl ProgressDisplay {
             }
 
             Event::RunCompleted { aborted, stats } => {
-                let stats = &*stats; // Unbox for convenience
-                let cost = calculate_cost_from_tokens(&stats.tokens);
-
                 for entry in self.agents.iter() {
                     entry.value().bar.finish_and_clear();
                 }
 
-                let elapsed = self
-                    .start_time
-                    .lock()
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-
-                let status = if aborted {
-                    style("ABORTED").red().bold()
-                } else {
-                    style("COMPLETED").green().bold()
-                };
-
-                println!();
-                println!(
-                    "{} Run {} {}",
-                    style("✓").green().bold(),
-                    style(&stats.run_id).bold(),
-                    status
-                );
-                println!();
-
-                // Show "passed/completed" with note if some cases weren't attempted
-                if stats.completed_cases < stats.planned_cases {
-                    let not_attempted = stats.planned_cases - stats.completed_cases;
-                    println!(
-                        "  {} {}/{} ({:.1}%) [{} not attempted]",
-                        style("Passed:").dim(),
-                        style(stats.passed_cases).green(),
-                        stats.completed_cases,
-                        stats.accuracy * 100.0,
-                        style(not_attempted).yellow()
-                    );
-                } else {
-                    println!(
-                        "  {} {}/{} ({:.1}%)",
-                        style("Passed:").dim(),
-                        style(stats.passed_cases).green(),
-                        stats.completed_cases,
-                        stats.accuracy * 100.0
-                    );
-                }
-                println!(
-                    "  {} {}",
-                    style("Failed:").dim(),
-                    style(stats.failed_cases).red()
-                );
-                println!(
-                    "  {} {}",
-                    style("Cost:").dim(),
-                    style(format!("${:.4}", cost.total_cost_usd)).cyan()
-                );
-                println!("  {} {:.1}s", style("Duration:").dim(), elapsed);
-                println!(
-                    "  {} {:.1}% | {} {:.0} / {:.0} ms | {} {:.0}/{:.0} (judge {}/{})",
-                    style("Accuracy:").dim(),
-                    stats.accuracy * 100.0,
-                    style("Duration p50/p95:").dim(),
-                    stats.metrics.p50_duration_ms,
-                    stats.metrics.p95_duration_ms,
-                    style("Tokens in/out:").dim(),
-                    stats.tokens.agent_input_tokens,
-                    stats.tokens.agent_output_tokens,
-                    stats.tokens.judge_input_tokens,
-                    stats.tokens.judge_output_tokens
-                );
-                println!(
-                    "  {} {:.0}/{:.0}/{:.0} ms | {} ${:.4} (judge ${:.4}) | {} {:.1}/{}",
-                    style("LLM latency avg/p50/p95:").dim(),
-                    stats.metrics.avg_llm_latency_ms,
-                    stats.metrics.p50_llm_latency_ms,
-                    stats.metrics.p95_llm_latency_ms,
-                    style("Cost:").dim(),
-                    cost.agent_cost_usd,
-                    cost.judge_cost_usd,
-                    style("Attempts avg/max:").dim(),
-                    stats.metrics.avg_attempts,
-                    stats.metrics.max_attempts
-                );
-
-                if !stats.by_agent.is_empty() {
-                    println!();
-                    println!("  Per agent:");
-                    let mut names: Vec<_> = stats.by_agent.keys().cloned().collect();
-                    names.sort();
-                    for name in names {
-                        if let Some(agent) = stats.by_agent.get(&name) {
-                            let agent_cost = calculate_cost_from_tokens(&agent.tokens);
-                            println!(
-                                "    {} acc {:.1}% p50 {:.0}ms tokens {}/{} cost ${:.4} (judge ${:.4}) attempts {:.1}/{}",
-                                style(&name).bold(),
-                                agent.accuracy * 100.0,
-                                agent.metrics.p50_duration_ms,
-                                agent.tokens.agent_input_tokens,
-                                agent.tokens.agent_output_tokens,
-                                agent_cost.agent_cost_usd,
-                                agent_cost.judge_cost_usd,
-                                agent.metrics.avg_attempts,
-                                agent.metrics.max_attempts
-                            );
-                        }
-                    }
-                }
-                println!();
+                // Use the canonical display from formatting module
+                print_run_stats(&stats);
 
                 if aborted {
-                    println!("{} Run aborted", style("⚠").yellow().bold());
+                    println!("     {} Run was aborted early", style("warning").yellow().bold());
+                    println!();
                 }
             }
 
