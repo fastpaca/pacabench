@@ -6,6 +6,7 @@ use crate::stats::RunStats;
 use crate::types::{CaseKey, CaseResult, ErrorType, RunStatus};
 use anyhow::anyhow;
 use chrono::Utc;
+use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -228,8 +229,8 @@ pub fn compute_config_fingerprint(config: &Config) -> Result<String> {
 }
 
 pub fn generate_run_id(config_name: &str) -> String {
-    let ts = iso_timestamp_now().replace([':', '-'], "");
-    format!("{config_name}-{ts}")
+    let id = nanoid!(8);
+    format!("{config_name}-{id}")
 }
 
 pub fn list_run_summaries(runs_dir: &Path) -> Result<Vec<RunSummary>> {
