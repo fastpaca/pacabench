@@ -16,7 +16,7 @@ set -euo pipefail
 
 # Defaults
 OUTPUT=""
-COLS=80
+COLS=90
 ROWS=24
 SPEED=1
 TYPING_SPEED=0.04
