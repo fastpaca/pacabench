@@ -1,0 +1,234 @@
+#!/bin/bash
+# tui-demo - Record terminal commands as GIFs with simulated typing
+#
+# Prerequisites:
+#   brew install asciinema agg
+#
+# Usage:
+#   tui-demo -o demo.gif -- ls -la
+#   tui-demo -o demo.gif -- "echo hello && sleep 1 && echo world"
+#   tui-demo -o demo.gif --cols 120 --rows 40 -- pacabench show
+#
+# Multiple commands:
+#   tui-demo -o demo.gif -- "pacabench show" "pacabench show C-rct9E9"
+
+set -euo pipefail
+
+# Defaults
+OUTPUT=""
+COLS=100
+ROWS=30
+SPEED=1
+TYPING_SPEED=0.04
+PAUSE_AFTER=2
+THEME="monokai"
+FONT_SIZE=14
+FONT_FAMILY="JetBrains Mono,Menlo,Monaco,monospace"
+PROMPT="\033[1;32m❯\033[0m "
+KEEP_CAST=false
+
+usage() {
+    cat <<EOF
+Usage: tui-demo -o OUTPUT.gif [OPTIONS] -- COMMAND [COMMAND...]
+
+Record terminal commands as GIFs with simulated typing effect.
+
+Options:
+  -o, --out FILE        Output GIF file (required)
+  -c, --cols N          Terminal width (default: $COLS)
+  -r, --rows N          Terminal height (default: $ROWS)
+  -s, --speed N         Playback speed multiplier (default: $SPEED)
+  -t, --typing-speed N  Seconds between keystrokes (default: $TYPING_SPEED)
+  -p, --pause N         Seconds to pause after each command (default: $PAUSE_AFTER)
+  --theme NAME          agg theme: monokai, dracula, solarized-dark, etc (default: $THEME)
+  --font-size N         Font size in pixels (default: $FONT_SIZE)
+  --prompt STR          Custom prompt (default: green ❯)
+  --keep-cast           Keep the .cast file after conversion
+  -h, --help            Show this help
+
+Examples:
+  # Single command
+  tui-demo -o demo.gif -- ls -la
+
+  # Multiple commands in sequence
+  tui-demo -o demo.gif -- "git status" "git log --oneline -5"
+
+  # Custom terminal size
+  tui-demo -o demo.gif --cols 120 --rows 40 -- htop
+
+  # Faster typing, slower playback
+  tui-demo -o demo.gif --typing-speed 0.02 --speed 0.8 -- "echo hello"
+
+Prerequisites:
+  brew install asciinema
+  cargo install --git https://github.com/asciinema/agg agg
+EOF
+    exit 0
+}
+
+# Parse arguments
+COMMANDS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -o|--out)
+            OUTPUT="$2"
+            shift 2
+            ;;
+        -c|--cols)
+            COLS="$2"
+            shift 2
+            ;;
+        -r|--rows)
+            ROWS="$2"
+            shift 2
+            ;;
+        -s|--speed)
+            SPEED="$2"
+            shift 2
+            ;;
+        -t|--typing-speed)
+            TYPING_SPEED="$2"
+            shift 2
+            ;;
+        -p|--pause)
+            PAUSE_AFTER="$2"
+            shift 2
+            ;;
+        --theme)
+            THEME="$2"
+            shift 2
+            ;;
+        --font-size)
+            FONT_SIZE="$2"
+            shift 2
+            ;;
+        --prompt)
+            PROMPT="$2"
+            shift 2
+            ;;
+        --keep-cast)
+            KEEP_CAST=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        --)
+            shift
+            COMMANDS=("$@")
+            break
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Use --help for usage" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Validate
+if [[ -z "$OUTPUT" ]]; then
+    echo "Error: Output file required (-o FILE)" >&2
+    exit 1
+fi
+
+if [[ ${#COMMANDS[@]} -eq 0 ]]; then
+    echo "Error: At least one command required after --" >&2
+    exit 1
+fi
+
+# Check dependencies
+if ! command -v asciinema &> /dev/null; then
+    echo "Error: asciinema not found. Install with: brew install asciinema" >&2
+    exit 1
+fi
+
+if ! command -v agg &> /dev/null; then
+    echo "Error: agg not found. Install with: cargo install --git https://github.com/asciinema/agg agg" >&2
+    exit 1
+fi
+
+# Ensure output directory exists
+OUTPUT_DIR="$(dirname "$OUTPUT")"
+if [[ -n "$OUTPUT_DIR" && "$OUTPUT_DIR" != "." ]]; then
+    mkdir -p "$OUTPUT_DIR"
+fi
+
+# Cast file path
+CAST_FILE="${OUTPUT%.gif}.cast"
+
+# Create the demo script
+DEMO_SCRIPT=$(mktemp)
+trap "rm -f '$DEMO_SCRIPT'" EXIT
+
+cat > "$DEMO_SCRIPT" << 'DEMO_FUNC'
+type_and_run() {
+    local cmd="$1"
+
+    # Print prompt
+    echo -ne "$PROMPT"
+
+    # Type each character
+    for ((i=0; i<${#cmd}; i++)); do
+        echo -n "${cmd:$i:1}"
+        sleep "$TYPING_SPEED"
+    done
+
+    sleep 0.2
+    echo ""  # "press enter"
+
+    # Run the command
+    eval "$cmd"
+
+    sleep "$PAUSE_AFTER"
+}
+
+run_demo() {
+    clear
+    sleep 0.3
+DEMO_FUNC
+
+# Add each command to the demo script
+for cmd in "${COMMANDS[@]}"; do
+    # Escape single quotes in the command
+    escaped_cmd="${cmd//\'/\'\\\'\'}"
+    echo "    type_and_run '$escaped_cmd'" >> "$DEMO_SCRIPT"
+done
+
+cat >> "$DEMO_SCRIPT" << 'DEMO_END'
+}
+
+run_demo
+DEMO_END
+
+# Export variables for the subshell
+export PROMPT TYPING_SPEED PAUSE_AFTER
+
+echo "Recording ${#COMMANDS[@]} command(s) to $OUTPUT..."
+echo "Terminal: ${COLS}x${ROWS}"
+
+# Record
+asciinema rec "$CAST_FILE" \
+    --window-size "${COLS}x${ROWS}" \
+    --overwrite \
+    -c "bash '$DEMO_SCRIPT'"
+
+echo "Converting to GIF..."
+
+# Convert to GIF
+agg "$CAST_FILE" "$OUTPUT" \
+    --font-family "$FONT_FAMILY" \
+    --font-size "$FONT_SIZE" \
+    --theme "$THEME" \
+    --speed "$SPEED"
+
+# Cleanup
+if [[ "$KEEP_CAST" != true ]]; then
+    rm -f "$CAST_FILE"
+fi
+
+echo ""
+echo "Done: $OUTPUT"
+if [[ "$KEEP_CAST" == true ]]; then
+    echo "Cast: $CAST_FILE"
+fi

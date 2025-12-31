@@ -102,6 +102,10 @@ See all runs:
 pacabench show
 ```
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-show.gif" width="800">
+</p>
+
 Drill into a specific run:
 
 ```bash
@@ -111,7 +115,7 @@ pacabench show <run-id> --failures
 ```
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-show.gif" width="800">
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-show-detail.gif" width="800">
 </p>
 
 
