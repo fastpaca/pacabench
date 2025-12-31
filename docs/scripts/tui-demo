@@ -16,13 +16,13 @@ set -euo pipefail
 
 # Defaults
 OUTPUT=""
-COLS=100
-ROWS=30
+COLS=80
+ROWS=24
 SPEED=1
 TYPING_SPEED=0.04
 PAUSE_AFTER=2
-THEME="monokai"
-FONT_SIZE=14
+THEME="solarized-dark"
+FONT_SIZE=12
 FONT_FAMILY="JetBrains Mono,Menlo,Monaco,monospace"
 PROMPT="\033[1;32m❯\033[0m "
 KEEP_CAST=false

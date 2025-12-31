@@ -39,8 +39,6 @@ echo ""
 echo "==> Recording: simple-run.gif (pacabench run --limit 15)"
 "$TUI_DEMO" \
     -o "$OUTPUT_DIR/simple-run.gif" \
-    --cols 100 \
-    --rows 35 \
     --pause 3 \
     -- "pacabench run --limit 15"
 
@@ -50,8 +48,6 @@ echo ""
 echo "==> Recording: simple-show.gif (pacabench show)"
 "$TUI_DEMO" \
     -o "$OUTPUT_DIR/simple-show.gif" \
-    --cols 100 \
-    --rows 35 \
     --pause 2.5 \
     -- "pacabench show"
 
@@ -72,8 +68,6 @@ SHORT_ID=$(echo "$LATEST_RUN" | sed 's/.*-//' | cut -c1-8)
 
 "$TUI_DEMO" \
     -o "$OUTPUT_DIR/simple-show-detail.gif" \
-    --cols 100 \
-    --rows 35 \
     --pause 2.5 \
     -- "pacabench show $SHORT_ID"
 
