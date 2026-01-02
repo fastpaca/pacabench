@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# UV
+uv.lock
+
+# Data (downloaded on demand)
+data/
+
+# Benchmark runs
+runs/

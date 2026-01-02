@@ -1,0 +1,18 @@
+[project]
+name = "gaia-example"
+version = "0.1.0"
+description = "GAIA benchmark example for PacaBench"
+requires-python = ">=3.11"
+dependencies = [
+    # Dataset preparation
+    "datasets",
+    "huggingface-hub",
+
+    # Agent
+    "smolagents[litellm]",
+    "duckduckgo-search",
+    "markdownify",
+]
+
+[dependency-groups]
+dev = []

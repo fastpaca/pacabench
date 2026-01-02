@@ -1,0 +1,31 @@
+# GAIA Benchmark Configuration for PacaBench
+# See README.md for setup instructions
+
+name: gaia-benchmark
+description: GAIA benchmark - General AI Assistant evaluation
+version: "0.1.0"
+
+config:
+  # Run one case at a time (GAIA questions are complex)
+  concurrency: 1
+  # Allow up to 2 minutes per question
+  timeout_seconds: 120
+
+agents:
+  - name: "smolagent"
+    command: "uv run python smolagent_agent.py"
+
+datasets:
+  # GAIA validation set (run prepare_dataset.py first)
+  - name: "gaia-validation"
+    source: "data/validation.jsonl"
+    input_map:
+      input: "input"
+      expected: "expected"
+    # LLM judge handles format variations better than exact match
+    evaluator:
+      type: "llm_judge"
+      model: "gpt-4o-mini"
+
+output:
+  directory: "./runs"
