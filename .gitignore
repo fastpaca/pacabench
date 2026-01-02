@@ -215,3 +215,9 @@ neo4j_data/
 qdrant_storage/
 
 daemon.lock
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Git worktrees
+.worktrees/
