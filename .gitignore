@@ -213,3 +213,5 @@ runs/
 
 neo4j_data/
 qdrant_storage/
+
+daemon.lock
