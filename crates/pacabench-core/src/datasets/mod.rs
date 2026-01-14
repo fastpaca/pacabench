@@ -1,12 +1,15 @@
 //! Dataset loaders.
 
 use crate::config::DatasetConfig;
-use crate::error::Result;
+use crate::error::{PacabenchError, Result};
 use crate::types::Case;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use futures_util::stream::BoxStream;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tokio::fs;
+use tokio::io::AsyncReadExt;
 
 mod local;
 pub use local::LocalDataset;
@@ -56,6 +59,46 @@ pub fn get_dataset_loader(
 }
 
 use crate::utils::resolve_path;
+
+#[derive(Debug, Clone, Copy)]
+enum DatasetFileFormat {
+    Jsonl,
+    JsonArray,
+}
+
+async fn detect_dataset_file_format(path: &Path) -> Result<DatasetFileFormat> {
+    let mut file = fs::File::open(path)
+        .await
+        .map_err(PacabenchError::Persistence)?;
+    let mut buffer = [0u8; 1024];
+    loop {
+        let bytes = file
+            .read(&mut buffer)
+            .await
+            .map_err(PacabenchError::Persistence)?;
+        if bytes == 0 {
+            return Ok(DatasetFileFormat::Jsonl);
+        }
+        for byte in &buffer[..bytes] {
+            if !byte.is_ascii_whitespace() {
+                return Ok(if *byte == b'[' {
+                    DatasetFileFormat::JsonArray
+                } else {
+                    DatasetFileFormat::Jsonl
+                });
+            }
+        }
+    }
+}
+
+async fn read_json_array(path: &Path) -> Result<Vec<serde_json::Value>> {
+    let bytes = fs::read(path).await.map_err(PacabenchError::Persistence)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    match value {
+        serde_json::Value::Array(items) => Ok(items),
+        _ => Err(anyhow!("expected top-level JSON array in {}", path.display()).into()),
+    }
+}
 
 /// Common helper to build a Case from a JSON-like record.
 fn prepare_case(
