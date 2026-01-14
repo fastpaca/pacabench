@@ -57,6 +57,46 @@ async fn local_dataset_loads_records() {
 }
 
 #[tokio::test]
+async fn local_dataset_loads_json_array() {
+    let dir = tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let file_path = data_dir.join("sample.json");
+    std::fs::write(
+        &file_path,
+        json!([
+            {"case_id": "1", "input": "hi", "expected": "hi"},
+            {"case_id": "2", "input": "bye", "expected": "bye"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+
+    let cfg = DatasetConfig {
+        name: "test".into(),
+        source: file_path.to_string_lossy().to_string(),
+        split: None,
+        prepare: None,
+        input_map: Default::default(),
+        evaluator: None,
+    };
+    let ctx = DatasetContext {
+        root_dir: dir.path().to_path_buf(),
+        cache_dir: dir.path().join("cache"),
+    };
+    let loader = LocalDataset::new(cfg, ctx);
+    let cases: Vec<_> = loader
+        .stream_cases(None)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(cases.len(), 2);
+    assert_eq!(cases[0].case_id, "1");
+}
+
+#[tokio::test]
 async fn local_dataset_honors_split_file() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().join("data");
@@ -219,4 +259,43 @@ async fn huggingface_loader_handles_local_split() {
         .unwrap();
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].case_id, "h2");
+}
+
+#[tokio::test]
+async fn huggingface_loader_handles_json_array_split() {
+    let dir = tempdir().unwrap();
+    let hf_dir = dir.path().join("hfdata");
+    std::fs::create_dir_all(&hf_dir).unwrap();
+    std::fs::write(
+        hf_dir.join("longmemeval_oracle.json"),
+        json!([
+            {"case_id": "h1", "input": "a", "expected": "a"},
+            {"case_id": "h2", "input": "b", "expected": "b"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+
+    let cfg = DatasetConfig {
+        name: "hf".into(),
+        source: "huggingface:hfdata".into(),
+        split: Some("longmemeval_oracle".into()),
+        prepare: None,
+        input_map: Default::default(),
+        evaluator: None,
+    };
+    let ctx = DatasetContext {
+        root_dir: dir.path().to_path_buf(),
+        cache_dir: dir.path().join("cache"),
+    };
+    let loader = HuggingFaceDataset::new(cfg, ctx);
+    let cases: Vec<_> = loader
+        .stream_cases(None)
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(cases.len(), 2);
+    assert_eq!(cases[0].case_id, "h1");
 }

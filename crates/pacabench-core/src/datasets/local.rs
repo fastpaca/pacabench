@@ -1,4 +1,7 @@
-use super::{prepare_case, resolve_path, DatasetContext, DatasetLoader};
+use super::{
+    detect_dataset_file_format, prepare_case, read_json_array, resolve_path, DatasetContext,
+    DatasetFileFormat, DatasetLoader,
+};
 use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
@@ -49,7 +52,7 @@ impl LocalDataset {
         } else {
             let p = resolve_path(source, &self.root);
             if p.is_dir() {
-                let walker = GlobWalkerBuilder::from_patterns(&p, &["*.jsonl"])
+                let walker = GlobWalkerBuilder::from_patterns(&p, &["*.jsonl", "*.json"])
                     .build()
                     .map_err(|e| PacabenchError::Internal(e.into()))?;
                 for entry in walker.into_iter().filter_map(|e| e.ok()) {
@@ -122,33 +125,61 @@ impl DatasetLoader for LocalDataset {
 
         let mut count = 0usize;
         for file in files {
-            let f = File::open(&file)
-                .await
-                .map_err(PacabenchError::Persistence)?;
-            let reader = BufReader::new(f);
-            let mut lines = reader.lines();
-            let mut idx = 0usize;
-            while let Some(line) = lines
-                .next_line()
-                .await
-                .map_err(PacabenchError::Persistence)?
-            {
-                if let Some(limit) = limit {
-                    if count >= limit {
-                        return Ok(count);
+            match detect_dataset_file_format(&file).await? {
+                DatasetFileFormat::JsonArray => {
+                    let items = read_json_array(&file).await?;
+                    for (idx, item) in items.into_iter().enumerate() {
+                        if let Some(limit) = limit {
+                            if count >= limit {
+                                return Ok(count);
+                            }
+                        }
+                        if let Value::Object(map) = item {
+                            if self
+                                .parse_case(&map, file.as_path(), idx, input_key, expected_key)
+                                .is_some()
+                            {
+                                count += 1;
+                            }
+                        }
                     }
                 }
-                let current_idx = idx;
-                idx += 1;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&line) {
-                    if self
-                        .parse_case(&map, file.as_path(), current_idx, input_key, expected_key)
-                        .is_some()
+                DatasetFileFormat::Jsonl => {
+                    let f = File::open(&file)
+                        .await
+                        .map_err(PacabenchError::Persistence)?;
+                    let reader = BufReader::new(f);
+                    let mut lines = reader.lines();
+                    let mut idx = 0usize;
+                    while let Some(line) = lines
+                        .next_line()
+                        .await
+                        .map_err(PacabenchError::Persistence)?
                     {
-                        count += 1;
+                        if let Some(limit) = limit {
+                            if count >= limit {
+                                return Ok(count);
+                            }
+                        }
+                        let current_idx = idx;
+                        idx += 1;
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&line) {
+                            if self
+                                .parse_case(
+                                    &map,
+                                    file.as_path(),
+                                    current_idx,
+                                    input_key,
+                                    expected_key,
+                                )
+                                .is_some()
+                            {
+                                count += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -181,40 +212,66 @@ impl DatasetLoader for LocalDataset {
                 let input_key = input_key.clone();
                 let expected_key = expected_key.clone();
                 async move {
-                    let file_clone = file.clone();
-                    let f = File::open(&file)
-                        .await
-                        .map_err(PacabenchError::Persistence)?;
-                    let reader = BufReader::new(f);
-                    let lines = tokio_stream::wrappers::LinesStream::new(reader.lines())
-                        .enumerate()
-                        .filter_map(move |(idx, line)| {
-                            let file = file_clone.clone();
-                            let dataset_name = dataset_name.clone();
-                            let input_key = input_key.clone();
-                            let expected_key = expected_key.clone();
-                            async move {
-                                match line {
-                                    Ok(line) if !line.trim().is_empty() => {
-                                        match serde_json::from_str::<Value>(&line) {
-                                            Ok(Value::Object(map)) => prepare_case(
-                                                &map,
-                                                &dataset_name,
-                                                &format!("{}-{}", file.display(), idx),
-                                                &input_key,
-                                                &expected_key,
-                                            )
-                                            .map(Ok),
-                                            _ => None,
+                    match detect_dataset_file_format(&file).await? {
+                        DatasetFileFormat::JsonArray => {
+                            let items = read_json_array(&file).await?;
+                            let cases = items
+                                .into_iter()
+                                .enumerate()
+                                .filter_map(|(idx, item)| {
+                                    if let Value::Object(map) = item {
+                                        prepare_case(
+                                            &map,
+                                            &dataset_name,
+                                            &format!("{}-{}", file.display(), idx),
+                                            &input_key,
+                                            &expected_key,
+                                        )
+                                        .map(Ok)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            Ok::<_, PacabenchError>(stream::iter(cases).boxed())
+                        }
+                        DatasetFileFormat::Jsonl => {
+                            let file_clone = file.clone();
+                            let f = File::open(&file)
+                                .await
+                                .map_err(PacabenchError::Persistence)?;
+                            let reader = BufReader::new(f);
+                            let lines = tokio_stream::wrappers::LinesStream::new(reader.lines())
+                                .enumerate()
+                                .filter_map(move |(idx, line)| {
+                                    let file = file_clone.clone();
+                                    let dataset_name = dataset_name.clone();
+                                    let input_key = input_key.clone();
+                                    let expected_key = expected_key.clone();
+                                    async move {
+                                        match line {
+                                            Ok(line) if !line.trim().is_empty() => {
+                                                match serde_json::from_str::<Value>(&line) {
+                                                    Ok(Value::Object(map)) => prepare_case(
+                                                        &map,
+                                                        &dataset_name,
+                                                        &format!("{}-{}", file.display(), idx),
+                                                        &input_key,
+                                                        &expected_key,
+                                                    )
+                                                    .map(Ok),
+                                                    _ => None,
+                                                }
+                                            }
+                                            Ok(_) => None,
+                                            Err(e) => Some(Err(PacabenchError::Internal(e.into()))),
                                         }
                                     }
-                                    Ok(_) => None,
-                                    Err(e) => Some(Err(PacabenchError::Internal(e.into()))),
-                                }
-                            }
-                        });
+                                });
 
-                    Ok::<_, PacabenchError>(lines)
+                            Ok::<_, PacabenchError>(lines.boxed())
+                        }
+                    }
                 }
             })
             .try_flatten()
