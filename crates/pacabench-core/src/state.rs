@@ -1,14 +1,7 @@
-//! Run state management.
-//!
-//! Provides explicit state tracking for benchmark runs with proper state transitions.
-
 use crate::types::{CaseKey, CaseResult, RunStatus};
 use std::collections::{HashMap, HashSet};
 
-/// Tracks state for a benchmark run.
 pub struct RunState {
-    #[allow(dead_code)]
-    run_id: String,
     pub status: RunStatus,
     pending: HashSet<CaseKey>,
     completed: HashMap<CaseKey, CaseResult>,
@@ -21,7 +14,6 @@ pub struct RunState {
 
 impl RunState {
     pub fn new(
-        run_id: String,
         max_retries: u32,
         total_cases: u64,
         agent_totals: HashMap<String, u64>,
@@ -41,7 +33,6 @@ impl RunState {
         }
 
         Self {
-            run_id,
             status: RunStatus::Pending,
             pending: HashSet::new(),
             completed,

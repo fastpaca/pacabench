@@ -98,7 +98,6 @@ impl Benchmark {
             .take()
             .ok_or_else(|| PacabenchError::Internal(anyhow!("run() can only be called once")))?;
 
-        // Phase 1: Prepare
         let (prepared, dataset_loaders) = self.prepare_run(run_id, limit).await?;
         self.emit_run_started(&prepared);
 
@@ -108,7 +107,6 @@ impl Benchmark {
                 .await;
         }
 
-        // Phase 2: Start workers and producer
         let concurrency = self.config.global.concurrency.max(1);
         let queue_capacity = concurrency.saturating_mul(4).max(1);
 
@@ -134,12 +132,10 @@ impl Benchmark {
             limit,
         );
 
-        // Phase 3: Event loop (consumes prepared, returns final state)
         let (state, metadata, store, aborted) = self
             .run_event_loop(cmd_rx, pool, work_rx, prepared, producer)
             .await?;
 
-        // Phase 4: Finalize
         self.finalize_run(state, metadata, store, aborted).await
     }
 
@@ -152,7 +148,6 @@ impl Benchmark {
         run_id: Option<String>,
         limit: Option<usize>,
     ) -> Result<(PreparedRun, Vec<(String, Box<dyn DatasetLoader>)>)> {
-        // Generate run ID and create storage
         let run_id = run_id.unwrap_or_else(|| generate_run_id(&self.config.name));
         let run_dir = self.config.runs_dir.join(&run_id);
         std::fs::create_dir_all(&run_dir).map_err(PacabenchError::Persistence)?;
@@ -166,7 +161,6 @@ impl Benchmark {
             .map(|d| d.name.clone())
             .collect();
 
-        // Build dataset loaders
         let dataset_loaders: Vec<(String, Box<dyn DatasetLoader>)> = self
             .config
             .datasets
@@ -211,7 +205,6 @@ impl Benchmark {
             (Vec::new(), None, false)
         };
 
-        // Build attempt counts and passed set from existing results
         let attempt_counts: HashMap<CaseKey, u32> = existing_results
             .iter()
             .map(|r| (r.key(), r.attempt))
@@ -263,16 +256,13 @@ impl Benchmark {
             (total_cases, agent_totals)
         };
 
-        // Initialize state
         let state = RunState::new(
-            run_id.clone(),
             retry_policy.max_retries,
             total_cases,
             agent_totals,
             existing_results,
         );
 
-        // Initialize metadata
         let config_fingerprint = compute_config_fingerprint(&self.config)?;
         let mut metadata = RunMetadata::new(
             run_id.clone(),
@@ -304,7 +294,6 @@ impl Benchmark {
         metadata.status = RunStatus::Running;
         store.write_metadata(&metadata)?;
 
-        // Copy config file
         if let Some(src) = &self.config.config_path {
             if src.exists() {
                 let dest = run_dir.join("pacabench.yaml");
@@ -420,7 +409,6 @@ impl Benchmark {
             }
         }
 
-        // Cleanup
         drop(work_rx);
         pool.shutdown().await;
 
@@ -535,7 +523,6 @@ impl Benchmark {
         metadata.completed_cases = metadata.active_cases.unwrap_or(metadata.total_cases);
         store.write_metadata(&metadata)?;
 
-        // Load complete stats - single source of truth
         let stats = store.load_stats()?;
 
         self.emit(Event::RunCompleted {
@@ -579,14 +566,12 @@ fn spawn_case_producer(
                 for agent in &agents {
                     let key = CaseKey::new(&agent.name, &case.dataset_name, &case.case_id);
 
-                    // Skip if case was not in the original run (retry scenario)
                     if let Some(ref eligible) = eligible_cases {
                         if !eligible.contains(&key) {
                             continue;
                         }
                     }
 
-                    // Skip already passed cases
                     if passed.contains(&key) {
                         continue;
                     }

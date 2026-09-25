@@ -1,18 +1,3 @@
-//! Core domain types for PacaBench.
-//!
-//! This module defines the data structures used throughout the benchmark:
-//!
-//! - [`Case`]: A single benchmark case to evaluate
-//! - [`EvaluationResult`]: Result of evaluating a runner output
-//! - [`CaseResult`]: Combined result of running and evaluating a case
-//! - [`LlmMetrics`]: Metrics from LLM API calls (tokens, latency)
-//! - [`JudgeMetrics`]: Metrics from evaluator LLM calls
-//! - [`AggregatedMetrics`]: Aggregated metrics across all cases
-//! - [`RunStatus`]: Explicit state for benchmark runs
-//! - [`ErrorType`]: Classification of errors
-//! - [`Event`]: Events emitted during benchmark execution
-//! - [`Command`]: Commands to control benchmark execution
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

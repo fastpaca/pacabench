@@ -1,9 +1,5 @@
-//! Retry policy for failed cases.
-
-use crate::types::ErrorType;
 use std::time::Duration;
 
-/// Policy for retrying failed cases.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     pub max_retries: u32,
@@ -18,13 +14,6 @@ impl RetryPolicy {
         }
     }
 
-    /// Check if a case should be retried given its attempt count and error type.
-    #[allow(dead_code)]
-    pub fn should_retry(&self, attempt: u32, error_type: &ErrorType) -> bool {
-        attempt < self.max_retries && error_type.is_retryable()
-    }
-
-    /// Calculate backoff duration for a given attempt.
     pub fn backoff_duration(&self, attempt: u32) -> Duration {
         Duration::from_millis(self.backoff_base_ms * (attempt as u64))
     }
