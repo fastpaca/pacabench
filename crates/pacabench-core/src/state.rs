@@ -1,10 +1,11 @@
+use crate::retry::RetryPolicy;
 use crate::types::{CaseKey, CaseResult};
 use std::collections::{HashMap, HashSet};
 
 pub struct RunState {
     pending: HashSet<CaseKey>,
     completed: HashSet<CaseKey>,
-    max_retries: u32,
+    retry_policy: RetryPolicy,
     total_cases: u64,
     agent_totals: HashMap<String, u64>,
     agent_completed: HashMap<String, u64>,
@@ -12,7 +13,7 @@ pub struct RunState {
 
 impl RunState {
     pub fn new(
-        max_retries: u32,
+        retry_policy: RetryPolicy,
         total_cases: u64,
         agent_totals: HashMap<String, u64>,
         existing_results: Vec<CaseResult>,
@@ -31,7 +32,7 @@ impl RunState {
         Self {
             pending: HashSet::new(),
             completed,
-            max_retries,
+            retry_policy,
             total_cases,
             agent_totals,
             agent_completed,
@@ -60,7 +61,7 @@ impl RunState {
         let attempt = result.attempt;
 
         let needs_retry =
-            !result.passed && result.error_type.is_retryable() && attempt < self.max_retries;
+            !result.passed && self.retry_policy.should_retry(attempt, &result.error_type);
 
         if !needs_retry {
             self.pending.remove(&key);
