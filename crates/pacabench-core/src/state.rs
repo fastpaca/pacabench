@@ -2,6 +2,7 @@
 //!
 //! Provides explicit state tracking for benchmark runs with proper state transitions.
 
+use crate::retry::RetryPolicy;
 use crate::types::{CaseKey, CaseResult, RunStatus};
 use std::collections::{HashMap, HashSet};
 
@@ -13,7 +14,7 @@ pub struct RunState {
     pending: HashSet<CaseKey>,
     completed: HashMap<CaseKey, CaseResult>,
     attempt_counts: HashMap<CaseKey, u32>,
-    max_retries: u32,
+    retry_policy: RetryPolicy,
     total_cases: u64,
     agent_totals: HashMap<String, u64>,
     agent_completed: HashMap<String, u64>,
@@ -22,7 +23,7 @@ pub struct RunState {
 impl RunState {
     pub fn new(
         run_id: String,
-        max_retries: u32,
+        retry_policy: RetryPolicy,
         total_cases: u64,
         agent_totals: HashMap<String, u64>,
         existing_results: Vec<CaseResult>,
@@ -46,7 +47,7 @@ impl RunState {
             pending: HashSet::new(),
             completed,
             attempt_counts,
-            max_retries,
+            retry_policy,
             total_cases,
             agent_totals,
             agent_completed,
@@ -77,7 +78,7 @@ impl RunState {
         self.attempt_counts.insert(key.clone(), attempt);
 
         let needs_retry =
-            !result.passed && result.error_type.is_retryable() && attempt < self.max_retries;
+            !result.passed && self.retry_policy.should_retry(attempt, &result.error_type);
 
         if !needs_retry {
             self.pending.remove(&key);
