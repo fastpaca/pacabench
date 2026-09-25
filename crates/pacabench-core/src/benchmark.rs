@@ -103,7 +103,7 @@ impl Benchmark {
 
         if prepared.state.total_cases() == 0 {
             return self
-                .finalize_run(prepared.state, prepared.metadata, prepared.store, false)
+                .finalize_run(prepared.metadata, prepared.store, false)
                 .await;
         }
 
@@ -132,11 +132,11 @@ impl Benchmark {
             limit,
         );
 
-        let (state, metadata, store, aborted) = self
+        let (metadata, store, aborted) = self
             .run_event_loop(cmd_rx, pool, work_rx, prepared, producer)
             .await?;
 
-        self.finalize_run(state, metadata, store, aborted).await
+        self.finalize_run(metadata, store, aborted).await
     }
 
     /// Prepare all resources needed for a benchmark run.
@@ -345,9 +345,6 @@ impl Benchmark {
         });
     }
 
-    /// Main event loop: process commands, results, retries, and new work items.
-    ///
-    /// Consumes all inputs and returns the final state for finalization.
     async fn run_event_loop(
         &self,
         mut cmd_rx: mpsc::UnboundedReceiver<Command>,
@@ -355,9 +352,7 @@ impl Benchmark {
         mut work_rx: mpsc::Receiver<WorkItem>,
         mut prepared: PreparedRun,
         producer: JoinHandle<Result<()>>,
-    ) -> Result<(RunState, RunMetadata, RunStore, bool)> {
-        prepared.state.transition(RunStatus::Running);
-
+    ) -> Result<(RunMetadata, RunStore, bool)> {
         let mut retry_queue: DelayQueue<WorkItem> = DelayQueue::new();
         let mut aborted = false;
         let mut production_done = false;
@@ -395,9 +390,8 @@ impl Benchmark {
                 recv = work_rx.recv(), if !production_done => {
                     match recv {
                         Some(item) => {
-                            let attempt = item.attempt;
                             let key = item.key();
-                            prepared.state.register_case(key, attempt);
+                            prepared.state.register_case(key);
                             pending_count = prepared.state.pending_count();
                             pool.push(item).await;
                         }
@@ -422,7 +416,7 @@ impl Benchmark {
             }
         }
 
-        Ok((prepared.state, prepared.metadata, prepared.store, aborted))
+        Ok((prepared.metadata, prepared.store, aborted))
     }
 
     /// Handle a single completed work result.
@@ -509,7 +503,6 @@ impl Benchmark {
 
     async fn finalize_run(
         &self,
-        _state: RunState,
         mut metadata: RunMetadata,
         store: RunStore,
         aborted: bool,

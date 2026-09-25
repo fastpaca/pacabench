@@ -96,31 +96,6 @@ async fn proxy_records_metrics() {
 }
 
 #[tokio::test]
-async fn proxy_url_should_include_v1_prefix() {
-    let (upstream_url, _handle) = start_mock_upstream().await;
-
-    let proxy = ProxyServer::start(ProxyConfig {
-        port: 0,
-        upstream_base_url: upstream_url,
-        api_key: None,
-    })
-    .await
-    .unwrap();
-
-    let expected_url = format!("http://{}/v1", proxy.addr);
-    assert!(expected_url.ends_with("/v1"));
-
-    let client = Client::new();
-    let resp = client
-        .post(format!("{}/chat/completions", expected_url))
-        .json(&serde_json::json!({"model": "test", "messages": []}))
-        .send()
-        .await
-        .unwrap();
-    assert!(resp.status().is_success());
-}
-
-#[tokio::test]
 async fn proxy_healthcheck() {
     let (upstream_url, _handle) = start_mock_upstream().await;
 

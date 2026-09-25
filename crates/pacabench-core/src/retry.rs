@@ -18,12 +18,3 @@ impl RetryPolicy {
         Duration::from_millis(self.backoff_base_ms * (attempt as u64))
     }
 }
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_retries: 2,
-            backoff_base_ms: 100,
-        }
-    }
-}

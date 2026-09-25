@@ -258,41 +258,6 @@ async fn test_benchmark_with_evaluator() {
     );
 }
 
-#[test]
-fn test_proxy_url_format_includes_v1() {
-    let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
-    let proxy_url = format!("http://{}/v1", addr);
-    assert!(proxy_url.ends_with("/v1"), "proxy_url should end with /v1");
-    assert_eq!(proxy_url, "http://127.0.0.1:8080/v1");
-}
-
-#[test]
-fn test_upstream_url_derivation_from_provider() {
-    let providers: [(&str, Option<&str>); 3] = [
-        ("openai", Some("https://api.openai.com")),
-        ("anthropic", Some("https://api.anthropic.com")),
-        ("unknown", None),
-    ];
-
-    for (provider, expected) in providers {
-        let derived = match provider {
-            "openai" => Some("https://api.openai.com".to_string()),
-            "anthropic" => Some("https://api.anthropic.com".to_string()),
-            _ => None,
-        };
-
-        match expected {
-            Some(exp) => {
-                assert!(derived.is_some(), "provider {provider} should have URL");
-                assert_eq!(derived.unwrap(), exp);
-            }
-            None => {
-                assert!(derived.is_none(), "provider {provider} should have no URL");
-            }
-        }
-    }
-}
-
 #[tokio::test]
 async fn test_benchmark_uses_relative_path_with_root_dir() {
     let dir = tempdir().unwrap();

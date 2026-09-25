@@ -6,7 +6,6 @@ use crate::runner::{CommandRunner, RunnerOutput};
 use crate::types::{Case, CaseKey, CaseResult, ErrorType, EvaluationResult, Event, LlmMetrics};
 use anyhow::anyhow;
 use async_channel::{Receiver, Sender};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, info, warn};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct WorkItem {
     pub run_id: String,
     pub agent_name: String,
