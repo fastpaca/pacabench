@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/fastpaca/pacabench/actions/workflows/lint.yml">
-    <img src="https://github.com/fastpaca/pacabench/actions/workflows/lint.yml/badge.svg" alt="CI">
+  <a href="https://github.com/fastpaca/pacabench/actions/workflows/ci.yml">
+    <img src="https://github.com/fastpaca/pacabench/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
   <a href="https://opensource.org/license/apache-2-0">
     <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">

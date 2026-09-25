@@ -2,6 +2,7 @@
 name = "pacabench-cli"
 version = "0.0.3"
 edition = "2021"
+rust-version.workspace = true
 description = "A benchmarking framework for LLM-powered agents"
 license = "Apache-2.0"
 repository = "https://github.com/fastpaca/pacabench"

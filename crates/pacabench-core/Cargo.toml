@@ -2,6 +2,7 @@
 name = "pacabench-core"
 version = "0.0.3"
 edition = "2021"
+rust-version.workspace = true
 description = "Core library for PacaBench - a benchmark harness for LLM agents"
 license = "Apache-2.0"
 

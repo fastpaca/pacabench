@@ -24,15 +24,7 @@ Thank you for your interest in contributing to PacaBench! We welcome contributio
 
 ### Code Quality
 
-Before submitting a PR, you **must** run:
-
-```bash
-cargo fmt --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-```
-
-All three commands must pass with no errors or warnings.
+Before submitting a PR, run the quality gates in [AGENTS.md](AGENTS.md). CI runs those same checks.
 
 ### Running Smoke Tests
 
