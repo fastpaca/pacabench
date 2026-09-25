@@ -372,12 +372,24 @@ async fn worker_loop(
                 ErrorType::SystemFailure,
                 start.elapsed().as_millis() as f64,
             ),
-            Err(_) => (
-                None,
-                Some("Timeout".to_string()),
-                ErrorType::SystemFailure,
-                start.elapsed().as_millis() as f64,
-            ),
+            Err(_) => {
+                // The agent is stuck mid-case; kill its process tree so the
+                // next case talks to a fresh runner (run_case restarts the
+                // stopped process on demand).
+                if let Err(e) = runner.stop().await {
+                    warn!(
+                        worker_id = config.id,
+                        agent = %config.agent.name,
+                        "failed to stop runner after timeout: {e}"
+                    );
+                }
+                (
+                    None,
+                    Some(format!("Timeout after {:.1}s", config.timeout_seconds)),
+                    ErrorType::SystemFailure,
+                    start.elapsed().as_millis() as f64,
+                )
+            }
         };
 
         // Collect proxy metrics
