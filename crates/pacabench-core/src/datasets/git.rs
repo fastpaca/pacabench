@@ -1,19 +1,18 @@
-use super::{prepare_case, DatasetContext, DatasetLoader};
+use super::{
+    count_prepared_cases, record_keys, stream_prepared_cases, CaseIdFallback, DatasetContext,
+    DatasetLoader, RecordSource,
+};
 use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
 use anyhow::anyhow;
 use async_trait::async_trait;
-use futures_util::stream::{self, BoxStream, StreamExt, TryStreamExt};
+use futures_util::stream::BoxStream;
 use git2::Repository;
 use parking_lot::Mutex;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio_stream::wrappers::LinesStream;
 
 pub struct GitDataset {
     config: DatasetConfig,
@@ -141,133 +140,29 @@ impl DatasetLoader for GitDataset {
     async fn count_cases(&self, limit: Option<usize>) -> Result<usize> {
         let repo_dir = self.ensure_prepared_repo().await?;
         let files = self.resolve_files(&repo_dir)?;
-        let input_key = self
-            .config
-            .input_map
-            .get("input")
-            .map(String::as_str)
-            .unwrap_or("input");
-        let expected_key = self
-            .config
-            .input_map
-            .get("expected")
-            .map(String::as_str)
-            .unwrap_or("expected");
-
-        let mut count = 0usize;
-        for file in files {
-            let f = File::open(&file)
-                .await
-                .map_err(PacabenchError::Persistence)?;
-            let reader = BufReader::new(f);
-            let mut lines = reader.lines();
-            let mut idx = 0usize;
-            while let Some(line) = lines
-                .next_line()
-                .await
-                .map_err(PacabenchError::Persistence)?
-            {
-                if let Some(limit) = limit {
-                    if count >= limit {
-                        return Ok(count);
-                    }
-                }
-                let current_idx = idx;
-                idx += 1;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&line) {
-                    let fallback = format!(
-                        "{}-{}",
-                        file.file_stem().unwrap_or_default().to_string_lossy(),
-                        current_idx
-                    );
-                    if prepare_case(&map, &self.config.name, &fallback, input_key, expected_key)
-                        .is_some()
-                    {
-                        count += 1;
-                    }
-                }
-            }
-        }
-
-        Ok(count)
+        let keys = record_keys(&self.config.input_map);
+        count_prepared_cases(
+            &files,
+            &self.config.name,
+            &keys,
+            CaseIdFallback::FileStem,
+            RecordSource::Jsonl,
+            limit,
+        )
+        .await
     }
 
     async fn stream_cases(&self, limit: Option<usize>) -> Result<BoxStream<'static, Result<Case>>> {
         let repo_dir = self.ensure_prepared_repo().await?;
         let files = self.resolve_files(&repo_dir)?;
-        let dataset_name = self.config.name.clone();
-        let input_key = self
-            .config
-            .input_map
-            .get("input")
-            .map(String::as_str)
-            .unwrap_or("input")
-            .to_string();
-        let expected_key = self
-            .config
-            .input_map
-            .get("expected")
-            .map(String::as_str)
-            .unwrap_or("expected")
-            .to_string();
-
-        let stream = stream::iter(files)
-            .then(move |file| {
-                let dataset_name = dataset_name.clone();
-                let input_key = input_key.clone();
-                let expected_key = expected_key.clone();
-                async move {
-                    let file_clone = file.clone();
-                    let f = File::open(&file)
-                        .await
-                        .map_err(PacabenchError::Persistence)?;
-                    let reader = BufReader::new(f);
-                    let lines = LinesStream::new(reader.lines()).enumerate().filter_map(
-                        move |(idx, line)| {
-                            let file = file_clone.clone();
-                            let dataset_name = dataset_name.clone();
-                            let input_key = input_key.clone();
-                            let expected_key = expected_key.clone();
-                            async move {
-                                match line {
-                                    Ok(line) if !line.trim().is_empty() => {
-                                        match serde_json::from_str::<Value>(&line) {
-                                            Ok(Value::Object(map)) => {
-                                                let fallback = format!(
-                                                    "{}-{}",
-                                                    file.file_stem()
-                                                        .unwrap_or_default()
-                                                        .to_string_lossy(),
-                                                    idx
-                                                );
-                                                prepare_case(
-                                                    &map,
-                                                    &dataset_name,
-                                                    &fallback,
-                                                    &input_key,
-                                                    &expected_key,
-                                                )
-                                                .map(Ok)
-                                            }
-                                            _ => None,
-                                        }
-                                    }
-                                    Ok(_) => None,
-                                    Err(e) => Some(Err(PacabenchError::Internal(e.into()))),
-                                }
-                            }
-                        },
-                    );
-
-                    Ok::<_, PacabenchError>(lines)
-                }
-            })
-            .try_flatten()
-            .take(limit.unwrap_or(usize::MAX));
-
-        Ok(Box::pin(stream))
+        let keys = record_keys(&self.config.input_map);
+        Ok(stream_prepared_cases(
+            files,
+            self.config.name.clone(),
+            keys,
+            CaseIdFallback::FileStem,
+            RecordSource::Jsonl,
+            limit,
+        ))
     }
 }

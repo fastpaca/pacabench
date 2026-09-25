@@ -1,17 +1,14 @@
 use super::{
-    detect_dataset_file_format, prepare_case, read_json_array, resolve_path, DatasetContext,
-    DatasetFileFormat, DatasetLoader,
+    count_prepared_cases, record_keys, resolve_path, stream_prepared_cases, CaseIdFallback,
+    DatasetContext, DatasetLoader, RecordSource,
 };
 use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
 use async_trait::async_trait;
-use futures_util::stream::{self, BoxStream, StreamExt, TryStreamExt};
+use futures_util::stream::BoxStream;
 use globwalk::GlobWalkerBuilder;
-use serde_json::Value;
-use std::path::{Path, PathBuf};
-use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use std::path::PathBuf;
 
 pub struct LocalDataset {
     config: DatasetConfig,
@@ -87,196 +84,34 @@ impl LocalDataset {
 
         Ok(files)
     }
-
-    fn parse_case(
-        &self,
-        map: &serde_json::Map<String, Value>,
-        file: &Path,
-        idx: usize,
-        input_key: &str,
-        expected_key: &str,
-    ) -> Option<Case> {
-        prepare_case(
-            map,
-            &self.config.name,
-            &format!("{}-{}", file.display(), idx),
-            input_key,
-            expected_key,
-        )
-    }
 }
 
 #[async_trait]
 impl DatasetLoader for LocalDataset {
     async fn count_cases(&self, limit: Option<usize>) -> Result<usize> {
         let files = self.resolve_files()?;
-        let input_key = self
-            .config
-            .input_map
-            .get("input")
-            .map(String::as_str)
-            .unwrap_or("input");
-        let expected_key = self
-            .config
-            .input_map
-            .get("expected")
-            .map(String::as_str)
-            .unwrap_or("expected");
-
-        let mut count = 0usize;
-        for file in files {
-            match detect_dataset_file_format(&file).await? {
-                DatasetFileFormat::JsonArray => {
-                    let items = read_json_array(&file).await?;
-                    for (idx, item) in items.into_iter().enumerate() {
-                        if let Some(limit) = limit {
-                            if count >= limit {
-                                return Ok(count);
-                            }
-                        }
-                        if let Value::Object(map) = item {
-                            if self
-                                .parse_case(&map, file.as_path(), idx, input_key, expected_key)
-                                .is_some()
-                            {
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-                DatasetFileFormat::Jsonl => {
-                    let f = File::open(&file)
-                        .await
-                        .map_err(PacabenchError::Persistence)?;
-                    let reader = BufReader::new(f);
-                    let mut lines = reader.lines();
-                    let mut idx = 0usize;
-                    while let Some(line) = lines
-                        .next_line()
-                        .await
-                        .map_err(PacabenchError::Persistence)?
-                    {
-                        if let Some(limit) = limit {
-                            if count >= limit {
-                                return Ok(count);
-                            }
-                        }
-                        let current_idx = idx;
-                        idx += 1;
-                        if line.trim().is_empty() {
-                            continue;
-                        }
-                        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&line) {
-                            if self
-                                .parse_case(
-                                    &map,
-                                    file.as_path(),
-                                    current_idx,
-                                    input_key,
-                                    expected_key,
-                                )
-                                .is_some()
-                            {
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(count)
+        let keys = record_keys(&self.config.input_map);
+        count_prepared_cases(
+            &files,
+            &self.config.name,
+            &keys,
+            CaseIdFallback::FullPath,
+            RecordSource::JsonlOrJsonArray,
+            limit,
+        )
+        .await
     }
 
     async fn stream_cases(&self, limit: Option<usize>) -> Result<BoxStream<'static, Result<Case>>> {
         let files = self.resolve_files()?;
-        let dataset_name = self.config.name.clone();
-        let input_key = self
-            .config
-            .input_map
-            .get("input")
-            .map(String::as_str)
-            .unwrap_or("input")
-            .to_string();
-        let expected_key = self
-            .config
-            .input_map
-            .get("expected")
-            .map(String::as_str)
-            .unwrap_or("expected")
-            .to_string();
-
-        let stream = stream::iter(files)
-            .then(move |file| {
-                let dataset_name = dataset_name.clone();
-                let input_key = input_key.clone();
-                let expected_key = expected_key.clone();
-                async move {
-                    match detect_dataset_file_format(&file).await? {
-                        DatasetFileFormat::JsonArray => {
-                            let items = read_json_array(&file).await?;
-                            let cases = items
-                                .into_iter()
-                                .enumerate()
-                                .filter_map(|(idx, item)| {
-                                    if let Value::Object(map) = item {
-                                        prepare_case(
-                                            &map,
-                                            &dataset_name,
-                                            &format!("{}-{}", file.display(), idx),
-                                            &input_key,
-                                            &expected_key,
-                                        )
-                                        .map(Ok)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect::<Vec<_>>();
-                            Ok::<_, PacabenchError>(stream::iter(cases).boxed())
-                        }
-                        DatasetFileFormat::Jsonl => {
-                            let file_clone = file.clone();
-                            let f = File::open(&file)
-                                .await
-                                .map_err(PacabenchError::Persistence)?;
-                            let reader = BufReader::new(f);
-                            let lines = tokio_stream::wrappers::LinesStream::new(reader.lines())
-                                .enumerate()
-                                .filter_map(move |(idx, line)| {
-                                    let file = file_clone.clone();
-                                    let dataset_name = dataset_name.clone();
-                                    let input_key = input_key.clone();
-                                    let expected_key = expected_key.clone();
-                                    async move {
-                                        match line {
-                                            Ok(line) if !line.trim().is_empty() => {
-                                                match serde_json::from_str::<Value>(&line) {
-                                                    Ok(Value::Object(map)) => prepare_case(
-                                                        &map,
-                                                        &dataset_name,
-                                                        &format!("{}-{}", file.display(), idx),
-                                                        &input_key,
-                                                        &expected_key,
-                                                    )
-                                                    .map(Ok),
-                                                    _ => None,
-                                                }
-                                            }
-                                            Ok(_) => None,
-                                            Err(e) => Some(Err(PacabenchError::Internal(e.into()))),
-                                        }
-                                    }
-                                });
-
-                            Ok::<_, PacabenchError>(lines.boxed())
-                        }
-                    }
-                }
-            })
-            .try_flatten()
-            .take(limit.unwrap_or(usize::MAX));
-
-        Ok(Box::pin(stream))
+        let keys = record_keys(&self.config.input_map);
+        Ok(stream_prepared_cases(
+            files,
+            self.config.name.clone(),
+            keys,
+            CaseIdFallback::FullPath,
+            RecordSource::JsonlOrJsonArray,
+            limit,
+        ))
     }
 }

@@ -3,13 +3,16 @@
 use crate::config::DatasetConfig;
 use crate::error::{PacabenchError, Result};
 use crate::types::Case;
+use crate::utils::resolve_path;
 use anyhow::anyhow;
 use async_trait::async_trait;
-use futures_util::stream::BoxStream;
+use futures_util::stream::{self, BoxStream, StreamExt, TryStreamExt};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio_stream::wrappers::LinesStream;
 
 mod local;
 pub use local::LocalDataset;
@@ -58,7 +61,65 @@ pub fn get_dataset_loader(
     }
 }
 
-use crate::utils::resolve_path;
+#[derive(Clone, Copy)]
+enum CaseIdFallback {
+    FullPath,
+    FileStem,
+}
+
+#[derive(Clone, Copy)]
+enum RecordSource {
+    Jsonl,
+    JsonlOrJsonArray,
+}
+
+#[derive(Clone)]
+struct RecordKeys {
+    input: String,
+    expected: String,
+}
+
+fn record_keys(input_map: &HashMap<String, String>) -> RecordKeys {
+    RecordKeys {
+        input: input_map
+            .get("input")
+            .map(String::as_str)
+            .unwrap_or("input")
+            .to_string(),
+        expected: input_map
+            .get("expected")
+            .map(String::as_str)
+            .unwrap_or("expected")
+            .to_string(),
+    }
+}
+
+fn case_id_fallback(kind: CaseIdFallback, file: &Path, idx: usize) -> String {
+    match kind {
+        CaseIdFallback::FullPath => format!("{}-{idx}", file.display()),
+        CaseIdFallback::FileStem => format!(
+            "{}-{idx}",
+            file.file_stem().unwrap_or_default().to_string_lossy()
+        ),
+    }
+}
+
+fn case_from_record(
+    record: &serde_json::Map<String, Value>,
+    dataset_name: &str,
+    file: &Path,
+    idx: usize,
+    keys: &RecordKeys,
+    fallback: CaseIdFallback,
+) -> Option<Case> {
+    prepare_case(
+        record,
+        dataset_name,
+        &case_id_fallback(fallback, file, idx),
+        &keys.input,
+        &keys.expected,
+    )
+}
 
 #[derive(Debug, Clone, Copy)]
 enum DatasetFileFormat {
@@ -100,7 +161,6 @@ async fn read_json_array(path: &Path) -> Result<Vec<serde_json::Value>> {
     }
 }
 
-/// Common helper to build a Case from a JSON-like record.
 fn prepare_case(
     record: &serde_json::Map<String, serde_json::Value>,
     dataset_name: &str,
@@ -160,3 +220,183 @@ static COMMON_EXCLUDE_KEYS: &[&str] = &[
     "label",
     "target",
 ];
+
+async fn count_prepared_cases(
+    files: &[PathBuf],
+    dataset_name: &str,
+    keys: &RecordKeys,
+    fallback: CaseIdFallback,
+    source: RecordSource,
+    limit: Option<usize>,
+) -> Result<usize> {
+    let mut count = 0usize;
+    for file in files {
+        count = match source {
+            RecordSource::Jsonl => {
+                count_jsonl_file(file, dataset_name, keys, fallback, limit, count).await?
+            }
+            RecordSource::JsonlOrJsonArray => match detect_dataset_file_format(file).await? {
+                DatasetFileFormat::JsonArray => {
+                    count_json_array_file(file, dataset_name, keys, fallback, limit, count).await?
+                }
+                DatasetFileFormat::Jsonl => {
+                    count_jsonl_file(file, dataset_name, keys, fallback, limit, count).await?
+                }
+            },
+        };
+        if limit.is_some_and(|limit| count >= limit) {
+            return Ok(count);
+        }
+    }
+    Ok(count)
+}
+
+async fn count_json_array_file(
+    file: &Path,
+    dataset_name: &str,
+    keys: &RecordKeys,
+    fallback: CaseIdFallback,
+    limit: Option<usize>,
+    mut count: usize,
+) -> Result<usize> {
+    let items = read_json_array(file).await?;
+    for (idx, item) in items.into_iter().enumerate() {
+        if limit.is_some_and(|limit| count >= limit) {
+            return Ok(count);
+        }
+        if let Value::Object(map) = item {
+            if case_from_record(&map, dataset_name, file, idx, keys, fallback).is_some() {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
+async fn count_jsonl_file(
+    file: &Path,
+    dataset_name: &str,
+    keys: &RecordKeys,
+    fallback: CaseIdFallback,
+    limit: Option<usize>,
+    mut count: usize,
+) -> Result<usize> {
+    let opened = fs::File::open(file)
+        .await
+        .map_err(PacabenchError::Persistence)?;
+    let reader = BufReader::new(opened);
+    let mut lines = reader.lines();
+    let mut idx = 0usize;
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(PacabenchError::Persistence)?
+    {
+        if limit.is_some_and(|limit| count >= limit) {
+            return Ok(count);
+        }
+        let current_idx = idx;
+        idx += 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&line) {
+            if case_from_record(&map, dataset_name, file, current_idx, keys, fallback).is_some() {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
+fn stream_prepared_cases(
+    files: Vec<PathBuf>,
+    dataset_name: String,
+    keys: RecordKeys,
+    fallback: CaseIdFallback,
+    source: RecordSource,
+    limit: Option<usize>,
+) -> BoxStream<'static, Result<Case>> {
+    let stream = stream::iter(files)
+        .then(move |file| {
+            let dataset_name = dataset_name.clone();
+            let keys = keys.clone();
+            async move {
+                match source {
+                    RecordSource::Jsonl => {
+                        jsonl_case_stream(file, dataset_name, keys, fallback).await
+                    }
+                    RecordSource::JsonlOrJsonArray => {
+                        match detect_dataset_file_format(&file).await? {
+                            DatasetFileFormat::JsonArray => {
+                                json_array_case_stream(file, dataset_name, keys, fallback).await
+                            }
+                            DatasetFileFormat::Jsonl => {
+                                jsonl_case_stream(file, dataset_name, keys, fallback).await
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .try_flatten()
+        .take(limit.unwrap_or(usize::MAX));
+
+    Box::pin(stream)
+}
+
+async fn json_array_case_stream(
+    file: PathBuf,
+    dataset_name: String,
+    keys: RecordKeys,
+    fallback: CaseIdFallback,
+) -> Result<BoxStream<'static, Result<Case>>> {
+    let items = read_json_array(&file).await?;
+    let cases = items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, item)| {
+            let Value::Object(map) = item else {
+                return None;
+            };
+            case_from_record(&map, &dataset_name, &file, idx, &keys, fallback).map(Ok)
+        })
+        .collect::<Vec<_>>();
+    Ok(stream::iter(cases).boxed())
+}
+
+async fn jsonl_case_stream(
+    file: PathBuf,
+    dataset_name: String,
+    keys: RecordKeys,
+    fallback: CaseIdFallback,
+) -> Result<BoxStream<'static, Result<Case>>> {
+    let file_for_id = file.clone();
+    let opened = fs::File::open(&file)
+        .await
+        .map_err(PacabenchError::Persistence)?;
+    let reader = BufReader::new(opened);
+    let lines = LinesStream::new(reader.lines())
+        .enumerate()
+        .filter_map(move |(idx, line)| {
+            let file = file_for_id.clone();
+            let dataset_name = dataset_name.clone();
+            let keys = keys.clone();
+            async move {
+                match line {
+                    Ok(line) if !line.trim().is_empty() => {
+                        match serde_json::from_str::<Value>(&line) {
+                            Ok(Value::Object(map)) => {
+                                case_from_record(&map, &dataset_name, &file, idx, &keys, fallback)
+                                    .map(Ok)
+                            }
+                            _ => None,
+                        }
+                    }
+                    Ok(_) => None,
+                    Err(e) => Some(Err(PacabenchError::Internal(e.into()))),
+                }
+            }
+        });
+    Ok(lines.boxed())
+}
