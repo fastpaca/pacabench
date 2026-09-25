@@ -1,8 +1,3 @@
-//! Unified error types for PacaBench.
-//!
-//! This module provides a comprehensive error hierarchy using `thiserror`
-//! for all operations in the benchmark pipeline.
-
 use thiserror::Error;
 
 /// The main error type for PacaBench operations.

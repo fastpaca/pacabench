@@ -35,7 +35,7 @@ cd examples/smoke_test && cargo run -p pacabench-cli
 ### Project Structure
 
 - `crates/pacabench-core/` - Core library with benchmark engine, persistence, and proxy
-- `crates/pacabench-cli/` - CLI binary (thin wrapper around core)
+- `crates/pacabench-cli/` - CLI binary
 - `examples/` - Example benchmark configurations
 
 ## Pull Request Process

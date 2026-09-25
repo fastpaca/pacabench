@@ -141,12 +141,6 @@ pub struct ProgressDisplay {
     runs_dir: PathBuf,
 }
 
-impl Default for ProgressDisplay {
-    fn default() -> Self {
-        Self::new(PathBuf::from("."))
-    }
-}
-
 impl ProgressDisplay {
     pub fn new(runs_dir: PathBuf) -> Self {
         Self {

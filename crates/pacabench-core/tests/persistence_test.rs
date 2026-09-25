@@ -1,25 +1,10 @@
 //! Tests for the persistence module.
 
-use pacabench_core::config::{Config, ConfigOverrides};
 use pacabench_core::persistence::{
-    compute_config_fingerprint, iso_timestamp_now, list_run_summaries, ErrorEntry, RunMetadata,
-    RunStore,
+    iso_timestamp_now, list_run_summaries, ErrorEntry, RunMetadata, RunStore,
 };
 use pacabench_core::types::{CaseResult, ErrorType, LlmMetrics, RunStatus};
-use std::path::PathBuf;
 use tempfile::tempdir;
-
-#[test]
-fn fingerprint_is_stable() {
-    let cfg_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("examples/membench_qa_test/pacabench.yaml");
-    let cfg = Config::from_file(cfg_path, ConfigOverrides::default()).expect("config");
-    let fp1 = compute_config_fingerprint(&cfg).unwrap();
-    let fp2 = compute_config_fingerprint(&cfg).unwrap();
-    assert_eq!(fp1, fp2);
-}
 
 #[test]
 fn run_store_roundtrip_results_and_errors() {

@@ -71,8 +71,6 @@ fn histogram_lines(label: &str, buckets: &[(String, u64)]) -> Vec<StyledLine> {
     lines
 }
 
-// Show command formatting
-
 pub fn print_run_list(runs: &[RunSummary], limit: usize) {
     if runs.is_empty() {
         println!("No runs found.");
@@ -105,9 +103,6 @@ pub fn print_run_list(runs: &[RunSummary], limit: usize) {
     }
 }
 
-// RunStats-based formatting (single source of truth)
-
-/// Format duration in human-readable form
 fn format_duration_ms(ms: f64) -> String {
     if ms >= 1000.0 {
         format!("{:.1}s", ms / 1000.0)
@@ -902,7 +897,6 @@ pub fn build_export_markdown_from_stats(stats: &RunStats) -> String {
     md
 }
 
-// Case-level display (still needs raw results)
 pub fn print_cases(
     run_id: &str,
     results: &[CaseResult],

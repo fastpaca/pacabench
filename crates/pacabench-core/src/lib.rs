@@ -30,15 +30,6 @@
 //! }
 //! ```
 //!
-//! # Public API
-//!
-//! - [`Config`] - Configuration (load with `Config::from_file()`)
-//! - [`Benchmark`] - Main entry point (`Benchmark::new(config)`)
-//! - [`Event`] - Events emitted during execution
-//! - [`Command`] - Commands to control execution (stop, abort)
-//! - [`RunResult`](benchmark::RunResult) - Result of a benchmark run
-
-// Public API
 pub mod benchmark;
 pub use benchmark::{Benchmark, RunResult};
 
@@ -51,7 +42,6 @@ pub use types::{
     JudgeMetrics, LlmMetrics, RunStatus,
 };
 
-// Re-export RunnerOutput from runner module (where it's defined)
 pub use runner::RunnerOutput;
 
 pub mod error;
@@ -60,13 +50,11 @@ pub mod persistence;
 pub mod stats;
 pub use stats::RunStats;
 
-// Internal modules
 pub(crate) mod retry;
 pub(crate) mod state;
 pub(crate) mod utils;
 pub(crate) mod worker;
 
-// Supporting modules
 pub mod datasets;
 pub mod evaluators;
 pub mod proxy;

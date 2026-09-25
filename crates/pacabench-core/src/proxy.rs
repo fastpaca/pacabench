@@ -32,7 +32,6 @@ pub struct MetricsCollector {
     input_tokens: AtomicU64,
     output_tokens: AtomicU64,
     cached_tokens: AtomicU64,
-    total_latency_us: AtomicU64,
     latencies: Mutex<Vec<f64>>,
     model: Mutex<Option<String>>,
 }
@@ -44,9 +43,6 @@ impl MetricsCollector {
 
     fn record(&self, latency_ms: f64, usage: &Value, model: Option<String>) {
         self.call_count.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_us
-            .fetch_add((latency_ms * 1000.0) as u64, Ordering::Relaxed);
-
         self.latencies.lock().push(latency_ms);
 
         if let Some(u) = usage.as_object() {
@@ -75,7 +71,6 @@ impl MetricsCollector {
         let input_tokens = self.input_tokens.swap(0, Ordering::Relaxed);
         let output_tokens = self.output_tokens.swap(0, Ordering::Relaxed);
         let cached_tokens = self.cached_tokens.swap(0, Ordering::Relaxed);
-        let _ = self.total_latency_us.swap(0, Ordering::Relaxed);
 
         let latencies = std::mem::take(&mut *self.latencies.lock());
         let model = self.model.lock().take();

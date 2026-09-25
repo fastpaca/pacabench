@@ -366,7 +366,7 @@ pub fn calculate_cost_from_metrics(
 }
 
 /// Cost breakdown calculated from TokenStats.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CostBreakdown {
     pub agent_cost_usd: f64,
     pub judge_cost_usd: f64,

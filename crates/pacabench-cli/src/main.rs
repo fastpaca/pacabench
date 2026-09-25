@@ -221,10 +221,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// ============================================================================
-// Command handlers
-// ============================================================================
-
 fn cmd_show_config(config: &Config) -> Result<()> {
     println!(
         "Loaded benchmark '{}': {} agent(s), {} dataset(s).",
@@ -289,17 +285,14 @@ fn cmd_show(
     let summaries = list_run_summaries(&runs_dir)
         .with_context(|| format!("listing runs in {}", runs_dir.display()))?;
 
-    if run_id.is_none() {
+    let Some(partial) = run_id else {
         print_run_list(&summaries, limit);
         return Ok(());
-    }
-
-    let partial = run_id.as_ref().expect("guarded above");
-    let resolved_id = resolve_run_id_from_summaries(&summaries, partial)?;
+    };
+    let resolved_id = resolve_run_id_in(&summaries, &partial, "no runs available")?;
     let store = RunStore::new(runs_dir.join(&resolved_id))
         .with_context(|| format!("opening run {}", resolved_id))?;
 
-    // Use load_stats() - single source of truth
     let stats = store
         .load_stats()
         .with_context(|| format!("loading stats for {}", resolved_id))?;
@@ -374,7 +367,6 @@ fn cmd_export(
     let store = RunStore::new(runs_dir.join(&resolved_id))
         .with_context(|| format!("opening run {}", resolved_id))?;
 
-    // Use load_stats() - single source of truth
     let stats = store
         .load_stats()
         .with_context(|| format!("loading stats for {}", resolved_id))?;
@@ -408,41 +400,22 @@ fn cmd_export(
     Ok(())
 }
 
-// ============================================================================
-// Utilities
-// ============================================================================
-
 fn resolve_run_id(runs_dir: &std::path::Path, partial: &str) -> Result<String> {
     let summaries = list_run_summaries(runs_dir)?;
-    if summaries.is_empty() {
-        return Err(anyhow!("no runs found in {}", runs_dir.display()));
-    }
-
-    if let Some(exact) = summaries.iter().find(|s| s.run_id == partial) {
-        return Ok(exact.run_id.clone());
-    }
-
-    let matches: Vec<&RunSummary> = summaries
-        .iter()
-        .filter(|s| s.run_id.starts_with(partial) || s.run_id.contains(partial))
-        .collect();
-
-    match matches.len() {
-        0 => Err(anyhow!("no run found matching '{partial}'")),
-        1 => Ok(matches[0].run_id.clone()),
-        _ => {
-            let options: Vec<_> = matches.iter().map(|s| s.run_id.clone()).collect();
-            Err(anyhow!(
-                "ambiguous run ID '{partial}', matches: {}",
-                options.join(", ")
-            ))
-        }
-    }
+    resolve_run_id_in(
+        &summaries,
+        partial,
+        &format!("no runs found in {}", runs_dir.display()),
+    )
 }
 
-fn resolve_run_id_from_summaries(summaries: &[RunSummary], partial: &str) -> Result<String> {
+fn resolve_run_id_in(
+    summaries: &[RunSummary],
+    partial: &str,
+    empty_message: &str,
+) -> Result<String> {
     if summaries.is_empty() {
-        return Err(anyhow!("no runs available"));
+        return Err(anyhow!("{empty_message}"));
     }
 
     if let Some(exact) = summaries.iter().find(|s| s.run_id == partial) {
