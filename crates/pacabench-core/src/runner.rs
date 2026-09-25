@@ -143,6 +143,12 @@ impl CommandRunner {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Unix: run the agent as its own process-group leader so kill/timeout
+        // can signal the whole tree (agents spawned via `sh -c` often leave
+        // grandchildren behind otherwise). On Windows we fall back to a
+        // best-effort kill of the direct child only.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         if let Some(dir) = &self.work_dir {
             if !dir.as_os_str().is_empty() {
@@ -219,14 +225,24 @@ impl CommandRunner {
 
     /// Kill the subprocess without running teardown (used by Drop).
     fn kill_process(&mut self) {
-        if let Some(ref mut child) = self.child {
-            // start_kill() is synchronous and initiates the kill
+        if let Some(mut child) = self.child.take() {
+            // Unix: the child is its own process-group leader (see `start`),
+            // so SIGKILL the entire group to take out grandchildren too.
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                // SAFETY: kill(2) only sends a signal; it cannot violate
+                // memory safety regardless of its arguments.
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
+            // Fallback (and the only path on non-Unix): best-effort kill of
+            // the direct child.
             let _ = child.start_kill();
         }
         if let Some(handle) = self.stderr_task.take() {
             handle.abort();
         }
-        self.child = None;
         self.stdin = None;
         self.stdout = None;
     }

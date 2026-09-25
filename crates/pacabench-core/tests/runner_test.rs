@@ -163,3 +163,64 @@ for line in sys.stdin:
     assert_eq!(res.output.as_deref(), Some("http://127.0.0.1:8080/v1"));
     runner.stop().await.unwrap();
 }
+
+/// True if the process exists and is not a zombie awaiting reaping.
+#[cfg(unix)]
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: kill(2) with signal 0 only probes for existence.
+    let exists = unsafe { libc::kill(pid, 0) == 0 };
+    if !exists {
+        return false;
+    }
+    // A zombie still answers kill(0); on Linux check the state in /proc.
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat.contains(") Z"),
+        Err(_) => exists,
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn command_runner_stop_kills_grandchildren() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("agent.sh");
+    // On the first case, spawn a long-lived grandchild and report its pid,
+    // then keep the agent alive waiting for more input.
+    std::fs::write(
+        &script,
+        r#"
+read line
+sleep 300 &
+echo "{\"output\": \"$!\"}"
+read line2
+"#,
+    )
+    .unwrap();
+
+    let cfg = AgentConfig {
+        name: "spawner".into(),
+        command: format!("sh {}", script.display()),
+        setup: None,
+        teardown: None,
+        env: Default::default(),
+    };
+    let mut runner = CommandRunner::new(cfg, None, None, None);
+    runner.start().await.unwrap();
+    let res = runner.run_case(&make_case()).await.unwrap();
+    let pid: i32 = res.output.expect("agent output").trim().parse().unwrap();
+    assert!(process_alive(pid), "grandchild should be alive before stop");
+
+    runner.stop().await.unwrap();
+
+    // The process-group SIGKILL must take out the grandchild too; poll
+    // briefly to allow signal delivery and reaping.
+    let mut alive = true;
+    for _ in 0..50 {
+        if !process_alive(pid) {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!alive, "grandchild sleep (pid {pid}) survived runner stop");
+}
