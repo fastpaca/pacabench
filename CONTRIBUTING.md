@@ -26,7 +26,9 @@ Thank you for your interest in contributing to PacaBench! We welcome contributio
 
 Before submitting a PR, run the quality gates in [AGENTS.md](AGENTS.md). CI runs those same checks.
 
-### Running Smoke Tests
+### Offline smoke (CI)
+
+No API key. CI builds `pacabench` and runs `examples/smoke_test` with `OPENAI_API_KEY` unset, then checks for one completed run and two passing cases. The README Quick Start is [`examples/quickstart`](examples/quickstart/). See [examples/smoke_test/README.md](examples/smoke_test/README.md).
 
 ```bash
 cd examples/smoke_test && cargo run -p pacabench-cli -- run --no-tui

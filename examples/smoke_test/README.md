@@ -1,6 +1,8 @@
 # Offline smoke test
 
-Two local cases, an echo agent, and exact-match scoring. No API key and no network.
+Contributor and CI check. Two local cases, an echo agent, and exact-match scoring. No API key and no network.
+
+The Quick Start is [`examples/quickstart`](../quickstart/): two real model calls, with the metrics proxy on.
 
 ```bash
 pacabench run

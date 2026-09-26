@@ -86,17 +86,20 @@ cargo build --release --bin pacabench
 export PATH="$PWD/target/release:$PATH"
 ```
 
-### Offline smoke
+### Two questions
 
-No API key. Two local cases, an echo agent, exact-match scoring. The agent does not call a model, and the proxy is off.
+Needs an OpenAI API key. Two cases, one agent, and the metrics proxy on. The live view shows pass/fail plus latency and token counts. The agent is Python 3 standard library only.
 
 ```bash
 git clone https://github.com/fastpaca/pacabench.git
-cd pacabench/examples/smoke_test
+cd pacabench/examples/quickstart
+export OPENAI_API_KEY=sk-...
 pacabench run
 ```
 
-`hello` comes back as `olleh`. The run finishes in seconds. In a pipe or in CI, add `--no-tui`.
+Already in a clone? `cd examples/quickstart` and run the same command. In a pipe, add `--no-tui`.
+
+The harness points the agent at a local proxy (`OPENAI_BASE_URL`). That proxy is what records latency and tokens. A judge (`gpt-4o-mini`) scores the answers, so a short paraphrase of "Paris" still passes.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-run.gif" width="800" alt="Live run TUI with distributions and rolling failures">
@@ -140,17 +143,7 @@ Export for analysis:
 pacabench export <run-id> > results.json
 ```
 
-### Next
-
-Scaffold a project that calls an LLM:
-
-```bash
-pacabench init
-export OPENAI_API_KEY=sk-...
-pacabench run --limit 10
-```
-
-`pacabench init` writes an agent that needs an API key. The smoke test above does not.
+To scaffold your own suite in an empty directory, run `pacabench init`.
 
 ---
 
