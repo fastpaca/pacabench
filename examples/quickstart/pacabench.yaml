@@ -1,0 +1,27 @@
+name: quickstart
+description: Two-question LLM run. Needs OPENAI_API_KEY. The proxy records latency and tokens.
+version: "0.1.0"
+
+config:
+  concurrency: 2
+  timeout_seconds: 60
+  max_retries: 0
+  proxy:
+    enabled: true
+
+agents:
+  - name: "qa-agent"
+    command: "python agents/qa_agent.py"
+
+datasets:
+  - name: "mini-qa"
+    source: "data/questions.jsonl"
+    input_map:
+      input: "question"
+      expected: "answer"
+    evaluator:
+      type: "llm_judge"
+      model: "gpt-4o-mini"
+
+output:
+  directory: "./runs"

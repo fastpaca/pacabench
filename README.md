@@ -79,19 +79,27 @@ Or run directly without installing:
 uvx pacabench@latest --help
 ```
 
-### Usage
-
-Initialize a new project:
+From a clone, build the binary and put it on your `PATH`:
 
 ```bash
-pacabench init
+cargo build --release --bin pacabench
+export PATH="$PWD/target/release:$PATH"
 ```
 
-Run a quick test:
+### Two questions
+
+Needs an OpenAI API key. Two cases, one agent, and the metrics proxy on. The live view shows pass/fail plus latency and token counts. The agent is Python 3 standard library only.
 
 ```bash
-pacabench run --limit 10
+git clone https://github.com/fastpaca/pacabench.git
+cd pacabench/examples/quickstart
+export OPENAI_API_KEY=sk-...
+pacabench run
 ```
+
+Already in a clone? `cd examples/quickstart` and run the same command. In a pipe, add `--no-tui`.
+
+The harness points the agent at a local proxy (`OPENAI_BASE_URL`). That proxy is what records latency and tokens. A judge (`gpt-4o-mini`) scores the answers, so a short paraphrase of "Paris" still passes.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-run.gif" width="800" alt="Live run TUI with distributions and rolling failures">
@@ -134,6 +142,8 @@ Export for analysis:
 ```bash
 pacabench export <run-id> > results.json
 ```
+
+To scaffold your own suite in an empty directory, run `pacabench init`.
 
 ---
 

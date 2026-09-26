@@ -1,3 +1,8 @@
+"""Echo agent for the offline smoke test.
+
+Reads JSONL cases on stdin and writes each input reversed. No API key and no network.
+"""
+
 import json
 import sys
 

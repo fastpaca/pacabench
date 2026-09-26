@@ -1,19 +1,17 @@
-name: my-benchmark
-description: Example benchmark
+name: smoke-test
+description: Offline echo-agent smoke test. No API key and no network.
 version: "0.1.0"
 
 config:
   concurrency: 2
-  timeout_seconds: 60
+  timeout_seconds: 30
+  max_retries: 0
   proxy:
     enabled: false
-    provider: "openai"
 
 agents:
   - name: "echo-agent"
     command: "python agents/echo_agent.py"
-    env:
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
 
 datasets:
   - name: "example-data"
