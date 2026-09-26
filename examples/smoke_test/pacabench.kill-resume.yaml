@@ -1,0 +1,28 @@
+name: kill-resume-demo
+description: Recording-only slow echo run so a kill can land between cases.
+version: "0.1.0"
+
+config:
+  concurrency: 1
+  timeout_seconds: 30
+  max_retries: 0
+  proxy:
+    enabled: false
+
+agents:
+  - name: "delayed-echo"
+    command: "python agents/delayed_echo_agent.py"
+    env:
+      PACABENCH_DEMO_DELAY_SECONDS: "1"
+
+datasets:
+  - name: "kill-resume-data"
+    source: "data/kill-resume.jsonl"
+    input_map:
+      input: "question"
+      expected: "answer"
+    evaluator:
+      type: "exact_match"
+
+output:
+  directory: "./runs"

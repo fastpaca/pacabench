@@ -17,3 +17,5 @@ pacabench run --no-tui
 ```
 
 Requires `python` on `PATH` (Python 3). The agent uses the standard library only.
+
+`pacabench.kill-resume.yaml` is only for the kill/resume demo. It sleeps on each case so the process can be killed between cases. The command above uses `pacabench.yaml`.

@@ -21,6 +21,7 @@ ROWS=24
 SPEED=1
 TYPING_SPEED=0.04
 PAUSE_AFTER=2
+KILL_AFTER=""
 THEME="solarized-dark"
 FONT_SIZE=12
 FONT_FAMILY="JetBrains Mono,Menlo,Monaco,monospace"
@@ -40,8 +41,10 @@ Options:
   -s, --speed N         Playback speed multiplier (default: $SPEED)
   -t, --typing-speed N  Seconds between keystrokes (default: $TYPING_SPEED)
   -p, --pause N         Seconds to pause after each command (default: $PAUSE_AFTER)
+  --kill-after N        SIGKILL the first command after N seconds, then run the rest
   --theme NAME          agg theme: monokai, dracula, solarized-dark, etc (default: $THEME)
   --font-size N         Font size in pixels (default: $FONT_SIZE)
+  --font-family STR     agg font family list (default: $FONT_FAMILY)
   --prompt STR          Custom prompt (default: green ❯)
   --keep-cast           Keep the .cast file after conversion
   -h, --help            Show this help
@@ -94,12 +97,20 @@ while [[ $# -gt 0 ]]; do
             PAUSE_AFTER="$2"
             shift 2
             ;;
+        --kill-after)
+            KILL_AFTER="$2"
+            shift 2
+            ;;
         --theme)
             THEME="$2"
             shift 2
             ;;
         --font-size)
             FONT_SIZE="$2"
+            shift 2
+            ;;
+        --font-family)
+            FONT_FAMILY="$2"
             shift 2
             ;;
         --prompt)
@@ -183,16 +194,56 @@ type_and_run() {
     sleep "$PAUSE_AFTER"
 }
 
+# SIGKILL the command and its children. A graceful SIGINT marks the run
+# aborted, and the next `pacabench run --run-id` then retries failures only.
+# Killing the process leaves status running, which is what resume picks up.
+kill_tree() {
+    local pid="$1"
+    local child
+    for child in $(ps -o pid= --ppid "$pid" 2>/dev/null); do
+        kill_tree "$child"
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+}
+
+type_and_run_then_kill() {
+    local cmd="$1"
+
+    echo -ne "$PROMPT"
+
+    for ((i=0; i<${#cmd}; i++)); do
+        echo -n "${cmd:$i:1}"
+        sleep "$TYPING_SPEED"
+    done
+
+    sleep 0.2
+    echo ""
+
+    eval "$cmd" &
+    local pid=$!
+    sleep "$KILL_AFTER"
+    kill_tree "$pid"
+    wait "$pid" 2>/dev/null || true
+    printf '\n'
+    sleep "$PAUSE_AFTER"
+}
+
 run_demo() {
     clear
     sleep 0.3
 DEMO_FUNC
 
-# Add each command to the demo script
+# Add each command to the demo script. --kill-after applies to the first one.
+first_command=true
 for cmd in "${COMMANDS[@]}"; do
     # Escape single quotes in the command
     escaped_cmd="${cmd//\'/\'\\\'\'}"
-    echo "    type_and_run '$escaped_cmd'" >> "$DEMO_SCRIPT"
+    if [[ "$first_command" == true && -n "$KILL_AFTER" ]]; then
+        echo "    type_and_run_then_kill '$escaped_cmd'" >> "$DEMO_SCRIPT"
+    else
+        echo "    type_and_run '$escaped_cmd'" >> "$DEMO_SCRIPT"
+    fi
+    first_command=false
 done
 
 cat >> "$DEMO_SCRIPT" << 'DEMO_END'
@@ -202,7 +253,7 @@ run_demo
 DEMO_END
 
 # Export variables for the subshell
-export PROMPT TYPING_SPEED PAUSE_AFTER
+export PROMPT TYPING_SPEED PAUSE_AFTER KILL_AFTER
 
 echo "Recording ${#COMMANDS[@]} command(s) to $OUTPUT..."
 echo "Terminal: ${COLS}x${ROWS}"
