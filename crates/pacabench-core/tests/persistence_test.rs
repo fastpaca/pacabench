@@ -4,6 +4,8 @@ use pacabench_core::persistence::{
     iso_timestamp_now, list_run_summaries, ErrorEntry, RunMetadata, RunStore,
 };
 use pacabench_core::types::{CaseResult, ErrorType, LlmMetrics, RunStatus};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use tempfile::tempdir;
 
 #[test]
@@ -89,4 +91,52 @@ fn list_run_summaries_includes_progress() {
     assert_eq!(summaries[0].run_id, "run-b");
     assert!((summaries[0].progress - 0.5).abs() < 0.01);
     assert_eq!(summaries[1].completed_cases, 10);
+}
+
+#[test]
+fn write_metadata_atomic_roundtrip() {
+    let dir = tempdir().unwrap();
+    let store = RunStore::new(dir.path().join("run-atomic")).unwrap();
+
+    let mut meta = RunMetadata::new(
+        "run-atomic".into(),
+        "fp".into(),
+        vec!["agent".into()],
+        vec!["ds".into()],
+        5,
+    );
+    store.write_metadata(&meta).unwrap();
+    #[cfg(unix)]
+    let metadata_path = store.run_dir().join("metadata.json");
+    #[cfg(unix)]
+    let inode_before = std::fs::metadata(&metadata_path).unwrap().ino();
+
+    meta.completed_cases = 3;
+    meta.status = RunStatus::Running;
+    store.write_metadata(&meta).unwrap();
+
+    let loaded = store.read_metadata().unwrap().expect("metadata exists");
+    assert_eq!(loaded.run_id, "run-atomic");
+    assert_eq!(loaded.completed_cases, 3);
+    assert_eq!(loaded.status, RunStatus::Running);
+
+    // In-place truncation keeps the same inode; rename publishes a new one.
+    #[cfg(unix)]
+    {
+        let inode_after = std::fs::metadata(&metadata_path).unwrap().ino();
+        assert_ne!(
+            inode_before, inode_after,
+            "atomic replace should publish a new inode"
+        );
+    }
+
+    let leftovers: Vec<_> = std::fs::read_dir(store.run_dir())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
 }

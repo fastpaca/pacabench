@@ -257,7 +257,7 @@ impl Benchmark {
         };
 
         let state = RunState::new(
-            retry_policy.max_retries,
+            retry_policy.clone(),
             total_cases,
             agent_totals,
             existing_results,

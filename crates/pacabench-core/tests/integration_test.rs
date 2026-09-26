@@ -560,3 +560,78 @@ async fn test_retry_only_retries_failed_cases_from_original_run() {
     // Verify run completed successfully
     assert!(!result2.aborted, "run should not be aborted");
 }
+
+#[tokio::test]
+async fn test_timeout_kills_agent_and_next_case_succeeds() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let runs = root.join("runs");
+    let data_dir = root.join("data");
+    fs::create_dir_all(&runs).unwrap();
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let agent_script = root.join("agent.py");
+    fs::write(
+        &agent_script,
+        r#"
+import sys, json, time
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    data = json.loads(line)
+    if data.get("input") == "hang":
+        time.sleep(300)
+    print(json.dumps({"output": data.get("input", ""), "error": None}), flush=True)
+"#,
+    )
+    .unwrap();
+
+    let dataset_file = data_dir.join("cases.jsonl");
+    fs::write(
+        &dataset_file,
+        [
+            r#"{"case_id": "1", "input": "hang", "expected": "hang"}"#,
+            r#"{"case_id": "2", "input": "ok", "expected": "ok"}"#,
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    let mut config = make_test_config(
+        "timeout-test",
+        format!("python {}", agent_script.display()),
+        data_dir.to_string_lossy().to_string(),
+        root.clone(),
+        runs.clone(),
+        Some(EvaluatorConfig::ExactMatch),
+    );
+    config.global.concurrency = 1;
+    config.global.max_retries = 0;
+    config.global.timeout_seconds = 2.0;
+
+    let bench = Benchmark::new(config);
+    let result = bench
+        .run(Some("timeout-run".into()), None)
+        .await
+        .expect("benchmark should run");
+    assert!(!result.aborted);
+
+    let store = RunStore::new(runs.join("timeout-run")).unwrap();
+    let results = store.load_results().unwrap();
+    assert_eq!(results.len(), 2, "both cases should have results");
+
+    let hang = results.iter().find(|r| r.case_id == "1").unwrap();
+    assert!(!hang.passed, "hanging case should fail");
+    let hang_error = hang.error.as_deref().unwrap_or("");
+    assert!(
+        hang_error.contains("Timeout"),
+        "expected timeout error, got: {hang_error}"
+    );
+
+    let ok = results.iter().find(|r| r.case_id == "2").unwrap();
+    assert!(
+        ok.passed,
+        "case after a timeout should run on a fresh runner, got error: {:?}",
+        ok.error
+    );
+}

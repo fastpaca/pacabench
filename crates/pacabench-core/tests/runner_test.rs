@@ -163,3 +163,60 @@ for line in sys.stdin:
     assert_eq!(res.output.as_deref(), Some("http://127.0.0.1:8080/v1"));
     runner.stop().await.unwrap();
 }
+
+/// True when `pid` exists and is not a zombie.
+#[cfg(unix)]
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: kill(2) with signal 0 only checks whether the process exists.
+    let exists = unsafe { libc::kill(pid, 0) == 0 };
+    if !exists {
+        return false;
+    }
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat.contains(") Z"),
+        Err(_) => exists,
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn command_runner_stop_kills_grandchildren() {
+    let dir = tempdir().unwrap();
+    let script = dir.path().join("agent.py");
+    std::fs::write(
+        &script,
+        r#"
+import json, subprocess, sys
+sys.stdin.readline()
+proc = subprocess.Popen(["sleep", "300"])
+print(json.dumps({"output": str(proc.pid)}), flush=True)
+sys.stdin.readline()
+"#,
+    )
+    .unwrap();
+
+    let cfg = AgentConfig {
+        name: "spawner".into(),
+        command: format!("python {}", script.display()),
+        setup: None,
+        teardown: None,
+        env: Default::default(),
+    };
+    let mut runner = CommandRunner::new(cfg, None, None, None);
+    runner.start().await.unwrap();
+    let res = runner.run_case(&make_case()).await.unwrap();
+    let pid: i32 = res.output.expect("grandchild pid").trim().parse().unwrap();
+    assert!(process_alive(pid), "grandchild should be alive before stop");
+
+    runner.stop().await.unwrap();
+
+    let mut alive = true;
+    for _ in 0..50 {
+        if !process_alive(pid) {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!alive, "grandchild sleep (pid {pid}) survived runner stop");
+}

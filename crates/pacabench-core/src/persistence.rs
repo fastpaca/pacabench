@@ -125,7 +125,16 @@ impl RunStore {
 
     pub fn write_metadata(&self, metadata: &RunMetadata) -> Result<()> {
         let json = serde_json::to_string_pretty(metadata)?;
-        fs::write(&self.metadata_path, json).map_err(PacabenchError::Persistence)?;
+        // Temp file in the same directory, fsync, then rename over metadata.json
+        // so a crash mid-write cannot leave a truncated file.
+        let tmp_path = self.metadata_path.with_extension("json.tmp");
+        {
+            let mut file = File::create(&tmp_path).map_err(PacabenchError::Persistence)?;
+            file.write_all(json.as_bytes())
+                .map_err(PacabenchError::Persistence)?;
+            file.sync_all().map_err(PacabenchError::Persistence)?;
+        }
+        fs::rename(&tmp_path, &self.metadata_path).map_err(PacabenchError::Persistence)?;
         Ok(())
     }
 
