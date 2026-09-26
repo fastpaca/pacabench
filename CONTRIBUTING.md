@@ -29,7 +29,7 @@ Before submitting a PR, run the quality gates in [AGENTS.md](AGENTS.md). CI runs
 ### Running Smoke Tests
 
 ```bash
-cd examples/smoke_test && cargo run -p pacabench-cli
+cd examples/smoke_test && cargo run -p pacabench-cli -- run --no-tui
 ```
 
 ### Project Structure

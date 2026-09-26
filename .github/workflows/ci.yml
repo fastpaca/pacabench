@@ -66,3 +66,57 @@ jobs:
 
       - name: Check workspace on MSRV
         run: cargo check --workspace --locked
+
+  offline-smoke:
+    name: offline smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build pacabench
+        run: cargo build --locked --bin pacabench
+
+      - name: Run offline smoke
+        working-directory: examples/smoke_test
+        run: |
+          set -euo pipefail
+          unset OPENAI_API_KEY
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            echo "OPENAI_API_KEY must be unset for the offline smoke" >&2
+            exit 1
+          fi
+          bin="$GITHUB_WORKSPACE/target/debug/pacabench"
+          "$bin" run --no-tui
+          "$bin" show
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          runs = [p for p in Path("runs").iterdir() if p.is_dir()]
+          if len(runs) != 1:
+              raise SystemExit(f"expected one run directory, found {runs}")
+          run_dir = runs[0]
+          meta = json.loads((run_dir / "metadata.json").read_text())
+          if meta["status"] != "completed":
+              raise SystemExit(f"expected completed run, got {meta['status']}")
+          rows = [
+              json.loads(line)
+              for line in (run_dir / "results.jsonl").read_text().splitlines()
+              if line.strip()
+          ]
+          if len(rows) != 2 or not all(row["passed"] for row in rows):
+              raise SystemExit(f"expected 2 passing cases, got {rows}")
+          print(f"offline smoke ok: {run_dir.name}")
+          PY

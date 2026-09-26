@@ -79,19 +79,24 @@ Or run directly without installing:
 uvx pacabench@latest --help
 ```
 
-### Usage
-
-Initialize a new project:
+From a clone, build the binary and put it on your `PATH`:
 
 ```bash
-pacabench init
+cargo build --release --bin pacabench
+export PATH="$PWD/target/release:$PATH"
 ```
 
-Run a quick test:
+### Offline smoke
+
+No API key. Two local cases, an echo agent, exact-match scoring. The agent does not call a model, and the proxy is off.
 
 ```bash
-pacabench run --limit 10
+git clone https://github.com/fastpaca/pacabench.git
+cd pacabench/examples/smoke_test
+pacabench run
 ```
+
+`hello` comes back as `olleh`. The run finishes in seconds. In a pipe or in CI, add `--no-tui`.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-run.gif" width="800" alt="Live run TUI with distributions and rolling failures">
@@ -134,6 +139,18 @@ Export for analysis:
 ```bash
 pacabench export <run-id> > results.json
 ```
+
+### Next
+
+Scaffold a project that calls an LLM:
+
+```bash
+pacabench init
+export OPENAI_API_KEY=sk-...
+pacabench run --limit 10
+```
+
+`pacabench init` writes an agent that needs an API key. The smoke test above does not.
 
 ---
 
