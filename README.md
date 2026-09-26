@@ -1,11 +1,12 @@
 <h1 align="center">PacaBench</h1>
 
 <p align="center">
-  <strong>A local-first Benchmark Harness for LLM agents</strong>
+  <strong>A local-first harness for LLM agent benchmarks.</strong><br>
+  Resumable, process-isolated, with proxy metrics.
 </p>
 
 <p align="center">
-  <i>Stop playing script whack-a-mole with your benchmarks & start looking at reproducible results.</i>
+  <a href="https://fastpaca.com">fastpaca.com</a>
 </p>
 
 <p align="center">
@@ -24,13 +25,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/fastpaca/pacabench/stargazers">
-    <img src="https://img.shields.io/badge/Give%20a%20Star-Support%20the%20project-orange?style=for-the-badge" alt="Give a Star">
-  </a>
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-run.gif" width="800" alt="Live run TUI with distributions and rolling failures">
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/simple-run.gif" width="800" alt="Live run TUI with distributions and rolling failures">
+  <a href="https://github.com/fastpaca/pacabench/stargazers">
+    <img src="https://img.shields.io/badge/Give%20a%20Star-Support%20the%20project-orange?style=for-the-badge" alt="Give a Star">
+  </a>
 </p>
 
 ---
