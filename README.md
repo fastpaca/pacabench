@@ -143,6 +143,39 @@ Export for analysis:
 pacabench export <run-id> > results.json
 ```
 
+### Kill and resume
+
+Completed cases stay done when the process dies before the run finalizes. A bare `pacabench run` starts a new id. Resume with the same `--run-id`.
+
+This demo uses a slow echo agent so the kill lands between cases. The Quick Start above is the two-question LLM run.
+
+```bash
+cd examples/smoke_test
+rm -rf runs/kill-resume-demo
+pacabench -c pacabench.kill-resume.yaml run --run-id kill-resume-demo --no-tui
+```
+
+After a few cases finish, kill that process:
+
+```bash
+kill -9 "$(pgrep -f 'run --run-id kill-resume-demo')"
+```
+
+Run the same id again:
+
+```bash
+pacabench -c pacabench.kill-resume.yaml run --run-id kill-resume-demo --no-tui
+```
+
+The second run prints `Resuming kill-resume-demo (N already done, ...)`.
+
+Ctrl+C is a different path. The first SIGINT finalizes the run as `aborted`. `pacabench run --run-id` on an aborted run retries failed cases only, so cases that never started are not continued. A crash or `kill -9` leaves the run `running`, which is the resume path above.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/fastpaca/pacabench/main/docs/images/kill-resume.gif" width="800" alt="Kill a run and resume the same id">
+</p>
+<p align="center"><em>Same run id after the process is killed. Completed cases stay done.</em></p>
+
 To scaffold your own suite in an empty directory, run `pacabench init`.
 
 ---
