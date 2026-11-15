@@ -392,8 +392,9 @@ pub fn build_run_stats_view(
         lines.push(Vec::new());
 
         for failure in stats.failures.iter().take(10) {
-            let reason = if failure.reason.len() > 60 {
-                format!("{}...", &failure.reason[..57])
+            let reason = if failure.reason.chars().count() > 60 {
+                let head: String = failure.reason.chars().take(57).collect();
+                format!("{head}...")
             } else {
                 failure.reason.clone()
             };

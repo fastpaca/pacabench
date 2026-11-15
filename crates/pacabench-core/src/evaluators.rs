@@ -5,6 +5,7 @@ use crate::runner::RunnerOutput;
 use crate::types::{Case, EvaluationResult, JudgeMetrics};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use llm_diff::TextDiff;
 use regex::Regex;
 use std::collections::HashSet;
 use std::env;
@@ -43,13 +44,46 @@ impl Evaluator for ExactMatchEvaluator {
         if pred == expected {
             EvaluationResult::pass(1.0)
         } else {
-            EvaluationResult::fail(0.0, "Mismatch")
+            // Still a fail, but score how close the answer was and name the
+            // changed words, so a formatting slip reads differently from a
+            // wrong answer.
+            let diff = TextDiff::compute_words(expected, pred);
+            EvaluationResult::fail(diff.ratio(), mismatch_reason(&diff))
         }
     }
 
     fn kind(&self) -> &str {
         "exact_match"
     }
+}
+
+/// Summarize a word diff as `Mismatch: -expected +got`, capped so long
+/// answers keep the failure reason readable.
+fn mismatch_reason(diff: &TextDiff) -> String {
+    const MAX_CHANGES: usize = 8;
+
+    let changes: Vec<String> = diff
+        .changes()
+        .filter(|op| !op.text().trim().is_empty())
+        .map(|op| format!("{}{}", op.kind(), op.text()))
+        .collect();
+    if changes.is_empty() {
+        return "Mismatch (whitespace only)".to_string();
+    }
+
+    let mut reason = format!(
+        "Mismatch: {}",
+        changes
+            .iter()
+            .take(MAX_CHANGES)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    if changes.len() > MAX_CHANGES {
+        reason.push_str(&format!(" (+{} more)", changes.len() - MAX_CHANGES));
+    }
+    reason
 }
 
 /// Evaluator using token-level F1 score with a configurable threshold.
