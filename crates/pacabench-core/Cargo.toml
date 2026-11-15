@@ -39,6 +39,7 @@ figment = { version = "0.10", features = ["yaml", "env"] }
 async-channel = "2"
 statrs = "0.17"
 nanoid = "0.4.0"
+llm-diff = { version = "0.3", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.177"

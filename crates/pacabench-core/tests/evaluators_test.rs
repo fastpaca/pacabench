@@ -44,6 +44,25 @@ async fn exact_match_passes() {
 }
 
 #[tokio::test]
+async fn exact_match_mismatch_scores_and_names_changed_words() {
+    let ev = ExactMatchEvaluator;
+    let res = ev
+        .evaluate(
+            &make_case("Paris has 2.1 million people."),
+            &ro("Paris has 2.2 million people."),
+        )
+        .await;
+    assert!(!res.passed);
+    assert!(res.score > 0.5 && res.score < 1.0, "score {}", res.score);
+    assert_eq!(res.reason.as_deref(), Some("Mismatch: -2.1 +2.2"));
+
+    let res = ev.evaluate(&make_case("yes"), &ro("no")).await;
+    assert!(!res.passed);
+    assert_eq!(res.score, 0.0);
+    assert_eq!(res.reason.as_deref(), Some("Mismatch: -yes +no"));
+}
+
+#[tokio::test]
 async fn f1_evaluator_scores() {
     let ev = F1Evaluator::new(0.5);
     let res = ev.evaluate(&make_case("hello world"), &ro("hello")).await;
